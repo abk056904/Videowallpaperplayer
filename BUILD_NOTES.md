@@ -561,7 +561,7 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ## M9 — Detection & monitoring (workload sampling + game/fullscreen detection)
 
-**Committed as `0b8f3c2`** — per docs/03 §3.11 / docs/04 §2. This milestone produces the DETECTION SIGNALS; the pause/resume ACTIONS land in M10's ResourceGovernor.
+**Committed as `735362b`** — per docs/03 §3.11 / docs/04 §2. This milestone produces the DETECTION SIGNALS; the pause/resume ACTIONS land in M10's ResourceGovernor.
 
 ## What shipped
 
