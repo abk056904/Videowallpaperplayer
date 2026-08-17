@@ -212,7 +212,8 @@ void PlaybackController::noteRenderTime(double ms) {
 }
 
 void PlaybackController::recycleFrame(std::vector<uint8_t>& bytes) {
-    if (player_) {
+    // Null-safe like newFrameEvent(): the queue only exists while Playing.
+    if (player_ && player_->queue()) {
         player_->queue()->recycleBuffer(bytes);
     }
 }

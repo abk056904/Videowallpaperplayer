@@ -470,8 +470,10 @@ void DecoderManager::workerLoop(FrameQueue* queue) {
         // RGB32 block costs VirtualAlloc + demand-zero page faults if
         // reallocated fresh every frame — measured 4.5 ms/f of zeroing vs
         // ~0 with reuse). The consumer returns buffers after the GPU upload.
+        // Software path only: copySampleToTexture is a GPU-surface extraction
+        // that never touches frame.bytes, so a spare would ride the queue
+        // unused (capacity_ x 14 MB in flight on the HW path).
         DecodedFrame frame;
-        queue->takeSpareBuffer(frame.bytes);
         std::wstring copyErr;
         if (hardware_) {
             if (!copySampleToTexture(sample.Get(), frame, copyErr)) {
@@ -479,6 +481,7 @@ void DecoderManager::workerLoop(FrameQueue* queue) {
                 continue;
             }
         } else {
+            queue->takeSpareBuffer(frame.bytes);
             // Current output type (RGB32) carries the frame size for copying.
             ComPtr<IMFMediaType> current;
             if (FAILED(reader_->GetCurrentMediaType(kFirstVideoStream, &current))) {
