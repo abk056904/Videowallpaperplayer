@@ -481,7 +481,7 @@ The M6-collected playback stats now flow into a `StatsCollector` telemetry snaps
 
 ## M7 — Playlist engine
 
-**Committed as `???????`** — playlist items/modes/persistence + loop-replay + broken-item skip.
+**Committed as `90b03e8`** — playlist items/modes/persistence + loop-replay + broken-item skip.
 
 ## What shipped
 
