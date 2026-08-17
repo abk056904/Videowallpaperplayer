@@ -14,7 +14,7 @@ Findings recorded during the M0 toolchain/environment audit. Last updated: 2026-
 
 **Implications:**
 - Hybrid-GPU laptop (NVIDIA dGPU + AMD iGPU) — M8 adapter selection and "don't wake the discrete GPU needlessly" (doc 2 §59) are directly testable here.
-- RTX 3050 NVDEC supports H.264 / HEVC / AV1 hardware decode — M5 hardware-decode verification is feasible on this machine.
+- RTX 3050 NVDEC supports H.264 / HEVC / AV1 hardware decode — but **hardware decode through Media Foundation is NOT achievable on this machine** (M5 forensics: the MS decoder MFTs refuse their internal DXVA handoff despite working drivers; see the M5 section). GPU decode may still be reachable via NVDEC direct APIs or a different framework — out of scope for v1.
 - 13.8 GB RAM: adequate; keep 24 h stability runs to a single 1080p–1440p wallpaper or monitor VRAM/RAM headroom with 4K + multi-monitor.
 
 ## Toolchain status
@@ -296,17 +296,21 @@ Software decode of 1440p60 H.264 → RGB32 (Video Processor MFT) runs at roughly
 
 ## The big finding: this machine has no working hardware decode path in Media Foundation
 
-Probed exhaustively (scratch probe `probe_mf_hw.cpp` mirrors the app's exact sequence — manager → deselect → NV12 negotiate → first sample):
+Follow-up forensics (`probe_dxva.cpp`) walked the full chain — MFT registration → driver capability → direct decoder drive → codec cross-check. The verdict from M5 stands (**systemic MF-stack limitation, not a code bug**), but two M5 claims are now **corrected** (see table): a hardware MFT *is* registered (the earlier probe's input-type filter excluded it), and the drivers *can* create decoders — the refusal happens one level up, inside the MS decoder MFT itself.
 
-| Probe | Result |
-|---|---|
-| `MFTEnumEx(MFT_ENUM_FLAG_HARDWARE)` for H.264 | **0 hardware MFTs registered** |
-| DXVA capability (`CheckVideoDecoderFormat`, H264-VLD, NV12) | **1 on BOTH GPUs** (RTX 3050 + Radeon iGPU) |
-| Reader with DXGI manager + NV12 negotiation | succeeds (`S_OK`) |
-| First sample | **system memory** — `MFGetService(MR_VIDEO_ACCELERATION_SERVICE)` → `E_NOINTERFACE` |
-| Same on adapter 1 / Debug layer on / off | identical |
+| Level | Probe | Result |
+|---|---|---|
+| MFT registration | `MFTEnumEx(MFT_ENUM_FLAG_ALL)` video decoders | 20 MFTs: `AMDhwDecoder` (HW, hwurl) + AMD/NVIDIA MJPEG (HW) + MS H.264 (SYNC) etc. **CORRECTION**: "0 hardware MFTs" was a filter artifact — `AMDhwDecoder` exposes no types through enumeration, so it never matched the input-type filter |
+| `AMDhwDecoder` (the HW MFT) | CoCreateInstance + SET_D3D_MANAGER + type queries | **useless**: async MFT — SET_D3D_MANAGER → `MF_E_TRANSFORM_ASYNC_LOCKED` (0xC00D6D77); exposes **zero** input/output types even after the manager message. Never selectable by the Source Reader |
+| Driver (both GPUs) | `CheckVideoDecoderFormat` (H264-VLD-NOFGT, NV12) | **1 on BOTH** (RTX 3050 + Radeon iGPU) |
+| Driver (both GPUs) | `CreateVideoDecoder` with a REAL config from `GetVideoDecoderConfig` | **`S_OK` on BOTH** (AMD: 11 configs, NVIDIA: 3). The earlier `E_INVALIDARG` was an incomplete desc (no `SampleWidth/Height`) — the drivers are fully functional |
+| MS H.264 decoder MFT | `MF_SA_D3D11_AWARE`, SET_D3D_MANAGER, NV12 output, direct ProcessInput/Output | aware=1; manager accepted; NV12 S_OK; `streamInfo.flags=0x107` (**PROVIDES_SAMPLES** — DXVA-style mode entered); decodes real frames — **but every output buffer is system memory** (`MFGetService(MR_VIDEO_ACCELERATION_SERVICE)` → `E_NOINTERFACE`) |
+| Input type completeness | native type from real 1080p clip | **complete**: 1920×1080, 30fps, `mpeg2Profile=100` (High) — not the placeholder-type path (placeholder → `MF_E_TRANSFORM_STREAM_CHANGE`, which we handled and it still fell back) |
+| Adapter | same drive on adapter 0 (AMD iGPU) vs 1 (NVIDIA dGPU) | **identical system-memory output** |
+| Resolution | 1080p vs 1440p clip | identical (not the 1920×1088 DXVA-guarantee threshold) |
+| Codec | Source Reader NV12 probe on H.264 AND HEVC clips | **both negotiate NV12 → both system memory** — systemic, not codec-specific |
 
-The only H.264 decoder MFT is the **Microsoft software decoder**, and its internal DXVA handoff does not engage on this machine despite the GPUs advertising the mode. **This is a machine/MF-state limitation, not a code bug** — the hardware path is implemented to the documented pattern (two-SRV planar views, `DecodedFrame::texture`, YUV shader) and its machinery is unit-tested, but **end-to-end GPU decode cannot be verified on this box**.
+**Root cause (established):** the MS H.264/HEVC decoder MFTs accept the DXGI manager, enter DXVA-style output mode (`PROVIDES_SAMPLES`), and then **silently allocate system-memory NV12** for every frame. Their internal DXVA handoff refuses on this machine even though every public prerequisite is satisfiable: drivers advertise the mode *and* create decoders, the decoder claims D3D11-awareness, the manager message succeeds, the input type is complete. This is an internal decoder/driver interaction failure not observable through the public API — and it is why M5's runtime probe + clean software fallback is the correct engineering answer, not a workaround.
 
 ## M5 design response: runtime probe + clean rebuild fallback
 
