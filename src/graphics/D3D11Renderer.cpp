@@ -3,7 +3,9 @@
 #include <format>
 
 #include "graphics/D3D11DeviceManager.h"
+#include "graphics/TextureManager.h"
 #include "generated/VideoShaderPsData.h"
+#include "generated/VideoShaderPsTexData.h"
 #include "generated/VideoShaderVsData.h"
 
 namespace vw::gfx {
@@ -28,6 +30,10 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
     if (FAILED(device->CreatePixelShader(kVideoShaderPs, kVideoShaderPs_size, nullptr, &ps_))) {
         return std::unexpected(L"CreatePixelShader failed");
     }
+    if (FAILED(device->CreatePixelShader(kVideoShaderPsTex, kVideoShaderPsTex_size, nullptr,
+                                         &psTex_))) {
+        return std::unexpected(L"CreatePixelShader (textured) failed");
+    }
 
     D3D11_BUFFER_DESC cb{};
     cb.ByteWidth = sizeof(FrameParams); // two float4, 16-byte aligned
@@ -45,16 +51,20 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
         return std::unexpected(L"CreateRasterizerState failed");
     }
 
-    D3D11_SAMPLER_DESC sd{};
-    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    if (FAILED(device->CreateSamplerState(&sd, &sampler_))) {
-        return std::unexpected(L"CreateSamplerState failed");
-    }
+    // Use the shared TextureManager helper rather than duplicating sampler setup.
+    auto sampler = TextureManager::createSampler(device, D3D11_FILTER_MIN_MAG_MIP_LINEAR);
+    if (!sampler) return std::unexpected(sampler.error());
+    sampler_ = *sampler;
 
     // The swap chain was just created at this size — build the RTV directly;
     // a same-size ResizeBuffers on a fresh flip-model chain fails (INVALID_CALL).
     return rebuildRtv(device, width, height);
+}
+
+Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv) {
+    if (srv && !psTex_) return std::unexpected(L"renderer: textured shader not initialized");
+    videoSrv_ = srv;
+    return {};
 }
 
 Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FrameParams& params) {
@@ -69,7 +79,15 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->IASetInputLayout(nullptr); // vertex-less: SV_VertexID only
     context->VSSetShader(vs_.Get(), nullptr, 0);
-    context->PSSetShader(ps_.Get(), nullptr, 0);
+    if (videoSrv_) {
+        // M5 preview: bind the frame texture + textured PS.
+        context->PSSetShader(psTex_.Get(), nullptr, 0);
+        context->PSSetShaderResources(0, 1, videoSrv_.GetAddressOf());
+    } else {
+        context->PSSetShader(ps_.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* const nullSrv[1] = {nullptr};
+        context->PSSetShaderResources(0, 1, nullSrv); // clear stale binding
+    }
     context->VSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
     context->PSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
     context->RSSetState(rasterizer_.Get());

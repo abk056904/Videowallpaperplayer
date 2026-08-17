@@ -44,15 +44,18 @@ set(_shader_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/VideoShader.hlsl)
 set(_shader_outdir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(_vs_cso ${_shader_outdir}/VideoShader.vs.cso)
 set(_ps_cso ${_shader_outdir}/VideoShader.ps.cso)
+set(_ps_tex_cso ${_shader_outdir}/VideoShader.ps_tex.cso)
 set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(_vs_hdr ${_gen_dir}/VideoShaderVsData.h)
 set(_ps_hdr ${_gen_dir}/VideoShaderPsData.h)
+set(_ps_tex_hdr ${_gen_dir}/VideoShaderPsTexData.h)
 
 add_custom_command(
-    OUTPUT ${_vs_cso} ${_ps_cso}
+    OUTPUT ${_vs_cso} ${_ps_cso} ${_ps_tex_cso}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${_shader_outdir}
     COMMAND ${FXC_EXE} /nologo /T vs_5_0 /E VSMain /Fo ${_vs_cso} ${_shader_src}
     COMMAND ${FXC_EXE} /nologo /T ps_5_0 /E PSMain /Fo ${_ps_cso} ${_shader_src}
+    COMMAND ${FXC_EXE} /nologo /T ps_5_0 /E PSMainTexture /Fo ${_ps_tex_cso} ${_shader_src}
     DEPENDS ${_shader_src}
     COMMENT "Compiling VideoShader.hlsl with fxc"
     VERBATIM
@@ -61,7 +64,7 @@ add_custom_command(
     OUTPUT ${_vs_hdr}
     COMMAND ${CMAKE_COMMAND} -DINPUT=${_vs_cso} -DOUTPUT=${_vs_hdr} -DNAME=kVideoShaderVs
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
-    DEPENDS ${_vs_cso}
+    DEPENDS ${_vs_cso} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
     COMMENT "Embedding vertex shader"
     VERBATIM
 )
@@ -69,11 +72,19 @@ add_custom_command(
     OUTPUT ${_ps_hdr}
     COMMAND ${CMAKE_COMMAND} -DINPUT=${_ps_cso} -DOUTPUT=${_ps_hdr} -DNAME=kVideoShaderPs
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
-    DEPENDS ${_ps_cso}
+    DEPENDS ${_ps_cso} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
     COMMENT "Embedding pixel shader"
     VERBATIM
 )
-set_source_files_properties(${_vs_hdr} ${_ps_hdr} PROPERTIES GENERATED TRUE)
+add_custom_command(
+    OUTPUT ${_ps_tex_hdr}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${_ps_tex_cso} -DOUTPUT=${_ps_tex_hdr} -DNAME=kVideoShaderPsTex
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
+    DEPENDS ${_ps_tex_cso} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
+    COMMENT "Embedding textured pixel shader"
+    VERBATIM
+)
+set_source_files_properties(${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} PROPERTIES GENERATED TRUE)
 
 # Graphics module sources shared by the app and the harness.
 set(VW_GRAPHICS_SOURCES
@@ -92,7 +103,7 @@ add_executable(VideoWallpaper WIN32
     src/util/json.cpp
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
-    ${_vs_hdr} ${_ps_hdr}
+    ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr}
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 d3d11 dxgi)
@@ -140,11 +151,14 @@ add_executable(vw_gfx_harness
     src/logging/Logger.cpp
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
-    ${_vs_hdr} ${_ps_hdr}
+    ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr}
 )
 target_include_directories(vw_gfx_harness PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(vw_gfx_harness PRIVATE d3d11 dxgi user32)
-target_compile_definitions(vw_gfx_harness PRIVATE ${VW_PUBLIC_DEFS})
+target_link_libraries(vw_gfx_harness PRIVATE d3d11 dxgi user32 mfplat mfreadwrite mfuuid)
+target_compile_definitions(vw_gfx_harness PRIVATE
+    ${VW_PUBLIC_DEFS}
+    $<$<CONFIG:Debug>:VW_DEBUG>   # same Debug marker as the app
+)
 if(MSVC)
     target_compile_options(vw_gfx_harness PRIVATE /WX
         $<$<CONFIG:Release>:/O2;/Zi>

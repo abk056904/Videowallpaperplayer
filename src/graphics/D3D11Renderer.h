@@ -6,7 +6,7 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 
-#include "util/Result.h"
+#include "util/Result.h" // (D3D11DeviceManager.h is only needed by the .cpp)
 
 namespace vw::gfx {
 
@@ -26,6 +26,10 @@ public:
     // Stores the swap chain, creates the pipeline, and builds the RTV.
     Result<void> init(ID3D11Device* device, IDXGISwapChain1* swapChain, UINT width, UINT height);
 
+    // M5-preview texture path: when set, render() samples this SRV through the
+    // textured pixel shader; null restores the gradient placeholder.
+    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv);
+
     // Clears, draws, and presents (vsync). Device loss propagates as an error
     // so the caller can run the M12 recreate path.
     Result<void> render(ID3D11DeviceContext* context, const FrameParams& params);
@@ -39,6 +43,8 @@ private:
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vs_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> psTex_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> videoSrv_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> frameCb_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_; // linear; used from M5 on

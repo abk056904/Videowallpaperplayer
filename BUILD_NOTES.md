@@ -109,7 +109,7 @@ M2 exit criteria met: DeviceManager + Renderer + TextureManager shipped, build-t
 - **Build-time fxc pipeline**: `shaders/VideoShader.hlsl` → `.cso` (fxc from the Windows SDK, auto-located via `CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION` with a glob fallback) → **embedded as byte arrays** via `cmake/embed_shader.cmake` into `build/<cfg>/generated/VideoShader{Vs,Ps}Data.h`. No runtime file lookups — keeps the M14 package to exe + system DLLs only. Sizes: VS 736 B, PS 836 B.
 - **Verified on both GPUs (Debug + Release)**: feature level **0xB100 (11_1)**, ~147 FPS vsync-locked to the 144 Hz display, clean `--frames N` exit. Release: no debug layer (correct).
 - **Harness now drives the real modules** — it no longer duplicates device/swapchain/pipeline code; `--list`/`--frames`/`--adapter`/`--no-debug` flags unchanged.
-- **Debug layer still NOT installed** (hr=0x887A002D) — DeviceManager falls back gracefully and logs `warn`.
+- **Debug layer now INSTALLED (2026-08-17)** — see the "Graphics Tools install" section below; Debug builds get a real debug-layer device on both GPUs.
 
 ## Gotchas (new)
 
@@ -136,7 +136,32 @@ M2 exit criteria met: DeviceManager + Renderer + TextureManager shipped, build-t
 
 ## Debug layer: NOT installed ⚠️
 
-- `D3D11CreateDevice` with `D3D11_CREATE_DEVICE_DEBUG` fails with **hr=0x887A002D (`DXGI_ERROR_SDK_COMPONENT_MISSING`)** on both GPUs — the D3D11 debug-layer runtime is absent even though the Windows SDK is installed.
-- The harness (and M2's device manager) **gracefully falls back** to a non-debug device — correct pattern, no crash.
-- To enable real debug-layer validation later (useful for M2/M13 debugging), install the optional **Graphics Tools** Windows feature:
-  `DISM /Online /Add-Capability /CapabilityName:Graphics.Tools~~~~0.0.1.0` (requires elevation; **not installed without permission** — documented here instead).
+- ~~`D3D11CreateDevice` with `D3D11_CREATE_DEVICE_DEBUG` failed with hr=0x887A002D (DXGI_ERROR_SDK_COMPONENT_MISSING)~~ → **RESOLVED 2026-08-17**: the debug layer is now installed and verified **ON on both GPUs** in Debug builds.
+- The harness/DeviceManager **gracefully falls back** to a non-debug device when the layer is absent — the correct pattern, kept regardless.
+
+## Graphics Tools (D3D debug layer) — install record (2026-08-17)
+
+- **Capability name on this machine (Windows 11 10.0.26200): `Tools.Graphics.DirectX~~~~0.0.1.0`** — the older `Graphics.Tools~~~~0.0.1.0` name no longer exists on 24H2+ (a first install attempt with the old name was a silent no-op; a `Get-WindowsCapability -Online | Where Name -like '*Graphics*'` diagnostic revealed the new name).
+- Installed elevated (UAC-approved) via `Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0`; took ~7–8 min (download); `RestartNeeded=False`.
+- **Verified**: Debug harness reports `debug layer=ON` on both the AMD iGPU and NVIDIA RTX 3050, feature level 11_1, 90 frames rendered cleanly. Release builds still skip the debug layer (gated).
+- Side note: `d3d10sdklayers.dll` was already present in System32; the D3D11 debug layer is what the feature gates.
+
+---
+
+# M5-preview — harness textured-frame path (2026-08-17)
+
+Pre-M5 de-risking: `vw_gfx_harness --video <path>` decodes ONE frame via the production Source Reader (RGB32 output), uploads it to a D3D11 texture, and renders it through the textured pixel shader — proving the texture upload + sampling pipeline before M5's GPU-frame work. **RGB32 CPU conversion + `Map`/`Unmap` upload is explicitly the throwaway preview**; M5 replaces it with `MF_SOURCE_READER_D3D_MANAGER` GPU surfaces + shader YUV→RGB (no CPU copy in happy path).
+
+## Verified ✅
+
+- **All 9 clips decode + render** (Debug + Release, AMD iGPU + NVIDIA RTX 3050): 8× H.264 + 1× HEVC (`Furina`), feature level 11_1, 90-frame runs clean.
+- **Shader now has a texture-sampling PS entry** (`TexPSMain` + sampler), selected when a texture SRV is bound (`render(..., video)`); gradient path unchanged. New embedded shader: VS 736 B / PS1 836 B / PS2 ~1 KB.
+- **Real stream resolutions differ from filenames** — "Eula 3840X2160" decodes as **2560×1440**, "Ganyu 4K60" also 2560×1440, one clip is **1916×1080** (odd width → nonzero row stride; the 2D-buffer pitch handling is exercised). Good data for M4's metadata reader + M13 stress matrix.
+
+## Gotcha (the fix that made it work)
+
+- **`IMFSourceReader::SetCurrentMediaType` with an RGB32 output type returned `MF_E_INVALIDMEDIATYPE` (0xC00D36B4)** on the H.264 decoder. Two required pieces:
+  1. Create the reader with **`MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING = TRUE`** — the documented YUV→RGB32 path routes conversion through the Video Processor MFT; the decoder's own converter rejects the type.
+  2. Set **`MF_MT_DEFAULT_STRIDE`** on the requested RGB32 type (via `MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, w, &stride)`).
+- Side effect of the probe: the harness now prints the **native video subtype** GUID (`{34363248-...}` = H264, `{43564548-...}` = HEVC) — useful for M5 decoder-mode diagnostics.
+- Note for M5: the Source Reader + `SetCurrentMediaType` on the NV12/P010 GPU path must also set `MF_MT_DEFAULT_STRIDE` and the D3D manager attributes — same negotiation class of bugs.
