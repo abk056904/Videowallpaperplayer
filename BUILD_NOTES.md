@@ -225,3 +225,20 @@ Progman (top-level)
 - `vw_gfx_harness --wallpaper [--adapter N] [--frames N]` drives the **real** `WallpaperManager` (discovery, hosts, checkerboard) from a script without the full app: message pump + per-frame `renderAll()` + the same 1 Hz `onTick()` Explorer-restart stub the app runs. `--frames N` exits cleanly (N vsync-blocked presents).
 - `WallpaperManager::start(IDXGIAdapter1*)` now takes an optional adapter (the app passes null/default; the harness passes the chosen one for per-GPU verification) and `renderAll()` is public. The debug layer follows the build like the app (`--no-debug` does not apply in wallpaper mode).
 - Verified: 1 host at (0,0)-(1920,1080), parented to the Progman-child WorkerW, visible, on **both GPUs** (AMD iGPU + NVIDIA RTX 3050) in Debug and Release; 3000-frame runs exit cleanly with no leftover process. (Note: PowerShell P/Invoke probes for nested windows kept failing during these checks — the C++ probe is the verification instrument of record.)
+
+---
+
+# M3 review (2026-08-17, before M4)
+
+Fixed:
+- **`WallpaperHost::setBounds` skipped the child-window DPI scaling** — it passed raw physical pixels to `SetWindowPos`, but the window lives in the parent's virtualized DPI context (the exact problem `init` had to solve). A monitor change would have mispositioned the host. Both paths now share `scaleToParentDpi()` (physical rect → parent-context rect; swap chain stays physical).
+- **`WNDCLASSEXW` was missing `cbSize`** in `WallpaperHost::registerClass` (worked empirically; `ControlWindow` sets it).
+- **1 Hz timer only set when `start()` succeeds** (no GPU → `running_` false → the timer was a no-op anyway).
+
+Checked sound (no change): monitor-event lambdas die with the manager (both members), shutdown order (hosts → texture → device), `refresh()` diff pointers into the snapshot are safe (snapshot untouched during the loop), event order add-before-remove, retry semantics after a failed initial build, `Logger` per-line flush under rotation/concurrency tests.
+
+Deferred notes for later milestones:
+- **WM_DPICHANGED**: a display-scaling change resizes the child host (it's in the parent's DPI context) without our `setBounds` — re-apply bounds on display change (M8, alongside full monitor events).
+- **Device-loss while running**: `render()` errors propagate and are logged; the full teardown/recreate path is M12.
+- `MonitorManager::refresh` doesn't detect `workArea`-only changes (taskbar resize) — M8.
+- The 0x052C `SendMessageTimeout` result is not checked (arrangement-B/fallback discovery covers a failed spawn) — acceptable, logged hierarchy shows what actually exists.

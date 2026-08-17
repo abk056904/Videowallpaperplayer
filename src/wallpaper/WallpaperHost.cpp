@@ -21,6 +21,21 @@ bool WallpaperHost::registerClass() {
     return ::RegisterClassExW(&wc) != 0 || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
+// A WS_CHILD window parented into another process's window (Explorer, system-
+// DPI-aware) is virtualized into the PARENT's DPI context: the requested
+// physical rect must be scaled by parentDpi/96 to land at the physical size
+// (verified empirically in M3 — physical = request x 96/parentDpi). Physical
+// monitor bounds (per-monitor-v2 units) -> parent-context window rect.
+RECT WallpaperHost::scaleToParentDpi(HWND parent, const RECT& physical) const {
+    const UINT parentDpi = ::GetDpiForWindow(parent);
+    RECT scaled{};
+    scaled.left = ::MulDiv(physical.left, static_cast<int>(parentDpi), 96);
+    scaled.top = ::MulDiv(physical.top, static_cast<int>(parentDpi), 96);
+    scaled.right = ::MulDiv(physical.right, static_cast<int>(parentDpi), 96);
+    scaled.bottom = ::MulDiv(physical.bottom, static_cast<int>(parentDpi), 96);
+    return scaled;
+}
+
 LRESULT CALLBACK WallpaperHost::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_ERASEBKGND:
@@ -58,26 +73,18 @@ Result<void> WallpaperHost::init(gfx::D3D11DeviceManager* deviceManager, const O
         return std::unexpected(L"failed to register host window class");
     }
 
-    // DPI: a WS_CHILD window whose parent belongs to another process is
-    // virtualized into the PARENT's DPI context, regardless of this thread's
-    // context (verified empirically: physical rect = requested x 96/parentDpi
-    // on this machine — Explorer is 120 DPI / 125% scaling). The monitor
-    // bounds are physical pixels (the app is per-monitor v2), so request
-    // parentDpi/96 x the physical size and the window lands at the full
-    // physical monitor. The swap chain keeps the physical size (crisp
-    // back buffer); DWM maps the window's physical area 1:1.
-    const UINT parentDpi = ::GetDpiForWindow(options.parent);
-    const int px = ::MulDiv(options.bounds.left, static_cast<int>(parentDpi), 96);
-    const int py = ::MulDiv(options.bounds.top, static_cast<int>(parentDpi), 96);
-    const int pw = ::MulDiv(static_cast<int>(width_), static_cast<int>(parentDpi), 96);
-    const int ph = ::MulDiv(static_cast<int>(height_), static_cast<int>(parentDpi), 96);
+    // DPI: see scaleToParentDpi() — the child is virtualized into the parent's
+    // context, so create the window at the scaled rect; the swap chain keeps
+    // the PHYSICAL size (crisp back buffer) and DWM maps it 1:1.
+    const RECT scaled = scaleToParentDpi(options.parent, options.bounds);
 
     // Child of the wallpaper layer: stays behind desktop icons, never appears
     // in the taskbar, never takes focus. Created without WS_VISIBLE; render()
     // shows it after the first present (no black flash).
     hwnd_ = ::CreateWindowExW(
         WS_EX_NOACTIVATE | WS_EX_NOPARENTNOTIFY, kClassName, L"VideoWallpaperHost",
-        WS_CHILD | WS_CLIPSIBLINGS, px, py, pw, ph, options.parent, nullptr,
+        WS_CHILD | WS_CLIPSIBLINGS, scaled.left, scaled.top,
+        scaled.right - scaled.left, scaled.bottom - scaled.top, options.parent, nullptr,
         ::GetModuleHandleW(nullptr), nullptr);
     if (!hwnd_) {
         return std::unexpected(L"CreateWindowExW failed (error " +
@@ -135,7 +142,11 @@ Result<void> WallpaperHost::setBounds(const RECT& bounds) {
     }
     width_ = static_cast<UINT>(bounds.right - bounds.left);
     height_ = static_cast<UINT>(bounds.bottom - bounds.top);
-    ::SetWindowPos(hwnd_, nullptr, bounds.left, bounds.top, width_, height_,
+    // Same DPI virtualization as init: position the window in the parent's
+    // context, keep the swap chain at the physical size.
+    const RECT scaled = scaleToParentDpi(::GetParent(hwnd_), bounds);
+    ::SetWindowPos(hwnd_, nullptr, scaled.left, scaled.top,
+                   scaled.right - scaled.left, scaled.bottom - scaled.top,
                    SWP_NOZORDER | SWP_NOACTIVATE);
     auto resized = renderer_.resize(deviceManager_->device(), width_, height_);
     if (!resized) {

@@ -93,9 +93,10 @@ int ApplicationController::run() {
     const auto wallpaperResult = wallpaper_->start();
     if (!wallpaperResult) {
         log.error(L"wallpaper start failed: {}", wallpaperResult.error());
+    } else {
+        // 1 Hz validity check — only while the wallpaper runs (docs/02 §2.8).
+        ::SetTimer(control_.handle(), kWallpaperTimerId, 1000, nullptr);
     }
-    // 1 Hz validity check — only while the wallpaper exists (docs/02 §2.8).
-    ::SetTimer(control_.handle(), kWallpaperTimerId, 1000, nullptr);
 
     log.info(L"Video Wallpaper v{} starting", L"0.1.0");
     log.info(L"appdata dir: {}", appDataDir_.wstring());

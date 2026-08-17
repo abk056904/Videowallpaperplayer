@@ -56,6 +56,9 @@ public:
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     static bool registerClass();
+    // Physical monitor rect -> parent-DPI-context window rect (child-window
+    // DPI virtualization, see WallpaperHost.cpp).
+    RECT scaleToParentDpi(HWND parent, const RECT& physical) const;
 
     gfx::D3D11DeviceManager* deviceManager_ = nullptr;
     HWND hwnd_ = nullptr;
