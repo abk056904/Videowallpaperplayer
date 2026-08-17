@@ -561,7 +561,7 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ## M10 — Resource governor & automatic suspension
 
-**Committed as `b7e0a51`** — per docs/02 §2.4 / docs/03 §3.12 / spec §9. The governor is the SOLE authority over decode/render start-stop: subsystems feed reasons, it owns the transitions.
+**Committed as `24f6ecb`** — per docs/02 §2.4 / docs/03 §3.12 / spec §9. The governor is the SOLE authority over decode/render start-stop: subsystems feed reasons, it owns the transitions.
 
 ## What shipped
 
