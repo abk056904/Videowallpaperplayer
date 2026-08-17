@@ -181,9 +181,22 @@ Result<std::vector<MonitorInfo>> MonitorManager::refresh() {
     if (!current) {
         return current;
     }
+    return refreshWithSnapshot(std::move(*current));
+}
+
+Result<std::vector<MonitorInfo>> MonitorManager::refreshWithSnapshot(
+    std::vector<MonitorInfo> current) {
     // Pure diff over the previous snapshot (simulated topologies are
     // unit-tested via diffMonitorSets directly).
-    const MonitorDiff diff = diffMonitorSets(last_, *current);
+    const MonitorDiff diff = diffMonitorSets(last_, current);
+    // Publish the new snapshot BEFORE dispatching events: the handlers
+    // (WallpaperManager::addHostFor/repositionHost) look their monitor up in
+    // the snapshot the app holds. With the old ordering the events fired
+    // first, so a hot-plugged monitor was invisible to its own add/change
+    // handler — the host was never created and repositions used stale bounds.
+    // (Ordering bug survived since M3; M8's per-monitor routing made it
+    // visible.)
+    last_ = std::move(current);
     for (const auto& id : diff.added) {
         if (onAdded_) {
             onAdded_(id);
@@ -199,8 +212,10 @@ Result<std::vector<MonitorInfo>> MonitorManager::refresh() {
             onChanged_(id);
         }
     }
-    last_ = *current;
-    return current;
+    // COPY (not move): last_ must stay intact for the NEXT diff — moving it
+    // out would make the next refresh see an empty previous set and re-report
+    // every monitor as "added".
+    return last_;
 }
 
 } // namespace vw::monitors

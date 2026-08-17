@@ -74,6 +74,13 @@ public:
     // monitor as "added".
     Result<std::vector<MonitorInfo>> refresh();
 
+    // Diff variant that takes an ALREADY-ENUMERATED snapshot (M8 review): the
+    // caller enumerates once, publishes the snapshot to its own state, THEN
+    // calls this so the diff handlers see the fresh monitor list. Without it
+    // a hot-plugged monitor is invisible to its own onAdded/onChanged handler
+    // (the events fire synchronously, before the caller can publish).
+    Result<std::vector<MonitorInfo>> refreshWithSnapshot(std::vector<MonitorInfo> current);
+
     void setOnAdded(MonitorEvent e) { onAdded_ = std::move(e); }
     void setOnRemoved(MonitorEvent e) { onRemoved_ = std::move(e); }
     void setOnChanged(MonitorEvent e) { onChanged_ = std::move(e); }
@@ -100,6 +107,11 @@ public:
         }
         last_ = std::move(snapshot);
     }
+
+    // Test accessor: the currently published snapshot (what the diff
+    // handlers see during their events — regression test for the M8 review
+    // publish-before-dispatch fix).
+    const std::vector<MonitorInfo>& snapshotForTest() const { return last_; }
 
 private:
     std::vector<MonitorInfo> last_;

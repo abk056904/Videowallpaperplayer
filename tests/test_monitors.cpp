@@ -175,6 +175,39 @@ TEST_CASE("monitors: diff reports move / resize / refresh / primary changes") {
     }
 }
 
+TEST_CASE("monitors: refreshWithSnapshot publishes the snapshot BEFORE events") {
+    // Regression (M8 review): the diff handlers must see the NEW monitor set
+    // inside their own event — a hot-plugged display is invisible to its own
+    // onAdded handler otherwise (WallpaperManager never creates its host).
+    vw::monitors::MonitorManager mgr;
+    size_t monitorsSeenAtLastAdd = 0;
+    mgr.setOnAdded([&](const std::wstring& id) {
+        // The snapshot is already live: the handler can find the added
+        // monitor inside its own event (regression: before the fix, last_
+        // was still the OLD set, so a hot-plugged monitor was invisible).
+        const auto& live = mgr.snapshotForTest();
+        const bool inLast = std::any_of(live.begin(), live.end(),
+                                        [&](const vw::monitors::MonitorInfo& m) {
+                                            return m.id == id;
+                                        });
+        REQUIRE(inLast);
+        monitorsSeenAtLastAdd = live.size();
+    });
+
+    const auto a = makeMonitor({L"\\\\.\\DISPLAY1", 0, 0, 1920, 1080});
+    const auto b = makeMonitor({L"\\\\.\\DISPLAY2", 1920, 0, 3840, 1080});
+    auto first = mgr.refreshWithSnapshot({a});
+    REQUIRE(first.has_value());
+    REQUIRE(first->size() == 1);
+    REQUIRE(monitorsSeenAtLastAdd == 1);
+
+    // Hot-plug b: its onAdded fires while the new snapshot is already live.
+    auto second = mgr.refreshWithSnapshot({a, b});
+    REQUIRE(second.has_value());
+    REQUIRE(second->size() == 2);
+    REQUIRE(monitorsSeenAtLastAdd == 2); // handler saw b present
+}
+
 TEST_CASE("monitors: refresh with a simulated topology fires the right events") {
     vw::monitors::MonitorManager mgr;
     std::vector<std::wstring> added, removed, changed;

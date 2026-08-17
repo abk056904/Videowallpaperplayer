@@ -92,12 +92,22 @@ void WallpaperManager::onDisplayChange() {
     if (!running_) {
         return;
     }
-    auto current = monitorManager_.refresh();
+    // Enumerate FIRST, publish the snapshot to monitors_, THEN fire the diff
+    // (refreshWithSnapshot). The onAdded/onChanged handlers run synchronously
+    // inside refreshWithSnapshot and look their monitor up in monitors_ — a
+    // hot-plugged monitor must already be visible to its own add/change
+    // handler or the host is never created / repositioned with stale bounds
+    // (ordering bug that survived since M3; M8's per-monitor routing made it
+    // visible).
+    auto current = monitors::MonitorManager::enumerateMonitors();
     if (!current) {
         log::Logger::instance().warn(L"monitor refresh failed: {}", current.error());
         return;
     }
     monitors_ = *current;
+    if (auto diffed = monitorManager_.refreshWithSnapshot(std::move(*current)); !diffed) {
+        log::Logger::instance().warn(L"monitor diff failed: {}", diffed.error());
+    }
 }
 
 void WallpaperManager::onTick() {
