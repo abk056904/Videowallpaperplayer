@@ -154,6 +154,9 @@ add_test(NAME vw_tests COMMAND vw_tests)
 add_executable(vw_gfx_harness
     harness/gfx_harness.cpp
     src/logging/Logger.cpp
+    src/monitors/MonitorManager.cpp
+    src/wallpaper/WallpaperHost.cpp
+    src/wallpaper/WallpaperManager.cpp
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
     ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr}

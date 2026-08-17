@@ -124,6 +124,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - **Explorer-restart stub verified end-to-end**: kill explorer → detected within 1 s (log), retried while shell dead, automatic rediscovery + host rebuild (new Progman/WorkerW handles) on Explorer return — no app restart.
 - **Bonus fixes found during M3 integration**: `D3D11DeviceManager::createDevice` failed with E_INVALIDARG for a null adapter (D3D11CreateDevice requires `D3D_DRIVER_TYPE_HARDWARE` with null adapter, not `UNKNOWN`) — the harness always passed an adapter so M2 missed it; `Logger` now flushes per line (buffered writes were invisible to tailing and lost on force-kill).
 - Static test texture (black/white checkerboard, 512×512, 32 px cells) renders behind icons full-screen via the M5-preview textured PS path.
+- **Harness `--wallpaper` mode added**: drives the real WallpaperManager from a script (`--adapter N` per-GPU, `--frames N` clean exit, 1 Hz onTick included); verified on both GPUs, Debug + Release, host at (0,0)-(1920,1080) behind icons.
 
 ---
 

@@ -219,3 +219,9 @@ Progman (top-level)
 | Click-through | host never hit-tested (0/45 grid points) |
 | Explorer kill/restart | detected in ≤1 s, hosts rebuilt automatically |
 | Tests | 54/54 (3 new monitor tests), 2316 assertions, both configs, 0 warnings under /WX |
+
+## Harness `--wallpaper` mode (dev tool, 2026-08-17)
+
+- `vw_gfx_harness --wallpaper [--adapter N] [--frames N]` drives the **real** `WallpaperManager` (discovery, hosts, checkerboard) from a script without the full app: message pump + per-frame `renderAll()` + the same 1 Hz `onTick()` Explorer-restart stub the app runs. `--frames N` exits cleanly (N vsync-blocked presents).
+- `WallpaperManager::start(IDXGIAdapter1*)` now takes an optional adapter (the app passes null/default; the harness passes the chosen one for per-GPU verification) and `renderAll()` is public. The debug layer follows the build like the app (`--no-debug` does not apply in wallpaper mode).
+- Verified: 1 host at (0,0)-(1920,1080), parented to the Progman-child WorkerW, visible, on **both GPUs** (AMD iGPU + NVIDIA RTX 3050) in Debug and Release; 3000-frame runs exit cleanly with no leftover process. (Note: PowerShell P/Invoke probes for nested windows kept failing during these checks — the C++ probe is the verification instrument of record.)

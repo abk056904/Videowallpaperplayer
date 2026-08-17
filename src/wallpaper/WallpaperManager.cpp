@@ -31,7 +31,7 @@ size_t WallpaperManager::hostCount() const {
     return hosts_.size();
 }
 
-Result<void> WallpaperManager::start() {
+Result<void> WallpaperManager::start(IDXGIAdapter1* adapter) {
     if (running_) {
         return {};
     }
@@ -41,7 +41,7 @@ Result<void> WallpaperManager::start() {
 #else
     const bool wantDebug = false;
 #endif
-    auto deviceResult = deviceManager_.createDevice(nullptr, wantDebug);
+    auto deviceResult = deviceManager_.createDevice(adapter, wantDebug);
     if (!deviceResult) {
         return deviceResult;
     }
@@ -192,22 +192,24 @@ Result<void> WallpaperManager::discoverDesktop() {
         layer_.wallpaperLayer = layer_.progman;
     }
 
+    if (layer_.iconLayer) {
+        layer_.description =
+            L"arrangement A: DefView in top-level WorkerW; wallpaper layer = WorkerW below it";
+    } else if (layer_.wallpaperLayer != layer_.progman) {
+        layer_.description =
+            L"arrangement B: DefView inside Progman; wallpaper layer = Progman's child WorkerW";
+    } else {
+        layer_.description = L"no WorkerW — parenting to Progman directly (classic layout)";
+    }
+
     logHierarchy();
     return {};
 }
 
 void WallpaperManager::logHierarchy() const {
     auto& log = log::Logger::instance();
-    std::wstring desc;
-    if (layer_.iconLayer) {
-        desc = L"arrangement A: DefView in top-level WorkerW; wallpaper layer = WorkerW below it";
-    } else if (layer_.wallpaperLayer != layer_.progman) {
-        desc = L"arrangement B: DefView inside Progman; wallpaper layer = Progman's child WorkerW";
-    } else {
-        desc = L"no WorkerW — parenting to Progman directly (classic layout)";
-    }
     log.info(L"desktop hierarchy: Progman=0x{:X}, {}",
-             reinterpret_cast<uintptr_t>(layer_.progman), desc);
+             reinterpret_cast<uintptr_t>(layer_.progman), layer_.description);
     log.debug(L"  iconLayer=0x{:X} wallpaperLayer=0x{:X}",
               reinterpret_cast<uintptr_t>(layer_.iconLayer),
               reinterpret_cast<uintptr_t>(layer_.wallpaperLayer));

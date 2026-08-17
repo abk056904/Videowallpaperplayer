@@ -39,9 +39,11 @@
 #include "graphics/D3D11DeviceManager.h"
 #include "graphics/D3D11Renderer.h"
 #include "graphics/TextureManager.h"
+#include "wallpaper/WallpaperManager.h"
 
 using vw::gfx::D3D11DeviceManager;
 using vw::gfx::D3D11Renderer;
+using vw::wallpaper::WallpaperManager;
 
 namespace {
 
@@ -273,18 +275,21 @@ int wmain(int argc, wchar_t** argv) {
     bool wantDebug = false;
 #endif
     bool listOnly = false;
+    bool wallpaperMode = false;
     UINT adapterIndex = 0;
     uint64_t maxFrames = 0;
     std::wstring videoPath;
     for (int i = 1; i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a == L"--list") listOnly = true;
+        else if (a == L"--wallpaper") wallpaperMode = true;
         else if (a == L"--no-debug") wantDebug = false;
         else if (a == L"--adapter" && i + 1 < argc) adapterIndex = static_cast<UINT>(std::wcstoul(argv[++i], nullptr, 10));
         else if (a == L"--frames" && i + 1 < argc) maxFrames = std::wcstoull(argv[++i], nullptr, 10);
         else if (a == L"--video" && i + 1 < argc) videoPath = argv[++i];
         else fail(L"unknown argument: %s", a.c_str());
     }
+    if (wallpaperMode && listOnly) fail(L"--wallpaper and --list are mutually exclusive");
 
     // M5 preview: Media Foundation must be started before decoding.
     bool mfStarted = false;
@@ -316,6 +321,66 @@ int wmain(int argc, wchar_t** argv) {
 
     if (listOnly) {
         std::printf("gfx_harness: --list done\n");
+        return 0;
+    }
+
+    // M3 wallpaper mode: drive the real WallpaperManager (discovery, hosts,
+    // checkerboard) from a script, without the full app. The debug layer
+    // follows the build (like the app) — --no-debug does not apply here.
+    if (wallpaperMode) {
+        std::printf("gfx_harness: wallpaper mode (adapter %u)\n", adapterIndex);
+        WallpaperManager wallpaper;
+        auto startResult = wallpaper.start(adapter->Get());
+        if (!startResult) {
+            fail(L"wallpaper start failed: %s", startResult.error().c_str());
+        }
+        std::wprintf(L"gfx_harness: wallpaper running: %zu host(s), %zu monitor(s), %s\n",
+                     wallpaper.hostCount(), wallpaper.monitors().size(),
+                     wallpaper.layer().description.c_str());
+        for (const auto& m : wallpaper.monitors()) {
+            std::wprintf(L"  monitor %s: %ux%u @ %u Hz%s\n", m.id.c_str(), m.width, m.height,
+                         m.refreshRateNumerator, m.primary ? L" (primary)" : L"");
+        }
+
+        uint64_t frames = 0;
+        const auto tStart = std::chrono::steady_clock::now();
+        auto lastTick = tStart;
+        bool running = true;
+        MSG msg{};
+        while (running) {
+            // Host windows are on this thread: pump their messages.
+            while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+                if (msg.message == WM_QUIT) running = false;
+            }
+            if (!running) break;
+
+            auto rendered = wallpaper.renderAll();
+            if (!rendered) {
+                std::fwprintf(stderr, L"gfx_harness: wallpaper render failed: %s\n",
+                              rendered.error().c_str());
+                break;
+            }
+            ++frames;
+
+            // Same 1 Hz Explorer-restart validity check the app runs.
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastTick >= std::chrono::seconds(1)) {
+                wallpaper.onTick();
+                lastTick = now;
+            }
+
+            if (maxFrames > 0 && frames >= maxFrames) {
+                std::printf("gfx_harness: wallpaper reached --frames %llu, exiting cleanly\n",
+                            static_cast<unsigned long long>(maxFrames));
+                break;
+            }
+        }
+
+        wallpaper.shutdown();
+        std::printf("gfx_harness: wallpaper done (%llu frames)\n",
+                    static_cast<unsigned long long>(frames));
         return 0;
     }
 

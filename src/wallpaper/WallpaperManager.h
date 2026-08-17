@@ -41,10 +41,16 @@ public:
     // unique_ptr<WallpaperHost> (forward-declared here); MSVC instantiates
     // the vector's element destructor from an inline defaulted ctor/dtor.
 
-    // Creates the device, snapshots monitors, and attempts the initial
-    // build. If Explorer is unavailable the wallpaper appears on the next
-    // onTick() once the shell is back (Explorer-restart stub).
-    Result<void> start();
+    // Creates the device (on the given adapter, nullptr = default), snapshots
+    // monitors, and attempts the initial build. If Explorer is unavailable
+    // the wallpaper appears on the next onTick() once the shell is back
+    // (Explorer-restart stub).
+    Result<void> start(IDXGIAdapter1* adapter = nullptr);
+
+    // Re-renders every host (each present is vsync-blocked). The app calls
+    // this when new frames arrive (M4+); the harness uses it to drive
+    // sustained rendering.
+    Result<void> renderAll();
 
     // Monitor changes (WM_DISPLAYCHANGE / WM_DEVICECHANGE): refresh + sync
     // hosts via the add/remove/change events.
@@ -70,7 +76,6 @@ private:
     Result<void> discoverDesktop();
     Result<void> ensureTestTexture();
     Result<void> createHosts();
-    Result<void> renderAll();
     void teardownHosts();
     void addHostFor(const std::wstring& monitorId);
     void removeHostFor(const std::wstring& monitorId);
