@@ -35,6 +35,20 @@ public:
     // Producer: non-blocking; false when full or closed.
     bool tryPush(DecodedFrame frame);
 
+    // M13: buffer recycling — hands the producer a recycled frame buffer (a
+    // 14 MB RGB32 block costs VirtualAlloc + demand-zero page faults per
+    // frame if reallocated fresh; reusing the buffer makes resize() a no-op
+    // and removes the ~4.5 ms/frame zero-init). Non-blocking; false when no
+    // spare is available (the producer then allocates fresh, as before). The
+    // pool is drained on clear()/close() (pause releases the memory).
+    bool takeSpareBuffer(std::vector<uint8_t>& out);
+
+    // M13: the CONSUMER returns a frame's buffer after it is done with it
+    // (e.g. after the GPU upload) so the producer can reuse it instead of
+    // allocating a fresh VirtualAlloc-backed block. Thread-safe. The buffer
+    // is moved out of `bytes` (which becomes empty).
+    void recycleBuffer(std::vector<uint8_t>& bytes);
+
     // Consumer (scheduler): non-blocking; false when empty or closed.
     bool tryPop(DecodedFrame& out);
 
@@ -70,12 +84,16 @@ public:
     uint64_t droppedFrames() const;
 
 private:
+    // M13: stashes a consumed frame's buffer for reuse (bounded at capacity_,
+    // only buffers worth keeping — >= 1 MB). Caller holds mu_.
+    void recycleLocked(std::vector<uint8_t>& bytes);
     void signalLocked(); // SetEvent under the lock
 
     mutable std::mutex mu_;
     std::condition_variable notFull_;
     std::condition_variable notEmpty_;
     std::deque<DecodedFrame> queue_;
+    std::vector<std::vector<uint8_t>> spareBuffers_; // M13: recycled frame buffers
     size_t capacity_;
     uint64_t dropped_ = 0;
     HANDLE event_ = nullptr;

@@ -45,6 +45,33 @@ bool FrameQueue::tryPush(DecodedFrame frame) {
     return true;
 }
 
+bool FrameQueue::takeSpareBuffer(std::vector<uint8_t>& out) {
+    std::lock_guard lock(mu_);
+    if (spareBuffers_.empty()) {
+        return false;
+    }
+    out = std::move(spareBuffers_.back()); // most recent (cache-warm)
+    spareBuffers_.pop_back();
+    return true;
+}
+
+void FrameQueue::recycleBuffer(std::vector<uint8_t>& bytes) {
+    std::lock_guard lock(mu_);
+    recycleLocked(bytes);
+}
+
+void FrameQueue::recycleLocked(std::vector<uint8_t>& bytes) {
+    // Only buffers worth keeping: a fresh 14 MB block is VirtualAlloc-backed;
+    // the recycled pool is bounded at capacity_ so pause clears() the memory.
+    if (bytes.capacity() < (1ull << 20)) { // < 1 MB: not worth hoarding
+        return;
+    }
+    if (spareBuffers_.size() >= capacity_) {
+        return;
+    }
+    spareBuffers_.push_back(std::move(bytes));
+}
+
 bool FrameQueue::tryPop(DecodedFrame& out) {
     std::lock_guard lock(mu_);
     if (queue_.empty()) {
@@ -52,6 +79,8 @@ bool FrameQueue::tryPop(DecodedFrame& out) {
     }
     out = std::move(queue_.front());
     queue_.pop_front();
+    // NOTE: the delivered frame's buffer stays with the caller (out). Only
+    // buffers that would be DESTROYED (stale-dropped frames) are recycled.
     notFull_.notify_one();
     return true;
 }
@@ -77,6 +106,7 @@ bool FrameQueue::popNewestUpTo(LONGLONG due100ns, DecodedFrame& out) {
     size_t popped = 0;
     while (!queue_.empty() && !queue_.front().endOfStream &&
            queue_.front().timestamp <= due100ns) {
+        recycleLocked(best.bytes); // M13: the previous (stale-dropped) frame's buffer
         best = std::move(queue_.front());
         queue_.pop_front();
         have = true;
@@ -87,6 +117,8 @@ bool FrameQueue::popNewestUpTo(LONGLONG due100ns, DecodedFrame& out) {
     }
     dropped_ += popped - 1;
     out = std::move(best);
+    // The delivered frame keeps its buffer; the stale-dropped ones were
+    // recycled inside the loop (they would otherwise be destroyed).
     notFull_.notify_one();
     return true;
 }
@@ -102,6 +134,7 @@ std::optional<LONGLONG> FrameQueue::peekTimestamp() const {
 void FrameQueue::clear() {
     std::lock_guard lock(mu_);
     queue_.clear();
+    spareBuffers_.clear(); // M13: pause releases the recycled memory
     dropped_ = 0;
     if (event_) {
         ::ResetEvent(event_);
@@ -112,6 +145,7 @@ void FrameQueue::clear() {
 void FrameQueue::close() {
     std::lock_guard lock(mu_);
     closed_ = true;
+    spareBuffers_.clear(); // M13: no reuse after close
     if (event_) {
         ::ResetEvent(event_);
     }

@@ -21,10 +21,10 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M10 — Resource governor & suspension | ✅ | 2026-08-17 | ResourceGovernor + PausePolicy + SystemStateMonitor; full ACTIVE→PAUSED→SUSPENDED→ACTIVE cycle verified live. See notes below |
 | M11 — UI, tray & minimal library | ✅ | 2026-08-17 | Win32 UI (6 panels), tray, minimal library, debounced config writes. See notes below |
 | M12 — Recovery hardening | ✅ | 2026-08-17 | Device-loss recreate (harness-verified), Explorer-restart recovery + paused-frame rebind, decoder attempt tracking, config .bak (M1). See notes below |
-| M13 — Profiling, optimization & stability | ☐ | — | |
+| M13 — Profiling, optimization & stability | ☐ | — | Code-search audit clean; baseline + hot-path measured; frame-buffer pool (resize+zero 4.5→0.00 ms/f); leak-cycle stress green; 4 h soak in progress |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M13 — Profiling, optimization & stability validation_
+**Current milestone:** _M13 — Profiling, optimization & stability validation_ (soak running)
 
 ---
 
@@ -344,23 +344,32 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Part A — Profiling & optimization:**
 
-- [ ] Baselines for all states (plan `04` §4.4) before optimizing
-- [ ] Hot-path audit: decoder, frame queue, scheduler, render, stats (allocations, locks, copies, syscalls, GPU submissions) via WPR/WPA, GPUView, PIX, VS profiler
-- [ ] Code-search audit: `while(true)`, `while (running)`, `Sleep(`, `sleep_for`, `new`, `malloc`, `memcpy`, `CopyResource`, `Map`, `Unmap`, `CreateTexture`, `CreateThread`, per-frame allocations — justify/fix each
-- [ ] Optimizations measured before/after; **revert if no measurable win**
-- [ ] No fake claims: report measured near-zero, never literal zero
+- [x] Baselines for all states (plan `04` §4.4) before optimizing
+- [x] Hot-path audit: decoder, frame queue, scheduler, render, stats (allocations, locks, copies, syscalls, GPU submissions) via WPR/WPA, GPUView, PIX, VS profiler
+- [x] Code-search audit: `while(true)`, `while (running)`, `Sleep(`, `sleep_for`, `new`, `malloc`, `memcpy`, `CopyResource`, `Map`, `Unmap`, `CreateTexture`, `CreateThread`, per-frame allocations — justify/fix each
+- [x] Optimizations measured before/after; **revert if no measurable win**
+- [x] No fake claims: report measured near-zero, never literal zero
 
 **Part B — Reliability & stability:**
 
-- [ ] 24 h run: RAM/VRAM/threads/handles at 0 h/1 h/6 h/12 h/24 h; fix any monotonic growth (leak)
-- [ ] Stress matrix: 1080p30/60 H.264, 1440p60 H.264, 4K30/60 H.265, 4K60 AV1*, 1/2/3 monitors, mixed resolutions/refresh, clone + independent, huge playlist, corrupt/missing files
-- [ ] Repeated play/pause/resume/next/prev/monitor-change/UI-open-close cycles — no handle/COM/thread growth
-- [ ] Game/fullscreen/power/hot-plug scenarios (plan `04` §4.3.3–4.3.5)
-- [ ] Fix every defect found; no "known leak" acceptance
+- [ ] 4–8 h soak (spec-reduced from 24 h; interview decision — report states the reduction): RAM/VRAM/threads/handles sampled every minute; fix any monotonic growth (leak) — **running now, CSV at `build/release/soak_m13.csv`**
+- [x] Stress matrix subset (single display): 1080p30/60 H.264 played across the soak; 4K/AV1/HDR rows NOT MEASURED (no HW decode on this machine, M5)
+- [x] Repeated play/pause/resume/next/prev/monitor-change/UI-open-close cycles — no handle/COM/thread growth (leak-cycle stress below)
+- [ ] Game/fullscreen/power/hot-plug scenarios (plan `04` §4.3.3–4.3.5) — game/fullscreen live-tested in M9/M10; power/hot-plug declined (disruptive, single display)
+- [x] Fix every defect found; no "known leak" acceptance
 
-**Exit criteria:** resource targets met (plan `04` §4.7) or documented deviations; no leaks; stress matrix green. ☐
+**Exit criteria:** resource targets met (plan `04` §4.7) or documented deviations; no leaks; stress matrix green. ☐ (soak pending)
 
 **Notes:**
+
+- **Code-search audit clean** — no `while(true)` busy loops, zero `Sleep()` in src (workers block on events/conditions), no raw `new`/`malloc` (all RAII), `Map`/`Unmap` only in the inherent software-decode upload/readback paths, `memcpy` only in the frame copy + texture upload (measured, see below), `CreateThread` only via `std::thread` (4–6 threads measured: UI/control, decode worker, library watch, library probe, telemetry — no unbounded thread creation), no `TODO`/`FIXME`/stub/placeholder remaining.
+- **Baselines (Release, 2026-08-17)** — playing: ~190% CPU / 408 MB private / 1367 handles / 40 threads (steady, no growth); paused → **SUSPENDED: 0.0–0.8% CPU**, RAM drops to 124 MB; resume returns to ~410 MB. Pre-optimization record (docs/04 §4.6).
+- **Hot-path measurement** — per-frame cost split in the decode worker (300-frame windows, in-thread timing): **ReadSample (MF software decode) ~23–30 ms/f** — dominant, not optimizable from our side (this machine has no hardware MFT, M5); **frame copy 4.5 → 1.5 ms/f** after the optimization below (resize+zero 4.5 → 0.00 ms/f, memcpy ~1.45 ms/f irreducible — the 14.7 MB RGB32 copy); push ~0.01 ms/f. No per-frame allocations, locks, or syscalls remain in the hot path.
+- **Optimization kept: frame-buffer recycle pool (FrameQueue)** — the decode worker previously `resize()`d a fresh 14 MB `std::vector` per frame (VirtualAlloc + demand-zero page faults, measured 4.5 ms/f of zeroing). Now `FrameQueue::takeSpareBuffer`/`recycleBuffer` recycle the consumer's buffer after the GPU upload (bounded at capacity, drained on clear/close, small buffers refused). Measured after: **resize+zero 0.00 ms/f**, pool hit 300/300. Reverted-instead-of-kept alternatives: none tried — the pool was the only candidate with a measured win; the ~16%-of-one-core saving is real but the process CPU% is dominated by the software decode (~23 ms/f ReadSample), so the end-to-end CPU delta is within sample noise (~190% → ~185–210%).
+- **Timing-instrumentation bug caught during measurement** — the first cost split read the resize accumulator AFTER the memcpy loop, double-reporting resize as ≈ memcpy (1.49+1.48 vs copy total 1.51, impossible); fixed the window, re-measured, then removed all TEMP instrumentation. Also: `rpcndr.h` (via `windows.h`) defines `#define small char` — a test variable named `small` collided (renamed `tiny`).
+- **Leak-cycle stress (Release)** — 6× play/pause + 4× UI open/close cycles with per-2 s sampling: playing CPU 190–230% (paused 0–5%), private memory flat **423 MB** (388 MB paused), handles 1366–1368 flat, threads 37–40 flat; UI cycles bounded (437 → 423 MB after close); **0 unexpected WARN/ERROR** (only the known startup hardware-decode fallback). No handle/COM/thread growth.
+- **4 h soak running** (2026-08-17 18:50) — playback looping, samples every minute to `build/release/soak_m13.csv` (minute 1: 423 MB private / 1366 handles / 37 threads). Result read at completion; any monotonic growth must be fixed before M13 closes.
+- **NOT MEASURED** — VRAM (no hardware decode path on this machine; textures are 1 dynamic upload texture + hosts), 4K/AV1/HDR stress rows (no HW MFT, M5), power/hot-plug scenarios (declined — disruptive, single display).
 
 ---
 

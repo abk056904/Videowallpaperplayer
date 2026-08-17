@@ -699,3 +699,30 @@ Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.
 **3 new tests → 169/169**, Debug + Release, 0 warnings. Harness `--device-loss` re-verified (inject → recovered at 146, rendered to 300); app smoke clean.
 
 ---
+
+# M13 Build Notes (2026-08-17)
+
+M13 Part A (profiling + optimization) complete; Part B soak running. Per the interview decision (spec §3/§9), the 24 h soak is reduced to a 4–8 h run + aggressive leak cycles; the M14 report will state the reduction.
+
+## What shipped
+
+- **Frame-buffer recycle pool (`FrameQueue::takeSpareBuffer`/`recycleBuffer`)** — the hot-path optimization with a measured win. The decode worker's per-frame `resize()` of a fresh 14 MB RGB32 `std::vector` costs VirtualAlloc + demand-zero page faults every frame (measured **4.5 ms/f** of zeroing). The consumer now returns the frame's buffer after the GPU upload (`PlaybackController::recycleFrame` → `FrameQueue::recycleBuffer`); the worker takes a spare before copying (`takeSpareBuffer`); stale-dropped frames inside `popNewestUpTo` are recycled too; the pool is bounded at the queue capacity, small (<1 MB) buffers are refused, and `clear()`/`close()` drain it (pause releases the memory).
+
+## Measured (Release, in-thread 300-frame windows)
+
+- **Per-frame cost split (before):** ReadSample ~23–30 ms/f (MF software decode — dominant, not optimizable from our side), frame copy ~4.7 ms/f (resize+zero ~4.5 + memcpy ~1.25), push ~0.01 ms/f.
+- **Per-frame cost split (after the pool):** resize+zero **0.00 ms/f** (pool hit 300/300), memcpy ~1.45 ms/f (irreducible 14.7 MB copy), push ~0.01 ms/f, copy total ~1.5 ms/f.
+- **Baselines (Release, per docs/04 §4.6):** playing ~190% CPU / 408 MB private / 1367 handles / 40 threads (steady, no growth); paused → SUSPENDED 0.0–0.8% CPU, RAM 124 MB; resume back to ~410 MB. After the pool, playing ~185–210% CPU / ~423 MB private — the end-to-end CPU delta is within sample noise because the software decode dominates; the pool's ~16%-of-one-core win is real and measured in-thread.
+- **Leak-cycle stress (Release):** 6× play/pause + 4× UI open/close: private memory flat at 423 MB (388 MB paused), handles 1366–1368, threads 37–40, 0 unexpected WARN/ERROR.
+- **Soak:** 4 h run started 18:50, playback looping, samples every minute to `build/release/soak_m13.csv`; verified alive at minute 1 (423 MB / 1366 handles / 37 threads).
+
+## Findings
+
+- **The first instrumentation was wrong (caught by self-check):** the resize accumulator was read AFTER the memcpy loop, so "resize+zero" included the memcpy (reported 1.49+1.48 vs a 1.51 copy total — impossible). The window was fixed, re-measured (0.00 + 1.46), then all TEMP-M13 instrumentation was removed. Lesson recorded: cost-split accumulators must close their own windows.
+- **`rpcndr.h` (pulled in by `windows.h`) defines `#define small char`** — a unit-test local named `small` compiled to `std::vector<uint8_t> char(...)` (C2628). Renamed `tiny`. (The existing `big` was safe.)
+- **Code-search audit (plan §4.4) clean:** no `while(true)` busy loops; zero `Sleep()` in src (workers block on events/conditions); no raw `new`/`malloc`; `Map`/`Unmap` only in the inherent software-decode upload/readback paths; `memcpy` only in the frame copy + texture upload; threads bounded (~4–6, `std::thread` only); no remaining TODO/FIXME/stub/placeholder.
+- **2 new tests → 171/171** (recycle pool: take/recycle/refuse-small/bounded/clear-drain/close-drain; stale-drop recycles dropped buffers), Debug + Release, 0 warnings under /WX.
+
+**NOT MEASURED (recorded for M14):** VRAM (no hardware decode on this machine; textures are one dynamic upload + hosts), 4K/AV1/HDR stress rows (no HW MFT), power/hot-plug scenarios (declined — disruptive, single display), and the soak result itself (completion ~22:50; CSV at `build/release/soak_m13.csv`).
+
+---

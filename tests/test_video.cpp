@@ -184,6 +184,84 @@ TEST_CASE("FrameQueue close unblocks a blocked push") {
     CHECK_FALSE(q.tryPush(f));
 }
 
+TEST_CASE("FrameQueue M13 buffer recycle pool") {
+    using vw::video::DecodedFrame;
+    using vw::video::FrameQueue;
+    FrameQueue q(2);
+
+    // Pool starts empty: takeSpareBuffer misses.
+    std::vector<uint8_t> spare;
+    CHECK_FALSE(q.takeSpareBuffer(spare));
+
+    // Recycling a large buffer makes it available; small ones are refused
+    // (not worth hoarding).
+    std::vector<uint8_t> big(1 << 21, 0x11); // 2 MB
+    q.recycleBuffer(big);
+    CHECK(big.empty()); // moved out
+    std::vector<uint8_t> tiny(1024, 0x22);
+    q.recycleBuffer(tiny);
+    CHECK(tiny.size() == 1024); // refused: left with the caller
+
+    // The pooled buffer comes back with its allocation intact.
+    std::vector<uint8_t> taken;
+    CHECK(q.takeSpareBuffer(taken));
+    CHECK(taken.capacity() >= (1 << 21));
+    CHECK(taken.size() == (1 << 21)); // size preserved on move
+    // Pool exhausted again.
+    CHECK_FALSE(q.takeSpareBuffer(taken));
+
+    // Pool is bounded at capacity_: recycling more buffers keeps only the
+    // most recent ones.
+    std::vector<uint8_t> a(1 << 21);
+    std::vector<uint8_t> b(1 << 21);
+    std::vector<uint8_t> c(1 << 21);
+    q.recycleBuffer(a);
+    q.recycleBuffer(b);
+    q.recycleBuffer(c);
+    std::vector<uint8_t> out;
+    CHECK(q.takeSpareBuffer(out));
+    CHECK(q.takeSpareBuffer(out));
+    CHECK_FALSE(q.takeSpareBuffer(out)); // bounded at capacity_ = 2
+
+    // clear() drains the pool (pause releases the memory).
+    std::vector<uint8_t> d(1 << 21);
+    q.recycleBuffer(d);
+    q.clear();
+    CHECK_FALSE(q.takeSpareBuffer(out));
+
+    // close() also drains.
+    std::vector<uint8_t> e(1 << 21);
+    q.recycleBuffer(e);
+    q.close();
+    CHECK_FALSE(q.takeSpareBuffer(out));
+}
+
+TEST_CASE("FrameQueue stale-drop recycles dropped buffers (M13)") {
+    using vw::video::DecodedFrame;
+    using vw::video::FrameQueue;
+    FrameQueue q(4);
+
+    // Fill with three due frames; popNewestUpTo keeps the newest and drops
+    // the older two — their buffers are recycled, not destroyed.
+    for (int i = 0; i < 3; ++i) {
+        DecodedFrame f;
+        f.timestamp = i * 1000;
+        f.bytes.resize(1 << 21, static_cast<uint8_t>(i));
+        q.push(std::move(f));
+    }
+    DecodedFrame out;
+    CHECK(q.popNewestUpTo(100000, out)); // all three due
+    CHECK(out.timestamp == 2000);
+    CHECK(q.droppedFrames() == 2);
+
+    // The two dropped buffers (2 MB each) are now in the pool.
+    std::vector<uint8_t> taken;
+    CHECK(q.takeSpareBuffer(taken));
+    CHECK(taken.capacity() >= (1 << 21));
+    CHECK(q.takeSpareBuffer(taken));
+    CHECK_FALSE(q.takeSpareBuffer(taken));
+}
+
 TEST_CASE("FrameQueue producer/consumer hand-off across threads") {
     using vw::video::DecodedFrame;
     using vw::video::FrameQueue;

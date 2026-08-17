@@ -96,6 +96,11 @@ public:
     // Feeds the measured render/present duration (wall clock) into the stats.
     void noteRenderTime(double ms);
 
+    // M13: returns a consumed frame's buffer to the queue's recycle pool so
+    // the decode worker reuses it (no per-frame VirtualAlloc). Call after the
+    // frame's bytes have been uploaded/consumed; moves the buffer out.
+    void recycleFrame(std::vector<uint8_t>& bytes);
+
     const PlaybackStats& stats() const { return stats_; }
 
     // Observer invoked after each per-second stats recompute (~1 Hz while

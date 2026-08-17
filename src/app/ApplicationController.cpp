@@ -671,6 +671,10 @@ void ApplicationController::onFrameWake() {
         !set) {
         log.warn(L"video frame upload failed: {}", set.error());
     }
+    // M13: the frame's bytes are consumed (uploaded to the GPU) — return the
+    // buffer to the queue's recycle pool so the decode worker reuses it
+    // instead of allocating a fresh 14 MB block per frame.
+    playback_->recycleFrame(frame->bytes);
     const LONGLONG renderStart = util::Clock::instance().now100ns();
     if (auto rendered = wallpaper_->renderAll(); !rendered) {
         // M12: while a device-loss recreate is pending/retrying, render fails

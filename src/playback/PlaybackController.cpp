@@ -211,6 +211,12 @@ void PlaybackController::noteRenderTime(double ms) {
     stats_.renderTimeMs = ms;
 }
 
+void PlaybackController::recycleFrame(std::vector<uint8_t>& bytes) {
+    if (player_) {
+        player_->queue()->recycleBuffer(bytes);
+    }
+}
+
 void PlaybackController::armTimer() {
     if (!timer_ || !scheduler_.pacingEnabled()) {
         return; // pacing disabled: presentation is new-frame-event driven
