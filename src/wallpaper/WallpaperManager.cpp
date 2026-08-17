@@ -380,7 +380,8 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
 Result<void> WallpaperManager::bindFrameTexture() {
     bool anyError = false;
     for (auto& host : hosts_) {
-        auto result = host->setVideoTexture(frameTextureSrv_.Get());
+        auto result =
+            host->setVideoTexture(frameTextureSrv_.Get(), frameWidth_, frameHeight_, scaling_);
         if (!result) {
             anyError = true;
             log::Logger::instance().warn(L"bind video texture failed for {}: {}",

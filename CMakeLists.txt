@@ -159,6 +159,7 @@ add_executable(vw_tests
     tests/test_utf8.cpp
     tests/test_graphics.cpp
     tests/test_monitors.cpp
+    tests/test_scale.cpp
     tests/test_video.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp

@@ -61,17 +61,37 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
     auto sampler = TextureManager::createSampler(device, D3D11_FILTER_MIN_MAG_MIP_LINEAR);
     if (!sampler) return std::unexpected(sampler.error());
     sampler_ = *sampler;
+    // Letterbox sampler: linear + black BORDER so Fit/Center margins render
+    // black instead of smearing the video edge (CLAMP would stretch the edge
+    // texel column/row across the bar — see ScaleMath.h).
+    D3D11_SAMPLER_DESC borderDesc{};
+    borderDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    borderDesc.AddressU = borderDesc.AddressV = borderDesc.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+    borderDesc.BorderColor[0] = borderDesc.BorderColor[1] = borderDesc.BorderColor[2] = 0.0f;
+    borderDesc.BorderColor[3] = 1.0f; // opaque black
+    if (FAILED(device->CreateSamplerState(&borderDesc, &borderSampler_))) {
+        return std::unexpected(L"CreateSamplerState (border) failed");
+    }
 
     // The swap chain was just created at this size — build the RTV directly;
     // a same-size ResizeBuffers on a fresh flip-model chain fails (INVALID_CALL).
     return rebuildRtv(device, width, height);
 }
 
-Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv) {
+Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
+                                           UINT videoHeight, Scaling scaling) {
     if (srv && !psTex_) return std::unexpected(L"renderer: textured shader not initialized");
     videoSrv_ = srv;
     ySrv_.Reset();
     uvSrv_.Reset();
+    if (srv) {
+        const ScaleOffset so = computeScaleOffset(width_, height_, videoWidth, videoHeight, scaling);
+        scaleOffset_[0] = so.sx;
+        scaleOffset_[1] = so.sy;
+        scaleOffset_[2] = so.ox;
+        scaleOffset_[3] = so.oy;
+        needsBorder_ = scalingNeedsBorder(scaling);
+    }
     return {};
 }
 
@@ -85,42 +105,14 @@ Result<void> D3D11Renderer::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
         videoSrv_.Reset();
         return {};
     }
-    // Map the fullscreen UV [0,1]^2 onto the texture UV per the scaling mode.
-    // aspect = window/video; the shader applies uv*scale + offset.
-    const float winAspect =
-        height_ > 0 ? static_cast<float>(width_) / static_cast<float>(height_) : 1.0f;
-    const float vidAspect =
-        videoHeight > 0 ? static_cast<float>(videoWidth) / static_cast<float>(videoHeight) : 1.0f;
-    float sx = 1.0f, sy = 1.0f, ox = 0.0f, oy = 0.0f;
-    switch (scaling) {
-        case Scaling::Stretch: // full frame, aspect ignored
-            break;
-        case Scaling::Fit: // contain: fit whole frame, letterbox the rest
-            if (winAspect > vidAspect) { // window wider: width-limited
-                sx = vidAspect / winAspect;
-            } else {
-                sy = winAspect / vidAspect;
-            }
-            break;
-        case Scaling::Center: // 1:1, centered
-            sx = std::min(1.0f, vidAspect / winAspect);
-            sy = std::min(1.0f, winAspect / vidAspect);
-            break;
-        case Scaling::Fill: // cover: fill frame, crop the overflow (default)
-        default:
-            if (winAspect > vidAspect) { // window wider: height-limited
-                sy = winAspect / vidAspect;
-            } else {
-                sx = vidAspect / winAspect;
-            }
-            break;
-    }
-    ox = (1.0f - sx) * 0.5f;
-    oy = (1.0f - sy) * 0.5f;
-    scaleOffset_[0] = sx;
-    scaleOffset_[1] = sy;
-    scaleOffset_[2] = ox;
-    scaleOffset_[3] = oy;
+    // Map the fullscreen UV [0,1]^2 onto the texture UV per the scaling mode
+    // (pure math in ScaleMath.h, unit-tested): texUv = uv*scale + offset.
+    const ScaleOffset so = computeScaleOffset(width_, height_, videoWidth, videoHeight, scaling);
+    scaleOffset_[0] = so.sx;
+    scaleOffset_[1] = so.sy;
+    scaleOffset_[2] = so.ox;
+    scaleOffset_[3] = so.oy;
+    needsBorder_ = scalingNeedsBorder(scaling);
     videoSrv_.Reset();
     return {};
 }
@@ -132,9 +124,10 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
     context->ClearRenderTargetView(rtv_.Get(), clear);
     context->OMSetRenderTargets(1, rtv_.GetAddressOf(), nullptr);
 
-    // Per-frame params: tint + the scaling computed by setVideoPlanes.
+    // Per-frame params: tint + the scaling computed by setVideoTexture/setVideoPlanes
+    // (identity for the placeholder). Both video paths honor the same mapping.
     FrameParams cbParams = params;
-    if (ySrv_) {
+    if (ySrv_ || videoSrv_) {
         cbParams.scaleOffset[0] = scaleOffset_[0];
         cbParams.scaleOffset[1] = scaleOffset_[1];
         cbParams.scaleOffset[2] = scaleOffset_[2];
@@ -168,7 +161,10 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
     context->VSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
     context->PSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
     context->RSSetState(rasterizer_.Get());
-    context->PSSetSamplers(0, 1, sampler_.GetAddressOf());
+    // Fit/Center letterbox margins must sample BLACK (BORDER) rather than
+    // CLAMP (which would smear the video edge across the bar).
+    ID3D11SamplerState* const sampler = needsBorder_ ? borderSampler_.Get() : sampler_.Get();
+    context->PSSetSamplers(0, 1, &sampler);
     context->RSSetViewports(1, &viewport_);
     context->Draw(3, 0);
 

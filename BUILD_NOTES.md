@@ -341,3 +341,42 @@ Follow-up forensics (`probe_dxva.cpp`) walked the full chain — MFT registratio
 | Pause/resume/stop | pause 2983 ms → resume from **same** position → stop clean (registered messages) |
 | Tests | 62/62 cases, 2445 assertions, both configs, 0 warnings under /WX |
 | Debug layer | ON in Debug, OFF in Release (correct) |
+
+---
+
+# M5 review fixes — scaling & YUV color correctness (2026-08-17)
+
+Post-M5 review of the renderer/GPU-frame path (the M5 diff, fresh eyes). The review found the scaling feature was **broken and entirely unexercised**: the software path forced identity mapping, the hardware path's math was wrong, and nothing tested either. The GPU path can't run on this machine, so the fix also wires scaling into the **software** path — making the feature real and live-verifiable here.
+
+## The scaling math was wrong (verified at pixel level, then unit-tested)
+
+The shader maps window UV → texture UV via `texUv = uv * scale + offset`; the CPU computed `scale/offset` per mode in `D3D11Renderer::setVideoPlanes` with **inverted aspect ratios**:
+
+| Mode | Intent | Code before | Verdict |
+|---|---|---|---|
+| Fill (default) | cover: fills the window, crops overflow | `sy = winAspect/vidAspect` (window wider) / `sx = vidAspect/winAspect` (video wider) | **inverted** — the reciprocal of the correct ratio |
+| Fit | contain: whole frame visible, letterboxed | same inversion | **inverted** — cropped instead of letterboxing |
+| Center | 1:1 native pixels | used aspect ratios, not pixel dims | **wrong** — behaved like Fit |
+| Stretch | full frame, aspect ignored | identity | ✓ correct |
+
+E.g. window 1920×1080 + video 640×480: Fill should show the video at 1920×1440 cropping 180 px top/bottom (`sy = 0.75, oy = 0.125`); the code produced `sy = 1.333..` (zoom). Fit should letterbox to 1440×1080 (`sx = 1.333.., ox = -0.166..`); the code produced `sx = 0.75` (crop). **The default mode (Fill) was broken.** The math is now a pure, header-only `ScaleMath.h` (`computeScaleOffset`, no D3D deps) with **7 unit tests** (`tests/test_scale.cpp`, pixel-verified expected values for both orientations of every mode + the zero-size guard).
+
+## Letterbox margins must sample black, not the video edge
+
+With the corrected Fit/Center math, `scale > 1` samples **outside** `[0,1]` in the letterbox margins. The CLAMP sampler smeared the video's edge texel column/row across the bar; the renderer now has a second **BORDER (opaque black) sampler** selected for Fit/Center (`scalingNeedsBorder`). Fill/Stretch never leave `[0,1]` (verified in the tests' math), so they keep CLAMP.
+
+## Software path now honors scaling (was forced identity)
+
+`setVideoTexture` gained `(videoWidth, videoHeight, scaling)` and computes the same UV mapping as the hardware path; `PSMainTexture` applies `uv*scale + offset`. Before, the config's scaling mode silently did nothing on the only path that runs on this machine.
+
+## YUV range: decoders output LIMITED range — the matrix assumed full
+
+H.264/HEVC decode output is **limited range** (luma 16–235, chroma 16–240; `MFVideoNominalRange` defaults to limited when unset). The shader applied the BT.709 matrix directly to `[0,1]`-normalized samples, which would wash out blacks/whites on any machine where the GPU path runs. `PSMainYuv` now rescales **limited → full** before the matrix (`y = (y − 16/255)·(255/219)`, chroma `(uv − 128/255)·(255/224)`); the same constants fit 10-bit P010 (64–940) within 0.02%.
+
+## Verified
+
+- **Tests: 69/69 (7 new), 2493 assertions, Debug + Release, 0 warnings under /WX.**
+- **Live (software path, this machine):** harness `--video … --scaling center|fit` runs clean (90/60 frames); Center on the 2560×1440 clip shows the 1:1 center crop vs Fill — the mapping is real now. App: hardware probe → software fallback → frames flowing, clean stop.
+- Deferred (noted for M13): `bindGpuFrame` creates 2 SRVs per decoded frame — cache per decoder texture when the hardware path is exercised on a working machine.
+
+---

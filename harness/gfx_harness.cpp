@@ -14,7 +14,8 @@
 //     the M5 production path does NV12/P010 on the GPU instead)
 //
 // Usage:
-//   vw_gfx_harness [--list] [--adapter N] [--frames N] [--no-debug] [--video <path>]
+//   vw_gfx_harness [--list] [--adapter N] [--frames N] [--no-debug]
+//                   [--video <path>] [--scaling fill|fit|stretch|center]
 //
 // NOTE: the shipped app bans busy loops; this harness is a dev tool and uses a
 // vsync-blocked render loop so it can be driven from scripts / CI.
@@ -279,6 +280,7 @@ int wmain(int argc, wchar_t** argv) {
     UINT adapterIndex = 0;
     uint64_t maxFrames = 0;
     std::wstring videoPath;
+    D3D11Renderer::Scaling videoScaling = D3D11Renderer::Scaling::Fill; // app default
     for (int i = 1; i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a == L"--list") listOnly = true;
@@ -287,6 +289,14 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--adapter" && i + 1 < argc) adapterIndex = static_cast<UINT>(std::wcstoul(argv[++i], nullptr, 10));
         else if (a == L"--frames" && i + 1 < argc) maxFrames = std::wcstoull(argv[++i], nullptr, 10);
         else if (a == L"--video" && i + 1 < argc) videoPath = argv[++i];
+        else if (a == L"--scaling" && i + 1 < argc) {
+            const std::wstring s = argv[++i];
+            if (s == L"fit") videoScaling = D3D11Renderer::Scaling::Fit;
+            else if (s == L"stretch") videoScaling = D3D11Renderer::Scaling::Stretch;
+            else if (s == L"center") videoScaling = D3D11Renderer::Scaling::Center;
+            else if (s == L"fill") videoScaling = D3D11Renderer::Scaling::Fill;
+            else fail(L"unknown --scaling mode: %s", s.c_str());
+        }
         else fail(L"unknown argument: %s", a.c_str());
     }
     if (wallpaperMode && listOnly) fail(L"--wallpaper and --list are mutually exclusive");
@@ -443,11 +453,12 @@ int wmain(int argc, wchar_t** argv) {
         deviceManager.context()->Unmap(texture->Get(), 0);
         auto srv = vw::gfx::TextureManager::createSrv(deviceManager.device(), texture->Get());
         if (!srv) fail(L"SRV creation failed: %s", srv.error().c_str());
-        auto setResult = renderer.setVideoTexture(srv->Get());
+        auto setResult =
+            renderer.setVideoTexture(srv->Get(), frame.width, frame.height, videoScaling);
         if (!setResult) fail(L"setVideoTexture failed: %s", setResult.error().c_str());
         videoMode = true;
-        std::wprintf(L"gfx_harness: video frame decoded: %ux%u RGB32 -> texture\n", frame.width,
-                     frame.height);
+        std::wprintf(L"gfx_harness: video frame decoded: %ux%u RGB32 -> texture (scaling=%d)\n",
+                     frame.width, frame.height, static_cast<int>(videoScaling));
     }
 
     // 4. Render loop (vsync-blocked; harness-only).

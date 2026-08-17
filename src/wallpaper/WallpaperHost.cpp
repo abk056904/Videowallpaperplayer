@@ -4,6 +4,14 @@
 
 namespace vw::wallpaper {
 
+namespace {
+
+// Matches WallpaperManager's checkerboard (M3 test texture) so the initial
+// bind uses the real size (a square is identity under every scaling mode).
+constexpr UINT kTestTextureSize = 512;
+
+} // namespace
+
 const wchar_t* WallpaperHost::kClassName = L"VideoWallpaper.WallpaperHost";
 
 WallpaperHost::~WallpaperHost() {
@@ -105,9 +113,11 @@ Result<void> WallpaperHost::init(gfx::D3D11DeviceManager* deviceManager, const O
         return initResult;
     }
 
-    // M3: the shared checkerboard test texture; M4+ rebinds per video frame.
+    // M3: the shared checkerboard test texture (512x512, square -> any scaling
+    // mode is identity); M4+ rebinds per video frame with real dimensions.
     if (options.textureSrv) {
-        auto setResult = renderer_.setVideoTexture(options.textureSrv);
+        auto setResult = renderer_.setVideoTexture(options.textureSrv, kTestTextureSize,
+                                                   kTestTextureSize, gfx::D3D11Renderer::Scaling::Fill);
         if (!setResult) {
             ::DestroyWindow(hwnd_);
             hwnd_ = nullptr;
@@ -136,11 +146,13 @@ Result<void> WallpaperHost::render() {
     return result;
 }
 
-Result<void> WallpaperHost::setVideoTexture(ID3D11ShaderResourceView* srv) {
+Result<void> WallpaperHost::setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
+                                           UINT videoHeight,
+                                           gfx::D3D11Renderer::Scaling scaling) {
     if (!deviceManager_ || !hwnd_) {
         return std::unexpected(L"WallpaperHost::setVideoTexture: not initialized");
     }
-    return renderer_.setVideoTexture(srv);
+    return renderer_.setVideoTexture(srv, videoWidth, videoHeight, scaling);
 }
 
 Result<void> WallpaperHost::setVideoPlanes(ID3D11ShaderResourceView* ySrv,

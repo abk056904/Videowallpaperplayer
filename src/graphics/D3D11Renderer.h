@@ -6,6 +6,7 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 
+#include "graphics/ScaleMath.h" // pure scaling math (shared with tests)
 #include "util/Result.h" // (D3D11DeviceManager.h is only needed by the .cpp)
 
 namespace vw::gfx {
@@ -18,7 +19,7 @@ namespace vw::gfx {
 class D3D11Renderer {
 public:
     // Texture-to-window mapping (config.playback.scaling, Fill default).
-    enum class Scaling { Fill, Fit, Stretch, Center };
+    using Scaling = vw::gfx::Scaling;
 
     struct FrameParams {
         float tint[4];      // per-frame color modulation
@@ -31,8 +32,11 @@ public:
     Result<void> init(ID3D11Device* device, IDXGISwapChain1* swapChain, UINT width, UINT height);
 
     // Software path (M4/M5-preview): when set, render() samples this SRV through
-    // the textured pixel shader; null restores the gradient placeholder.
-    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv);
+    // the textured pixel shader; null restores the gradient placeholder. The
+    // video dimensions + scaling mode drive the same UV mapping the hardware
+    // path uses, so Fit/Fill/Center/Stretch apply on both paths.
+    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
+                                 UINT videoHeight, Scaling scaling);
 
     // Hardware path (M5): two plane SRVs over one NV12/P010 decoder texture
     // (Y: R8/R16, UV: R8G8/R16G16) + the video dimensions so the YUV shader
@@ -60,10 +64,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvSrv_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> frameCb_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
-    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_; // linear; used from M5 on
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;      // linear + CLAMP (Fill/Stretch)
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> borderSampler_; // linear + BORDER black (Fit/Center)
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv_;
     D3D11_VIEWPORT viewport_{};
-    float scaleOffset_[4] = {1.0f, 1.0f, 0.0f, 0.0f}; // set by setVideoPlanes
+    float scaleOffset_[4] = {1.0f, 1.0f, 0.0f, 0.0f}; // set by setVideoTexture/setVideoPlanes
+    bool needsBorder_ = false; // Fit/Center: out-of-range UVs must be black bars
     UINT width_ = 0;
     UINT height_ = 0;
 };
