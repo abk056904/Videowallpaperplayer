@@ -578,6 +578,11 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 - **Known limitation (documented)**: GPU-engine utilization counters (`gpuperfcounters.h`) are absent from this SDK — `gpuUsage` stays 0 (never fabricated per R-03); VRAM + hysteresis is the GPU metric. `IDXGIAdapter3`/`QueryVideoMemoryInfo` live in `dxgi1_4.h` (this SDK's shared/ layout is unusual).
 - **M10 handoff**: `WorkloadState.anyHigh()` + `GameDetector::state()` + `FullscreenDetector::isFullscreenState()` are the inputs to the ResourceGovernor's pause/suspend policy.
 
+### M9 review fixes (2026-08-17, before M10)
+
+1. **Stale classification on pid reuse**: `GameDetector`'s cache keyed on pid alone — if a process EXITED and its pid was reused by a different binary, the cached (old) classification was served forever. Added a cheap liveness check (`isAlive` via `OpenProcess` + `GetExitCodeProcess`, injectable for tests) to the cache-hit path: same pid + dead process ⇒ re-lookup. **1 regression test** (simulated exit + reuse serves the new binary, not the stale classification).
+2. **FullscreenDetector was never wired**: `classifyWindowState` was unit-tested but the WinEventHook path only fed `GameDetector` — the app had no fullscreen signal for the governor. `onForegroundChange` now classifies the foreground window (rect + styles vs its monitor, using the wallpaper's monitor snapshot with a `GetMonitorInfo` fallback) into a cached `fullscreenState_`, re-classified on `WM_DISPLAYCHANGE`, and logged (`| window: windowed/maximized/fullscreen/borderless-fullscreen`). Live-verified: notepad → `window: windowed`.
+
 ---
 
 ## UNIVERSAL CROP/SCALE RULE — anamorphic (SAR) correction (2026-08-17, user: "make the crop and scale rule more universal")

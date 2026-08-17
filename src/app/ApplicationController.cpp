@@ -159,6 +159,9 @@ int ApplicationController::run() {
             }
         } else if ((msg == WM_DISPLAYCHANGE || msg == WM_DEVICECHANGE) && wallpaper_) {
             wallpaper_->onDisplayChange();
+            // Monitor bounds changed — a fullscreen window's classification
+            // (rect vs monitor) may be stale. Re-classify the foreground.
+            onForegroundChange(::GetForegroundWindow());
         }
     });
 
@@ -506,6 +509,12 @@ void ApplicationController::onForegroundChange(HWND hwnd) {
         return; // duplicate event — no rescans
     }
     lastForeground_ = hwnd;
+
+    // M9: fullscreen classification (rect + styles vs the window's monitor).
+    // Cached on the controller — M10's ResourceGovernor reads it for the
+    // pause-on-fullscreen policy.
+    fullscreenState_ = classifyForegroundFullscreen(hwnd);
+
     DWORD pid = 0;
     if (hwnd) {
         ::GetWindowThreadProcessId(hwnd, &pid);
@@ -515,12 +524,53 @@ void ApplicationController::onForegroundChange(HWND hwnd) {
         return;
     }
     auto& log = log::Logger::instance();
-    log.debug(L"foreground: pid {} {} ({})", state.pid, state.processPath,
+    log.debug(L"foreground: pid {} {} ({}) | window: {}", state.pid, state.processPath,
               state.classification == detection::GameClass::Game
                   ? L"game [allow]"
                   : (state.classification == detection::GameClass::NotGame
                          ? L"not-game [deny]"
-                         : L"unlisted"));
+                         : L"unlisted"),
+              detection::isFullscreenState(fullscreenState_)
+                  ? (fullscreenState_ == detection::WindowState::Fullscreen ? L"fullscreen"
+                                                                            : L"borderless-fullscreen")
+                  : (fullscreenState_ == detection::WindowState::Maximized ? L"maximized"
+                                                                           : L"windowed"));
+}
+
+detection::WindowState ApplicationController::classifyForegroundFullscreen(HWND hwnd) const {
+    if (!hwnd || !::IsWindow(hwnd)) {
+        return detection::WindowState::Windowed;
+    }
+    RECT winRect{};
+    if (!::GetWindowRect(hwnd, &winRect)) {
+        return detection::WindowState::Windowed;
+    }
+    // The monitor the window sits on (nearmost, matching how the user sees
+    // it). Prefer the app's own monitor snapshot (physical bounds, stable
+    // ids); fall back to a direct GetMonitorInfo probe.
+    RECT monRect{};
+    const HMONITOR mon = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (wallpaper_) {
+        const auto& ms = wallpaper_->monitors();
+        const auto it = std::find_if(ms.begin(), ms.end(),
+                                     [&](const monitors::MonitorInfo& m) { return m.handle == mon; });
+        if (it != ms.end()) {
+            monRect = it->bounds;
+        }
+    }
+    if (monRect.right == monRect.left || monRect.bottom == monRect.top) {
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (::GetMonitorInfoW(mon, &mi) != FALSE) {
+            monRect = mi.rcMonitor;
+        }
+    }
+    if (monRect.right == monRect.left || monRect.bottom == monRect.top) {
+        return detection::WindowState::Windowed; // no monitor info — can't classify
+    }
+    const LONG_PTR style = ::GetWindowLongPtrW(hwnd, GWL_STYLE);
+    const LONG_PTR exStyle = ::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    return detection::classifyWindowState(winRect, monRect, style, exStyle);
 }
 
 void ApplicationController::shutdown() {

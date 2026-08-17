@@ -45,9 +45,12 @@ public:
 
     // Re-evaluates the foreground process (the app reads the pid from the
     // foreground window with GetWindowThreadProcessId). Cheap: the process
-    // path is only looked up when the pid CHANGED (cache). Returns the
-    // current state.
-    GameState updateForeground(DWORD pid, PathLookup lookup = defaultPathLookup);
+    // path is only looked up when the cache key CHANGED — the pid changed OR
+    // the cached process exited (a reused pid must not return stale
+    // classification). Returns the current state.
+    using AliveCheck = std::function<bool(DWORD pid)>;
+    GameState updateForeground(DWORD pid, PathLookup lookup = defaultPathLookup,
+                               AliveCheck alive = isAlive);
 
     const GameState& state() const { return state_; }
 
@@ -63,6 +66,11 @@ public:
     void reset();
 
     static std::optional<std::wstring> defaultPathLookup(DWORD pid);
+
+    // True when `pid` is (still) a live process. Cheap (OpenProcess +
+    // GetExitCodeProcess) — used to invalidate the cache when a process exits
+    // so a REUSED pid does not return stale classification.
+    static bool isAlive(DWORD pid);
 
 private:
     std::vector<std::wstring> alwaysPause_;

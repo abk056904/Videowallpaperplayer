@@ -5,6 +5,7 @@
 
 #include "app/ControlWindow.h"
 #include "config/ConfigurationManager.h"
+#include "detection/FullscreenDetector.h"
 #include "detection/GameDetector.h"
 #include "performance/StatsCollector.h"
 #include "performance/WorkloadMonitor.h"
@@ -46,6 +47,9 @@ private:
     void onFrameWake(); // M6: deadline or new-frame event -> schedule + present
     void onWorkloadTick(); // M9: ~2 s CPU/GPU/RAM sampling + hysteresis
     void onForegroundChange(HWND hwnd); // M9: WinEventHook foreground event
+    // M9: pure fullscreen classification of a window vs its monitor (wired
+    // from onForegroundChange + WM_DISPLAYCHANGE; the governor consumes it).
+    detection::WindowState classifyForegroundFullscreen(HWND hwnd) const;
     void shutdown();
 
     static constexpr UINT_PTR kWallpaperTimerId = 1; // 1 Hz Explorer-restart stub
@@ -59,6 +63,7 @@ private:
     std::unique_ptr<performance::StatsCollector> statsCollector_; // M6→M9 telemetry
     std::unique_ptr<performance::WorkloadMonitor> workloadMonitor_; // M9
     std::unique_ptr<detection::GameDetector> gameDetector_;        // M9
+    detection::WindowState fullscreenState_ = detection::WindowState::Windowed; // M9
     std::unique_ptr<playlist::PlaylistManager> playlist_; // M7
     HWINEVENTHOOK winEventHook_ = nullptr; // M9: EVENT_SYSTEM_FOREGROUND (out-of-context)
     HWND lastForeground_ = nullptr; // M9: change detection cache

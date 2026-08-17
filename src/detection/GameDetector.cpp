@@ -81,12 +81,14 @@ std::optional<std::wstring> GameDetector::defaultPathLookup(DWORD pid) {
     return std::wstring(path, size);
 }
 
-GameState GameDetector::updateForeground(DWORD pid, PathLookup lookup) {
+GameState GameDetector::updateForeground(DWORD pid, PathLookup lookup, AliveCheck alive) {
     state_.pid = pid;
 
-    // Cache hit: same pid as the last classification — keep everything
-    // (process path, classification). No process scan.
-    if (pid != 0 && pid == cachedPid_) {
+    // Cache hit: same pid as the last classification AND the process is still
+    // alive — keep everything (process path, classification), no scan. If the
+    // cached process EXITED, the pid may have been reused by a different
+    // process: re-lookup (liveness is the cheap check that catches the reuse).
+    if (pid != 0 && pid == cachedPid_ && alive && alive(pid)) {
         return state_;
     }
 
@@ -108,6 +110,20 @@ GameState GameDetector::updateForeground(DWORD pid, PathLookup lookup) {
     state_.classification = classify(state_.exeName, alwaysPause_, neverPause_);
     state_.listMatched = state_.classification != GameClass::Unknown;
     return state_;
+}
+
+bool GameDetector::isAlive(DWORD pid) {
+    if (pid == 0) {
+        return false;
+    }
+    HANDLE proc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) {
+        return false;
+    }
+    DWORD code = 0;
+    const bool alive = ::GetExitCodeProcess(proc, &code) != FALSE && code == STILL_ACTIVE;
+    ::CloseHandle(proc);
+    return alive;
 }
 
 void GameDetector::reset() {
