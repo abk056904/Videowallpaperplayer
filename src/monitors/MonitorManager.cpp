@@ -118,11 +118,15 @@ void associateAdapters(std::vector<MonitorInfo>& monitors,
         m.adapterLuid = {};
         const LONG cx = (m.bounds.left + m.bounds.right) / 2;
         const LONG cy = (m.bounds.top + m.bounds.bottom) / 2;
-        for (size_t a = 0; a < adapters.size() && a < outputsByAdapter.size(); ++a) {
+        // FIRST match wins (a later adapter's overlapping output must not
+        // overwrite it — outputs can overlap on virtual/hybrid layouts).
+        bool matched = false;
+        for (size_t a = 0; a < adapters.size() && a < outputsByAdapter.size() && !matched; ++a) {
             for (const auto& o : outputsByAdapter[a]) {
                 if (cx >= o.left && cx < o.right && cy >= o.top && cy < o.bottom) {
                     m.adapterIndex = static_cast<UINT>(a);
                     m.adapterLuid = adapters[a].luid;
+                    matched = true;
                     break;
                 }
             }

@@ -552,6 +552,10 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 - **Live (single display, both modes)**: `wallpaper mode: independent (1 monitor(s), decoder count: 1 — one per display)` and `wallpaper mode: clone (1 monitor(s), decoder count: 1 — decode-once for all displays)` — both play the Eula clip cleanly with telemetry flowing; host window verified 1920×1080 physical.
 - **NOT MEASURED (recorded for M14)**: real connect/disconnect hot-plug, mixed-refresh per-monitor pacing, N-monitor independent fan-out, true multi-GPU decode locality — single-display dev machine; simulated topologies + single-monitor e2e are the substitute. Per-monitor presentation is architecturally per-host vsync-blocked swap chains (each present syncs to its own monitor).
 
+### M8 review fix (2026-08-17, before the SAR change): `associateAdapters` first-match bug
+
+`associateAdapters` broke only the **inner** (output) loop on a match, so a **later adapter's overlapping output could overwrite a correct association** (last-writer-wins). Real on virtual-display / surround layouts where outputs can share desktop coordinates — and invisible to the original tests (they only used non-overlapping outputs). Fixed with a `matched` flag that stops the outer loop at the first match; **1 new regression test** (identical overlapping output rects on two adapters → adapter 0 + its LUID stick) → **123/123 tests**, Debug + Release, 0 warnings under /WX.
+
 ---
 
 ## UNIVERSAL CROP/SCALE RULE — anamorphic (SAR) correction (2026-08-17, user: "make the crop and scale rule more universal")

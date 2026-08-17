@@ -239,6 +239,29 @@ TEST_CASE("monitors: adapter association matches output DesktopCoordinates") {
     CHECK(monitors[1].adapterLuid.LowPart == 20);
 }
 
+TEST_CASE("monitors: adapter association keeps the FIRST match (overlapping outputs)") {
+    // Two adapters whose outputs OVERLAP on the desktop (virtual display /
+    // surround layouts): the monitor center is inside BOTH. The first adapter
+    // must win — a later adapter must not overwrite the association.
+    std::vector<vw::gfx::AdapterInfo> adapters(2);
+    adapters[0].luid = LUID{11, 0};
+    adapters[1].luid = LUID{22, 0};
+    std::vector<std::vector<vw::gfx::OutputInfo>> outputs(2);
+    vw::gfx::OutputInfo o0;
+    o0.left = 0; o0.top = 0; o0.right = 1920; o0.bottom = 1080;
+    outputs[0].push_back(o0);
+    vw::gfx::OutputInfo o1; // same desktop rect, different adapter
+    o1.left = 0; o1.top = 0; o1.right = 1920; o1.bottom = 1080;
+    outputs[1].push_back(o1);
+
+    std::vector<vw::monitors::MonitorInfo> monitors = {
+        makeMonitor({L"\\\\.\\DISPLAY1", 0, 0, 1920, 1080}),
+    };
+    vw::monitors::associateAdapters(monitors, adapters, outputs);
+    CHECK(monitors[0].adapterIndex == 0);       // first match, not overwritten
+    CHECK(monitors[0].adapterLuid.LowPart == 11);
+}
+
 TEST_CASE("monitors: adapter association falls back to adapter 0 when unmatched") {
     // A monitor whose center matches NO output (simulated oddity) defaults to
     // adapter 0 with a zero LUID — never an out-of-range index.
