@@ -22,7 +22,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M11 — UI, tray & minimal library | ✅ | 2026-08-17 | Win32 UI (6 panels), tray, minimal library, debounced config writes. See notes below |
 | M12 — Recovery hardening | ✅ | 2026-08-17 | Device-loss recreate (harness-verified), Explorer-restart recovery + paused-frame rebind, decoder attempt tracking, config .bak (M1). See notes below |
 | M13 — Profiling, optimization & stability | ☐ | — | Code-search audit clean; baseline + hot-path measured; frame-buffer pool (resize+zero 4.5→0.00 ms/f); leak-cycle stress green; 4 h soak in progress |
-| M14 — Packaging, README, final report | ☐ | — | Package builds (1.0 MB zip); version resource fixed (winres.h — string-named vs ID-1); full README + final report + resource audit written |
+| M14 — Packaging, README, final report | ✅ | 2026-08-17 | `package.ps1` → 1.0 MB portable ZIP verified from clean extraction; version resource fixed (winres.h — ID 1) → FileVersion 1.0.0.0; full README + final report (`docs/07`) + resource audit (`docs/08`). Commit `fc28979`. Soak still running (M13 gate) |
 
 **Current milestone:** _M14 — Packaging, README, final report_ (soak still running for M13's gate)
 
