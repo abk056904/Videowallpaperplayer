@@ -321,6 +321,41 @@ Result<void> WallpaperManager::renderAll() {
     return {};
 }
 
+namespace {
+// M8: creates a B8G8R8A8 upload texture + SRV at the given size.
+Result<std::pair<Microsoft::WRL::ComPtr<ID3D11Texture2D>,
+                 Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>>>
+createUploadTexture(ID3D11Device* device, UINT width, UINT height) {
+    auto texture = gfx::TextureManager::createTexture(device, DXGI_FORMAT_B8G8R8A8_UNORM, width,
+                                                      height, true /* dynamic */);
+    if (!texture) {
+        return std::unexpected(texture.error());
+    }
+    auto srv = gfx::TextureManager::createSrv(device, texture->Get());
+    if (!srv) {
+        return std::unexpected(srv.error());
+    }
+    return std::make_pair(std::move(*texture), std::move(*srv));
+}
+
+// M8: copies tightly-packed B8G8R8A8 frame bytes into a dynamic texture.
+Result<void> uploadFrameBytes(ID3D11DeviceContext* context, ID3D11Texture2D* texture,
+                              const video::DecodedFrame& frame) {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        return std::unexpected(L"frame texture Map failed");
+    }
+    const auto* src = frame.bytes.data();
+    const size_t rowBytes = static_cast<size_t>(frame.width) * 4;
+    for (UINT y = 0; y < frame.height; ++y) {
+        auto* dst = static_cast<BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch;
+        std::memcpy(dst, src + static_cast<size_t>(y) * rowBytes, rowBytes);
+    }
+    context->Unmap(texture, 0);
+    return {};
+}
+} // namespace
+
 Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
     if (!running_) {
         return {};
@@ -342,39 +377,65 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
     // (Re)create the upload texture + SRV when the frame size changes (loop
     // across different-resolution clips).
     if (!frameTexture_ || frameWidth_ != frame.width || frameHeight_ != frame.height) {
-        auto texture = gfx::TextureManager::createTexture(
-            deviceManager_.device(), DXGI_FORMAT_B8G8R8A8_UNORM, frame.width, frame.height,
-            true /* dynamic */);
-        if (!texture) {
-            return std::unexpected(texture.error());
+        auto created = createUploadTexture(deviceManager_.device(), frame.width, frame.height);
+        if (!created) {
+            return std::unexpected(created.error());
         }
-        auto srv = gfx::TextureManager::createSrv(deviceManager_.device(), texture->Get());
-        if (!srv) {
-            return std::unexpected(srv.error());
-        }
-        frameTexture_ = std::move(*texture);
-        frameTextureSrv_ = std::move(*srv);
+        frameTexture_ = std::move(created->first);
+        frameTextureSrv_ = std::move(created->second);
         frameWidth_ = frame.width;
         frameHeight_ = frame.height;
         log::Logger::instance().debug(L"video upload texture (re)created: {}x{}", frame.width,
                                       frame.height);
     }
 
-    // Upload tightly-packed B8G8R8A8 (no row padding) into the dynamic texture.
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(deviceManager_.context()->Map(frameTexture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
-                                             &mapped))) {
-        return std::unexpected(L"frame texture Map failed");
+    auto uploaded = uploadFrameBytes(deviceManager_.context(), frameTexture_.Get(), frame);
+    if (!uploaded) {
+        return uploaded;
     }
-    const auto* src = frame.bytes.data();
-    const size_t rowBytes = static_cast<size_t>(frame.width) * 4;
-    for (UINT y = 0; y < frame.height; ++y) {
-        auto* dst = static_cast<BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch;
-        std::memcpy(dst, src + static_cast<size_t>(y) * rowBytes, rowBytes);
-    }
-    deviceManager_.context()->Unmap(frameTexture_.Get(), 0);
-
     return bindFrameTexture();
+}
+
+Result<void> WallpaperManager::setVideoFrameFor(const std::wstring& monitorId,
+                                                const video::DecodedFrame& frame) {
+    if (!running_) {
+        return {};
+    }
+    auto hostIt = std::find_if(hosts_.begin(), hosts_.end(),
+                               [&](const auto& h) { return h->monitorId() == monitorId; });
+    if (hostIt == hosts_.end()) {
+        return {}; // unknown monitor (e.g. unplugged between events) — no-op
+    }
+    // Hardware path (M5): GPU surface — bind planes on THAT host only.
+    if (frame.hardware) {
+        return bindGpuFrameFor(monitorId, frame);
+    }
+    if (frame.endOfStream || frame.bytes.empty()) {
+        return {}; // EOS sentinel: keep the last presented frame
+    }
+    if (frame.width == 0 || frame.height == 0) {
+        return std::unexpected(L"setVideoFrameFor: invalid frame size");
+    }
+
+    // Per-monitor upload texture, recreated on size change.
+    auto& slot = perMonitorFrames_[monitorId];
+    if (!slot.texture || slot.width != frame.width || slot.height != frame.height) {
+        auto created = createUploadTexture(deviceManager_.device(), frame.width, frame.height);
+        if (!created) {
+            return std::unexpected(created.error());
+        }
+        slot.texture = std::move(created->first);
+        slot.srv = std::move(created->second);
+        slot.width = frame.width;
+        slot.height = frame.height;
+        log::Logger::instance().debug(L"per-monitor video texture (re)created: {} ({}x{})",
+                                      monitorId, frame.width, frame.height);
+    }
+    auto uploaded = uploadFrameBytes(deviceManager_.context(), slot.texture.Get(), frame);
+    if (!uploaded) {
+        return uploaded;
+    }
+    return (*hostIt)->setVideoTexture(slot.srv.Get(), slot.width, slot.height, scaling_);
 }
 
 Result<void> WallpaperManager::bindFrameTexture() {
@@ -430,6 +491,47 @@ Result<void> WallpaperManager::bindGpuFrame(const video::DecodedFrame& frame) {
     return bindFramePlanes(ySrv->Get(), uvSrv->Get(), frame.width, frame.height);
 }
 
+Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
+                                               const video::DecodedFrame& frame) {
+    if (!frame.texture) {
+        return std::unexpected(L"bindGpuFrameFor: no texture");
+    }
+    auto hostIt = std::find_if(hosts_.begin(), hosts_.end(),
+                               [&](const auto& h) { return h->monitorId() == monitorId; });
+    if (hostIt == hosts_.end()) {
+        return {}; // unknown monitor — no-op
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    frame.texture->GetDesc(&desc);
+    DXGI_FORMAT yFormat = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT uvFormat = DXGI_FORMAT_UNKNOWN;
+    switch (desc.Format) {
+        case DXGI_FORMAT_NV12:
+            yFormat = DXGI_FORMAT_R8_UNORM;
+            uvFormat = DXGI_FORMAT_R8G8_UNORM;
+            break;
+        case DXGI_FORMAT_P010:
+            yFormat = DXGI_FORMAT_R16_UNORM;
+            uvFormat = DXGI_FORMAT_R16G16_UNORM;
+            break;
+        default:
+            return std::unexpected(L"bindGpuFrameFor: unsupported surface format " +
+                                   std::to_wstring(static_cast<int>(desc.Format)));
+    }
+    auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                    yFormat);
+    if (!ySrv) {
+        return std::unexpected(ySrv.error());
+    }
+    auto uvSrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                     uvFormat);
+    if (!uvSrv) {
+        return std::unexpected(uvSrv.error());
+    }
+    return (*hostIt)->setVideoPlanes(ySrv->Get(), uvSrv->Get(), frame.width, frame.height,
+                                     scaling_);
+}
+
 Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,
                                                ID3D11ShaderResourceView* uvSrv,
                                                UINT videoWidth, UINT videoHeight) {
@@ -453,6 +555,7 @@ void WallpaperManager::teardownHosts() {
         host->destroy();
     }
     hosts_.clear();
+    perMonitorFrames_.clear(); // M8: independent-path textures die with hosts
 }
 
 // ---- monitor event handlers -----------------------------------------------
@@ -490,6 +593,9 @@ void WallpaperManager::removeHostFor(const std::wstring& monitorId) {
         (*it)->destroy();
         hosts_.erase(it);
     }
+    // M8: drop the per-monitor upload texture on disconnect (no leak — the
+    // host's swap chain + textures are released with it).
+    perMonitorFrames_.erase(monitorId);
 }
 
 void WallpaperManager::repositionHost(const std::wstring& monitorId) {

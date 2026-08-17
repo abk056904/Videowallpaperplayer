@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,8 +61,17 @@ public:
     // Uploads one decoded frame (tightly-packed B8G8R8A8) to a persistent
     // texture and rebinds it on every host (M4 software path; M5 swaps to GPU
     // surfaces). EOS/empty frames keep the last presented frame. Recreates the
-    // texture if the frame size changes (loop across resolutions).
+    // texture if the frame size changes (loop across resolutions). This is the
+    // CLONE path: one decoded stream presented on every monitor.
     Result<void> setVideoFrame(const video::DecodedFrame& frame);
+
+    // M8 INDEPENDENT path: uploads the frame to a per-monitor texture and
+    // rebinds it on THAT host only, so each display can run its own video
+    // (N decoders for N distinct videos; shared device/factory/shaders —
+    // docs/03 §3.10). No-op for an unknown monitor id. EOS/empty frames keep
+    // the last presented frame.
+    Result<void> setVideoFrameFor(const std::wstring& monitorId,
+                                  const video::DecodedFrame& frame);
 
     // Monitor changes (WM_DISPLAYCHANGE / WM_DEVICECHANGE): refresh + sync
     // hosts via the add/remove/change events.
@@ -96,6 +106,9 @@ private:
     Result<void> createHosts();
     Result<void> bindFrameTexture();
     Result<void> bindGpuFrame(const video::DecodedFrame& frame);
+    // M8: hardware-frame bind on ONE host (Independent mode).
+    Result<void> bindGpuFrameFor(const std::wstring& monitorId,
+                                 const video::DecodedFrame& frame);
     Result<void> bindFramePlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
                                  UINT videoWidth, UINT videoHeight);
     void teardownHosts();
@@ -114,6 +127,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frameTextureSrv_;
     UINT frameWidth_ = 0;
     UINT frameHeight_ = 0;
+    // M8: per-monitor upload textures for the INDEPENDENT path (each display
+    // runs its own video). Keyed by stable monitor id.
+    struct PerMonitorFrame {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        UINT width = 0;
+        UINT height = 0;
+    };
+    std::map<std::wstring, PerMonitorFrame> perMonitorFrames_;
     gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;
     DesktopLayer layer_;
     bool running_ = false;

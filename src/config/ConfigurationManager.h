@@ -13,6 +13,11 @@ enum class PlaybackMode { Single, Sequential, Loop, Shuffle };
 enum class ScalingMode { Fill, Fit, Stretch, Center };
 enum class BatteryMode { Continue, ReduceQuality, Pause };
 enum class PerfMode { Performance, Balanced, Quality, UltraLowResource };
+// M8: how the playlist maps onto monitors. Clone = one decoder + one timeline
+// presented on every display; Independent = one decoder per display (only for
+// N distinct videos; shared device/factory/shaders). Default = Independent
+// (spec §125). On this single-display machine both reduce to one session.
+enum class WallpaperMode { Independent, Clone };
 
 // Validated runtime configuration (docs/02 §2.9 schema, v1 subset).
 struct Config {
@@ -27,6 +32,8 @@ struct Config {
     int frameQueue = 3;
     bool audio = false;
     std::wstring videoPath; // M4: single clip to play (empty = none, wallpaper shows checkerboard)
+    // wallpaper (M8)
+    WallpaperMode wallpaperMode = WallpaperMode::Independent;
     // performance
     bool pauseOnGame = true;
     bool pauseOnFullscreen = true;

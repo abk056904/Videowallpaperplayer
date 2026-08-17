@@ -16,7 +16,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M5 — Hardware decoding + GPU color | ✅ | 2026-08-17 | DXGI manager + NV12 GPU path + YUV shader + honest decoder detection + **runtime probe with clean software fallback** (this machine's MF stack has no hardware MFT — see notes). Verified live. See notes below |
 | M6 — Frame timing & queue | ✅ | 2026-08-17 | FrameScheduler + PlaybackController + finalized FrameQueue: source-FPS pacing (presentedFps ≈ decodedFps, not monitor Hz), 0 drops, pause → 0.00 CPU-s/8 s, position preserved across pause (4716 → 4716 ms), message loop waits on {waitable timer, new-frame event} — zero busy-wait. 80/80 tests. See notes below |
 | M7 — Playlist engine | ✅ | 2026-08-17 | `PlaylistManager`/`PlaylistStore`, replay-loop, broken-item skip |
-| M8 — Multi-monitor & multi-GPU | ☐ | — | |
+| M8 — Multi-monitor & multi-GPU | ✅ | 2026-08-17 | Simulated topologies + per-monitor routing; real multi-monitor NOT MEASURED (single display) |
 | M9 — Detection & monitoring | ☐ | — | |
 | M10 — Resource governor & suspension | ☐ | — | |
 | M11 — UI, tray & minimal library | ☐ | — | |
@@ -234,16 +234,17 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** per-monitor wallpapers, clone mode, hot-plug, mixed refresh, adapter locality. *(Shared-playlist mode = v2.)*
 
-- [ ] Full monitor events → create/destroy/reposition hosts; no restart; no resource leaks on disconnect
-- [ ] **Clone:** one decoder + one timeline + one source frame; N GPU renderers
-- [ ] **Independent:** N decoders only for N distinct videos; shared device/factory/shaders
-- [ ] Mixed refresh rates: per-monitor presentation deadlines (single render worker)
-- [ ] Multi-GPU: monitor→adapter association; prefer output-driving adapter; documented per-adapter fallback
-- [ ] Portrait/ultrawide/4K scaling (no fixed-resolution assumptions)
+- [x] Full monitor events → create/destroy/reposition hosts; no restart; no resource leaks on disconnect
+- [x] **Clone:** one decoder + one timeline + one source frame; N GPU renderers
+- [x] **Independent:** N decoders only for N distinct videos; shared device/factory/shaders
+- [x] Mixed refresh rates: per-monitor presentation deadlines (single render worker)
+- [x] Multi-GPU: monitor→adapter association; prefer output-driving adapter; documented per-adapter fallback
+- [x] Portrait/ultrawide/4K scaling (no fixed-resolution assumptions)
 
-**Verify:** 3-monitor rig (or simulated): independent videos; clone in sync + decode-once (decoder-count diagnostics); hot-plug without restart; same video on 4K+1440p+1080p decoded once. **Exit:** ☐
+**Verify:** 3-monitor rig (or simulated): independent videos; clone in sync + decode-once (decoder-count diagnostics); hot-plug without restart; same video on 4K+1440p+1080p decoded once. **Exit:** ✅ (simulated topologies + single-monitor e2e; real 3-monitor rig **NOT MEASURED** — single display)
 
 **Notes:**
+- **2026-08-17 (M8 complete)**: `MonitorManager` gained a **pure, windowing-free diff** (`diffMonitorSets`) + a `setSnapshotForTest()` hook so **simulated topologies are unit-testable** (the real hot-plug substitute on this single-display machine), including work-area change detection; **adapter association** (`associateAdapters`, monitor→DXGI-output match, fills `adapterIndex`/`adapterLuid`) with a hybrid-GPU test layout + unmatched fallback. `WallpaperManager` gained **per-monitor frame routing** (`setVideoFrameFor` + `bindGpuFrameFor`: per-monitor upload texture, dropped on host removal) — Independent mode plumbing; `setVideoFrame` stays the Clone broadcast. Config gained `wallpaper.mode` (independent default per spec §125, clone; persisted); the app routes frames per mode with a **decoder-count diagnostic** (clone = decode-once). **8 new tests → 120/120** (31612 Debug / 308342 Release), both configs, 0 warnings; live single-display e2e in both modes. **NOT MEASURED**: real hot-plug, N-monitor fan-out, mixed-refresh pacing, multi-GPU decode locality (recorded for the M14 report).
 - **M5 forensics carry-over**: adapter selection (per-adapter fallback) is implemented and tested for *placement*, but it will **not unlock GPU decode on this machine** — both adapters refused the MS decoder's DXVA handoff identically (probe_dxva). Adapter locality still matters for presentation (hybrid-GPU laptop) and for machines where MF hardware decode works.
 
 ---

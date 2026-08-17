@@ -92,6 +92,7 @@ TEST_CASE("config: values clamped and unknown keys ignored") {
         const std::wstring json =
             L"{ \"general\": { \"startWithWindows\": true },"
             L"  \"playback\": { \"frameQueue\": 9999, \"mode\": \"garbage\", \"scaling\": \"fit\" },"
+            L"  \"wallpaper\": { \"mode\": \"clone\" },"
             L"  \"performance\": { \"cpuPauseThreshold\": -5, \"gpuPauseThreshold\": 150 },"
             L"  \"unknownSection\": { \"junk\": 1 } }";
         const std::string utf8 = vw::util::wideToUtf8(json);
@@ -104,8 +105,35 @@ TEST_CASE("config: values clamped and unknown keys ignored") {
     CHECK(mgr.config().frameQueue == 16);        // clamped to max
     CHECK(mgr.config().mode == vw::config::PlaybackMode::Loop); // unknown -> default
     CHECK(mgr.config().scaling == vw::config::ScalingMode::Fit);
+    CHECK(mgr.config().wallpaperMode == vw::config::WallpaperMode::Clone);
     CHECK(mgr.config().cpuPauseThreshold == 1);  // clamped to min
     CHECK(mgr.config().gpuPauseThreshold == 99); // clamped to max
+}
+
+TEST_CASE("config: wallpaper mode defaults to independent and round-trips") {
+    const auto dir = uniqueTempDir();
+    const auto path = dir / L"config.json";
+    ConfigurationManager mgr(ConfigurationManager::Options{path});
+    REQUIRE(mgr.load()); // no file -> defaults
+    CHECK(mgr.config().wallpaperMode == vw::config::WallpaperMode::Independent);
+
+    // Clone round-trips through save/load.
+    mgr.config().wallpaperMode = vw::config::WallpaperMode::Clone;
+    REQUIRE(mgr.save());
+    ConfigurationManager again(ConfigurationManager::Options{path});
+    REQUIRE(again.load());
+    CHECK(again.config().wallpaperMode == vw::config::WallpaperMode::Clone);
+
+    // Unknown mode name -> independent (default).
+    {
+        const std::wstring json = L"{ \"wallpaper\": { \"mode\": \"garbage\" } }";
+        const std::string utf8 = vw::util::wideToUtf8(json);
+        std::ofstream out(path, std::ios::binary);
+        out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    }
+    ConfigurationManager mgr2(ConfigurationManager::Options{path});
+    REQUIRE(mgr2.load());
+    CHECK(mgr2.config().wallpaperMode == vw::config::WallpaperMode::Independent);
 }
 
 TEST_CASE("config: wrong types fall back to defaults") {

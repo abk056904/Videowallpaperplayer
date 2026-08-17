@@ -56,6 +56,19 @@ BatteryMode batteryFrom(const std::wstring& s) {
     return BatteryMode::Pause;
 }
 
+WallpaperMode wallpaperModeFrom(const std::wstring& s) {
+    if (s == L"clone") return WallpaperMode::Clone;
+    return WallpaperMode::Independent; // "independent" (and anything unknown)
+}
+
+std::wstring wallpaperModeName(WallpaperMode m) {
+    switch (m) {
+        case WallpaperMode::Clone: return L"clone";
+        case WallpaperMode::Independent: return L"independent";
+    }
+    return L"independent";
+}
+
 PerfMode perfFrom(const std::wstring& s) {
     if (s == L"performance") return PerfMode::Performance;
     if (s == L"quality") return PerfMode::Quality;
@@ -112,6 +125,7 @@ void ConfigurationManager::applyDefaults() {
 void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
     const auto& general = root.get(L"general");
     const auto& playback = root.get(L"playback");
+    const auto& wallpaper = root.get(L"wallpaper");
     const auto& perf = root.get(L"performance");
     const auto& battery = root.get(L"battery");
     const auto& detection = root.get(L"detection");
@@ -129,6 +143,10 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
     if (modeStr.isString()) cfg.mode = playbackModeFrom(modeStr.asString());
     const auto& scaleStr = playback.get(L"scaling");
     if (scaleStr.isString()) cfg.scaling = scalingFrom(scaleStr.asString());
+
+    // M8: wallpaper mode (clone/independent).
+    const auto& wmStr = wallpaper.get(L"mode");
+    if (wmStr.isString()) cfg.wallpaperMode = wallpaperModeFrom(wmStr.asString());
 
     readBool(perf, L"pauseOnGame", cfg.pauseOnGame, [&](bool v) { cfg.pauseOnGame = v; });
     readBool(perf, L"pauseOnFullscreen", cfg.pauseOnFullscreen, [&](bool v) { cfg.pauseOnFullscreen = v; });
@@ -216,6 +234,9 @@ bool ConfigurationManager::save() const {
         {L"audio", util::Json::boolean(config_.audio)},
         {L"videoPath", util::Json::string(config_.videoPath)},
     };
+    util::Json::Object wallpaper{
+        {L"mode", util::Json::string(wallpaperModeName(config_.wallpaperMode))},
+    };
     util::Json::Object perf{
         {L"pauseOnGame", util::Json::boolean(config_.pauseOnGame)},
         {L"pauseOnFullscreen", util::Json::boolean(config_.pauseOnFullscreen)},
@@ -245,6 +266,7 @@ bool ConfigurationManager::save() const {
     util::Json::Object root{
         {L"general", util::Json::object(std::move(general))},
         {L"playback", util::Json::object(std::move(playback))},
+        {L"wallpaper", util::Json::object(std::move(wallpaper))},
         {L"performance", util::Json::object(std::move(perf))},
         {L"battery", util::Json::object({{L"mode", util::Json::string(batteryName(config_.batteryMode))}})},
         {L"detection", util::Json::object(std::move(detection))},

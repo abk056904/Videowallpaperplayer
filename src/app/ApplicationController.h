@@ -40,6 +40,7 @@ private:
     // the item unavailable and returns false when it cannot be played.
     bool startPlaylistItem(size_t index);
     void handleEndOfStream(); // M7: advance per playlist mode (loop/next/stop)
+    std::wstring primaryMonitorId() const; // M8: independent-mode session target
     void onFrameWake(); // M6: deadline or new-frame event -> schedule + present
     void shutdown();
 

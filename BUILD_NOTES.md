@@ -533,6 +533,27 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ---
 
+## M8 — Multi-monitor & multi-GPU (single-display scope)
+
+**Committed as `????????`** — per spec §6/§82/§125: real multi-monitor/hot-plug is **NOT MEASURED on this machine** (one display); the substitute is simulated-topology unit tests + single-monitor e2e. Multi-GPU adapter association is implemented + unit-tested; presentation locality is per-host vsync-blocked swap chains.
+
+## What shipped
+
+- **`MonitorManager`** (docs/03 §3.10):
+  - **Pure diff extracted**: `diffMonitorSets(prev, current)` — a windowing-free helper that computes added/removed/changed keyed by stable id, so **simulated topologies are unit-testable** (the real hot-plug substitute). `refresh()` and a new `setSnapshotForTest()` test hook both use it. The diff now also detects **work-area changes** (taskbar moved) in addition to move/resize/refresh/primary.
+  - **Adapter association**: `associateAdapters()` matches each monitor's bounds center to a DXGI output's `DesktopCoordinates` and fills `adapterIndex`/`adapterLuid` (multi-GPU locality). Pure over supplied adapter/output lists — unit-tested with a hybrid-GPU layout (integrated drives DISPLAY1, discrete drives DISPLAY2) and an unmatched-monitor fallback (adapter 0, zero LUID). `AdapterInfo` now carries the DXGI `luid`.
+- **`WallpaperManager` per-monitor routing** (Independent mode): new `setVideoFrameFor(monitorId, frame)` uploads into a **per-monitor texture** and rebinds that host only (plus `bindGpuFrameFor` for hardware surfaces); `setVideoFrame` remains the Clone broadcast. Per-monitor textures are dropped on host removal/teardown (no leaks). Upload code factored into shared helpers.
+- **Config**: `wallpaper.mode` = `independent` (default, spec §125) | `clone`; persisted under the `wallpaper` JSON section; unknown names fall back to independent.
+- **App session layer**: `onFrameWake` routes frames per mode — Clone broadcasts to all hosts, Independent targets the primary monitor's host (`primaryMonitorId()`). Startup logs the mode + decoder-count diagnostic (Clone = decode-once for all displays; Independent = one per display).
+
+## Verified
+
+- **8 new unit tests** (6 monitor simulated topologies: empty diff, add/remove by id, move/resize/refresh/primary/work-area change, HMONITOR-not-a-change, refresh event sequences, adapter association happy + fallback; 1 config default/round-trip/unknown; 1 config clone clamp) → **120/120 tests** (31612 Debug / 308342 Release assertions), both configs, 0 warnings under /WX.
+- **Live (single display, both modes)**: `wallpaper mode: independent (1 monitor(s), decoder count: 1 — one per display)` and `wallpaper mode: clone (1 monitor(s), decoder count: 1 — decode-once for all displays)` — both play the Eula clip cleanly with telemetry flowing; host window verified 1920×1080 physical.
+- **NOT MEASURED (recorded for M14)**: real connect/disconnect hot-plug, mixed-refresh per-monitor pacing, N-monitor independent fan-out, true multi-GPU decode locality — single-display dev machine; simulated topologies + single-monitor e2e are the substitute. Per-monitor presentation is architecturally per-host vsync-blocked swap chains (each present syncs to its own monitor).
+
+---
+
 ## Toolchain note (cost this investigation real time)
 
 Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.

@@ -35,6 +35,7 @@ Result<std::vector<AdapterInfo>> D3D11DeviceManager::enumerateAdapters() {
         info.device = desc.DeviceId;
         info.dedicatedVram = desc.DedicatedVideoMemory;
         info.sharedSystem = desc.SharedSystemMemory;
+        info.luid = desc.AdapterLuid; // M8
         out.push_back(std::move(info));
     }
     if (out.empty()) {

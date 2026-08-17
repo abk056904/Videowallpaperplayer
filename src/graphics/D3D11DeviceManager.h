@@ -18,6 +18,7 @@ struct AdapterInfo {
     UINT device = 0;
     uint64_t dedicatedVram = 0;
     uint64_t sharedSystem = 0;
+    LUID luid{}; // M8: stable adapter identity (monitor->adapter association)
 };
 
 struct OutputInfo {

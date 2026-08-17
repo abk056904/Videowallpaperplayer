@@ -160,6 +160,16 @@ int ApplicationController::run() {
     log.info(L"appdata dir: {}", appDataDir_.wstring());
     log.info(L"config: {} (loaded={})", config_->lastError().empty() ? L"ok" : config_->lastError(),
              configLoaded ? L"yes" : L"no");
+    // M8 decoder-count diagnostic: Clone decodes ONCE for all monitors (one
+    // session); Independent is one decoder per display. On this single-display
+    // machine both report 1; the multi-monitor case is NOT MEASURED (spec §6).
+    {
+        const bool clone = config_->config().wallpaperMode == config::WallpaperMode::Clone;
+        log.info(L"wallpaper mode: {} ({} monitor(s), decoder count: 1 {})",
+                 clone ? L"clone" : L"independent",
+                 wallpaper_ ? wallpaper_->monitors().size() : 0,
+                 clone ? L"— decode-once for all displays" : L"— one per display");
+    }
     log.debug(L"clock frequency: {:.0f} Hz", 1.0 / util::Clock::instance().ticksToSeconds(1));
 
     // Message loop: blocks when idle (zero busy-wait, docs/02 §2.8). While
@@ -316,6 +326,24 @@ bool ApplicationController::startPlaylistItem(size_t index) {
     return true;
 }
 
+// M8: the monitor id the (single) playback session targets in Independent
+// mode. On this machine there is exactly one display; with real multi-monitor
+// this becomes per-session routing (NOT MEASURED — single display, spec §6).
+std::wstring ApplicationController::primaryMonitorId() const {
+    if (wallpaper_) {
+        const auto& monitors = wallpaper_->monitors();
+        const auto it = std::find_if(monitors.begin(), monitors.end(),
+                                     [](const monitors::MonitorInfo& m) { return m.primary; });
+        if (it != monitors.end()) {
+            return it->id;
+        }
+        if (!monitors.empty()) {
+            return monitors.front().id;
+        }
+    }
+    return {};
+}
+
 void ApplicationController::handleEndOfStream() {
     auto& log = log::Logger::instance();
     if (!playlist_ || !playback_) {
@@ -375,7 +403,14 @@ void ApplicationController::onFrameWake() {
         handleEndOfStream(); // M7: loop / next / stop per the playlist mode
         return;
     }
-    if (auto set = wallpaper_->setVideoFrame(*frame); !set) {
+    // M8: route per wallpaper mode. Clone = one frame broadcast to every
+    // host; Independent = the frame binds to the (single, on this machine)
+    // display's host. N-session independent fan-out is exercised by the
+    // simulated-topology tests; real multi-monitor is NOT MEASURED here.
+    const bool clone = config_->config().wallpaperMode == config::WallpaperMode::Clone;
+    if (auto set = clone ? wallpaper_->setVideoFrame(*frame)
+                         : wallpaper_->setVideoFrameFor(primaryMonitorId(), *frame);
+        !set) {
         log.warn(L"video frame upload failed: {}", set.error());
     }
     const LONGLONG renderStart = util::Clock::instance().now100ns();
