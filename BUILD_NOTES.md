@@ -642,7 +642,7 @@ Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.
 
 ## M11 — UI, tray & minimal library
 
-**Committed as ``** — per docs/03 §3.13 / spec §10 (the spec's full UI panel specs, `UiContract`, control→command mapping, and tray integration).
+**Committed as `ab119d6`** — per docs/03 §3.13 / spec §10 (the spec's full UI panel specs, `UiContract`, control→command mapping, and tray integration).
 
 ## What shipped
 
