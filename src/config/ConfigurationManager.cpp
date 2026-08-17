@@ -1,8 +1,10 @@
 #include "config/ConfigurationManager.h"
 
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <string>
 
 #include "logging/Logger.h"
 #include "util/utf8.h"
@@ -133,6 +135,13 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
 
     readBool(general, L"startWithWindows", cfg.startWithWindows, [&](bool v) { cfg.startWithWindows = v; });
     readBool(general, L"minimizeToTray", cfg.minimizeToTray, [&](bool v) { cfg.minimizeToTray = v; });
+    const auto& logLevelStr = general.get(L"logLevel");
+    if (logLevelStr.isString()) {
+        const auto s = logLevelStr.asString();
+        if (s == L"debug" || s == L"info" || s == L"warn" || s == L"error") {
+            cfg.logLevel = s;
+        }
+    }
 
     readBool(playback, L"shuffle", cfg.shuffle, [&](bool v) { cfg.shuffle = v; });
     readBool(playback, L"loop", cfg.loop, [&](bool v) { cfg.loop = v; });
@@ -224,10 +233,13 @@ bool ConfigurationManager::load() {
     return true;
 }
 
-bool ConfigurationManager::save() const {
+bool ConfigurationManager::save() {
+    dirty_ = false; // a successful (or attempted) flush clears the flag; a
+                    // failed write keeps the error in lastError_ for logging
     util::Json::Object general{
         {L"startWithWindows", util::Json::boolean(config_.startWithWindows)},
         {L"minimizeToTray", util::Json::boolean(config_.minimizeToTray)},
+        {L"logLevel", util::Json::string(config_.logLevel)},
     };
     util::Json::Object playback{
         {L"mode", util::Json::string(playbackModeName(config_.mode))},
@@ -288,6 +300,7 @@ bool ConfigurationManager::save() const {
         std::ofstream out(tmp, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!out) {
             lastError_ = L"cannot write config";
+            dirty_ = true; // the change is still unsaved — retry next flush
             return false;
         }
         const std::string utf8 = util::wideToUtf8(text);
@@ -296,9 +309,27 @@ bool ConfigurationManager::save() const {
     std::filesystem::rename(tmp, opts_.configPath, ec);
     if (ec) {
         lastError_ = L"cannot rename config into place";
+        dirty_ = true; // the change is still unsaved — retry next flush
         return false;
     }
     return true;
+}
+
+void ConfigurationManager::markDirty(std::chrono::steady_clock::time_point now) {
+    dirty_ = true;
+    lastChange_ = now; // the LAST change anchors the debounce window
+}
+
+void ConfigurationManager::maybeFlushDirty(std::chrono::steady_clock::time_point now) {
+    if (!dirty_) {
+        return;
+    }
+    if (now - lastChange_ < kSaveDebounce) {
+        return; // debounce: wait 1.5 s after the LAST change
+    }
+    if (!save()) {
+        log::Logger::instance().warn(L"config debounced save failed: {}", lastError_);
+    }
 }
 
 void ConfigurationManager::validateThresholdPairs(Config& cfg) {
@@ -314,6 +345,121 @@ void ConfigurationManager::validateThresholdPairs(Config& cfg) {
     clampPair(cfg.cpuPauseThreshold, cfg.cpuResumeThreshold, L"cpu");
     clampPair(cfg.gpuPauseThreshold, cfg.gpuResumeThreshold, L"gpu");
     clampPair(cfg.memoryPauseThreshold, cfg.memoryResumeThreshold, L"memory");
+}
+
+bool ConfigurationManager::applyConfigSet(Config& cfg, const std::wstring& key,
+                                          const std::wstring& value, std::wstring& error) {
+    // Normalized (lowercased) key; values are matched case-insensitively too.
+    auto lower = [](std::wstring s) {
+        for (wchar_t& c : s) {
+            c = static_cast<wchar_t>(::towlower(c));
+        }
+        return s;
+    };
+    const std::wstring k = lower(key);
+    const std::wstring v = lower(value);
+
+    auto parseBool = [&](bool& out) -> bool {
+        if (v == L"true" || v == L"1" || v == L"yes") {
+            out = true;
+            return true;
+        }
+        if (v == L"false" || v == L"0" || v == L"no") {
+            out = false;
+            return true;
+        }
+        error = L"expected true/false for '" + key + L"', got '" + value + L"'";
+        return false;
+    };
+    auto parseInt = [&](int& out, int lo, int hi) -> bool {
+        try {
+            const int n = std::stoi(value);
+            out = n < lo ? lo : (n > hi ? hi : n); // clamped like load
+            return true;
+        } catch (...) {
+            error = L"expected an integer for '" + key + L"', got '" + value + L"'";
+            return false;
+        }
+    };
+    auto parseEnum = [&](const std::wstring& a, const std::wstring& b, const std::wstring& c,
+                         const std::wstring& d, int& out) -> bool {
+        if (v == a) { out = 0; return true; }
+        if (v == b) { out = 1; return true; }
+        if (v == c) { out = 2; return true; }
+        if (v == d) { out = 3; return true; }
+        error = L"unknown value '" + value + L"' for '" + key + L"'";
+        return false;
+    };
+
+    bool ok = true;
+    if (k == L"pauseongame") { ok = parseBool(cfg.pauseOnGame); }
+    else if (k == L"pauseonfullscreen") { ok = parseBool(cfg.pauseOnFullscreen); }
+    else if (k == L"pauseonhighcpu") { ok = parseBool(cfg.pauseOnHighCPU); }
+    else if (k == L"pauseonhighgpu") { ok = parseBool(cfg.pauseOnHighGPU); }
+    else if (k == L"pauseonhighram") { ok = parseBool(cfg.pauseOnHighRAM); }
+    else if (k == L"cpupausethreshold") { ok = parseInt(cfg.cpuPauseThreshold, 1, 99); }
+    else if (k == L"cpuresumethreshold") { ok = parseInt(cfg.cpuResumeThreshold, 1, 99); }
+    else if (k == L"gpupausethreshold") { ok = parseInt(cfg.gpuPauseThreshold, 1, 99); }
+    else if (k == L"gpuresumethreshold") { ok = parseInt(cfg.gpuResumeThreshold, 1, 99); }
+    else if (k == L"memorypausethreshold") { ok = parseInt(cfg.memoryPauseThreshold, 1, 99); }
+    else if (k == L"memoryresumethreshold") { ok = parseInt(cfg.memoryResumeThreshold, 1, 99); }
+    else if (k == L"pausedelayseconds") { ok = parseInt(cfg.pauseDelaySeconds, 0, 60); }
+    else if (k == L"resumedelayseconds") { ok = parseInt(cfg.resumeDelaySeconds, 0, 60); }
+    else if (k == L"longpausereleaseseconds") { ok = parseInt(cfg.longPauseReleaseSeconds, 1, 3600); }
+    else if (k == L"framequeue") { ok = parseInt(cfg.frameQueue, 1, 16); }
+    else if (k == L"batterymode") {
+        int m = 0;
+        ok = parseEnum(L"continue", L"reduce", L"pause", L"", m);
+        if (ok) { cfg.batteryMode = static_cast<BatteryMode>(m); }
+    }
+    else if (k == L"perfmode") {
+        int m = 0;
+        if (v == L"performance") { m = 0; }
+        else if (v == L"balanced") { m = 1; }
+        else if (v == L"quality") { m = 2; }
+        else if (v == L"ultra-low-resource" || v == L"ultralowresource") { m = 3; }
+        else { error = L"unknown value '" + value + L"' for '" + key + L"'"; ok = false; }
+        if (ok) { cfg.perfMode = static_cast<PerfMode>(m); }
+    }
+    else if (k == L"scaling") {
+        int m = 0;
+        if (v == L"fill") { m = 0; }
+        else if (v == L"fit") { m = 1; }
+        else if (v == L"stretch") { m = 2; }
+        else if (v == L"center") { m = 3; }
+        else { error = L"unknown value '" + value + L"' for '" + key + L"'"; ok = false; }
+        if (ok) { cfg.scaling = static_cast<ScalingMode>(m); }
+    }
+    else if (k == L"wallpapermode") {
+        if (v == L"clone") { cfg.wallpaperMode = WallpaperMode::Clone; }
+        else if (v == L"independent") { cfg.wallpaperMode = WallpaperMode::Independent; }
+        else { error = L"unknown value '" + value + L"' for '" + key + L"'"; ok = false; }
+    }
+    else if (k == L"playbackmode" || k == L"mode") {
+        int m = 0;
+        ok = parseEnum(L"single", L"sequential", L"loop", L"shuffle", m);
+        if (ok) { cfg.mode = static_cast<PlaybackMode>(m); }
+    }
+    else if (k == L"loop") { ok = parseBool(cfg.loop); }
+    else if (k == L"startwithwindows") { ok = parseBool(cfg.startWithWindows); }
+    else if (k == L"minimizetotray") { ok = parseBool(cfg.minimizeToTray); }
+    else if (k == L"loglevel") {
+        if (v == L"info") { cfg.logLevel = L"info"; }
+        else if (v == L"debug") { cfg.logLevel = L"debug"; }
+        else if (v == L"warn") { cfg.logLevel = L"warn"; }
+        else if (v == L"error") { cfg.logLevel = L"error"; }
+        else { error = L"unknown log level '" + value + L"'"; ok = false; }
+    }
+    else {
+        error = L"unknown config key '" + key + L"'";
+        ok = false;
+    }
+    if (!ok) {
+        return false;
+    }
+    // Threshold pairs re-validated on every accepted change (spec §9).
+    validateThresholdPairs(cfg);
+    return true;
 }
 
 } // namespace vw::config

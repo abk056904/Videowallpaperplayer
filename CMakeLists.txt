@@ -141,6 +141,24 @@ set(VW_PLAYLIST_SOURCES
     src/playlist/PlaylistStore.cpp
 )
 
+# Library module sources (M11: minimal media library + folder watch).
+set(VW_LIBRARY_SOURCES
+    src/library/LibraryManager.cpp
+)
+
+# UI module sources (M11: main window, panels, tray).
+set(VW_UI_SOURCES
+    src/ui/Win32UI.cpp
+    src/ui/TrayController.cpp
+    src/ui/panels/Panel.cpp
+    src/ui/panels/HomePanel.cpp
+    src/ui/panels/LibraryPanel.cpp
+    src/ui/panels/PlaylistsPanel.cpp
+    src/ui/panels/MonitorsPanel.cpp
+    src/ui/panels/PerformancePanel.cpp
+    src/ui/panels/SettingsPanel.cpp
+)
+
 # Media Foundation libraries (M4+; evr provides MR_VIDEO_ACCELERATION_SERVICE).
 set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf evr)
 
@@ -164,10 +182,12 @@ add_executable(VideoWallpaper WIN32
     ${VW_DETECTION_SOURCES}
     ${VW_GOVERNOR_SOURCES}
     ${VW_PLAYLIST_SOURCES}
+    ${VW_LIBRARY_SOURCES}
+    ${VW_UI_SOURCES}
     ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr}
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 d3d11 dxgi ${VW_MF_LIBS})
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS})
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug
@@ -213,9 +233,11 @@ add_executable(vw_tests
     ${VW_DETECTION_SOURCES}
     ${VW_GOVERNOR_SOURCES}
     ${VW_PLAYLIST_SOURCES}
+    ${VW_LIBRARY_SOURCES}
+    tests/test_library.cpp
 )
 target_include_directories(vw_tests PRIVATE src tests)
-target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 psapi wtsapi32 d3d11 dxgi ${VW_MF_LIBS})
+target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS})
 target_compile_definitions(vw_tests PRIVATE ${VW_PUBLIC_DEFS})
 add_test(NAME vw_tests COMMAND vw_tests)
 

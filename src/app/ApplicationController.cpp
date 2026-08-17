@@ -2,12 +2,17 @@
 
 #include <windows.h>
 #include <mfapi.h>
+#include <shellapi.h>
 #include <shlobj.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include "detection/FullscreenDetector.h"
+#include "graphics/D3D11DeviceManager.h"
 #include "logging/Logger.h"
 #include "playback/PlaybackController.h"
 #include "playlist/PlaylistStore.h"
@@ -32,6 +37,29 @@ gfx::D3D11Renderer::Scaling rendererScalingFrom(config::ScalingMode m) {
         case config::ScalingMode::Fill: return gfx::D3D11Renderer::Scaling::Fill;
     }
     return gfx::D3D11Renderer::Scaling::Fill;
+}
+
+// governor::Reason bitmask -> ui::PauseReason bitmask (the bit NUMBERING
+// differs for MonitorHidden/SystemSuspended — spec §10.13 vs governor).
+uint32_t uiPauseReasons(uint32_t governorReasons) {
+    uint32_t out = 0;
+    const auto map = [&](uint32_t governorBit, uint32_t uiBit) {
+        if ((governorReasons & governorBit) != 0) {
+            out |= uiBit;
+        }
+    };
+    map(governor::Reason::User, ui::PauseReason::User);
+    map(governor::Reason::Game, ui::PauseReason::Game);
+    map(governor::Reason::Fullscreen, ui::PauseReason::Fullscreen);
+    map(governor::Reason::HighCPU, ui::PauseReason::HighCPU);
+    map(governor::Reason::HighGPU, ui::PauseReason::HighGPU);
+    map(governor::Reason::HighMemory, ui::PauseReason::HighMemory);
+    map(governor::Reason::Battery, ui::PauseReason::Battery);
+    map(governor::Reason::Locked, ui::PauseReason::Locked);
+    map(governor::Reason::DisplayOff, ui::PauseReason::DisplayOff);
+    map(governor::Reason::MonitorHidden, ui::PauseReason::MonitorHidden);
+    map(governor::Reason::SystemSuspended, ui::PauseReason::SystemSuspended);
+    return out;
 }
 
 // config.playback.mode -> playlist mode (M7).
@@ -137,7 +165,13 @@ int ApplicationController::run() {
     control_.setHandler([this](UINT msg, WPARAM wParam, LPARAM lParam) {
         auto& log = log::Logger::instance();
         if (msg == ControlWindow::focusMessage()) {
-            log.info(L"second instance requested focus (UI arrives in M11)");
+            // Second instance: bring the UI forward (spec §10.1).
+            log.info(L"second instance requested focus");
+            if (ui_) {
+                ui_->show();
+            }
+        } else if (msg == commandWakeMessage()) {
+            drainCommands(); // M11: UI/tray commands run on the control thread
         } else if (msg == WM_TIMER && wParam == kWallpaperTimerId && wallpaper_) {
             wallpaper_->onTick(); // Explorer-restart validity stub (~1 Hz)
             // M10: long-pause release (PAUSED -> SUSPENDED). The 1 Hz tick
@@ -145,8 +179,67 @@ int ApplicationController::run() {
             if (governor_) {
                 governor_->onTick();
             }
+            // M11: library watch/probe results + config write-batching.
+            if (library_) {
+                library_->pollChangeEvents();
+            }
+            if (config_) {
+                config_->maybeFlushDirty(std::chrono::steady_clock::now());
+            }
         } else if (msg == WM_TIMER && wParam == kWorkloadTimerId) {
             onWorkloadTick(); // M9: ~2 s CPU/GPU/RAM sampling
+        } else if (msg == WM_TIMER && wParam == kUiTelemetryTimerId) {
+            onUiTelemetryTick(); // M11: 2 Hz pushes while the UI is open
+        } else if (tray_ && msg == ui::TrayController::callbackMessage()) {
+            // Tray icon events: left-click toggles the window; right-click
+            // opens the menu (spec §10.8).
+            switch (lParam) {
+                case WM_LBUTTONUP:
+                case NIN_SELECT: {
+                    ui::Command c;
+                    c.id = ui::CommandId::ToggleUi;
+                    postCommand(std::move(c));
+                    break;
+                }
+                case WM_CONTEXTMENU: {
+                    const auto menuId = tray_->showMenu();
+                    ui::Command c;
+                    switch (menuId) {
+                        case ui::TrayController::kMenuResume:
+                            c.id = ui::CommandId::Resume;
+                            postCommand(std::move(c));
+                            break;
+                        case ui::TrayController::kMenuPause:
+                            c.id = ui::CommandId::Pause;
+                            postCommand(std::move(c));
+                            break;
+                        case ui::TrayController::kMenuNext:
+                            c.id = ui::CommandId::Next;
+                            postCommand(std::move(c));
+                            break;
+                        case ui::TrayController::kMenuPrevious:
+                            c.id = ui::CommandId::Previous;
+                            postCommand(std::move(c));
+                            break;
+                        case ui::TrayController::kMenuOpen:
+                            c.id = ui::CommandId::ShowUi;
+                            postCommand(std::move(c));
+                            break;
+                        case ui::TrayController::kMenuSettings:
+                            c.id = ui::CommandId::ShowUi;
+                            c.i1 = 5; // Settings tab
+                            postCommand(std::move(c));
+                            break;
+                        case ui::TrayController::kMenuExit:
+                            c.id = ui::CommandId::Exit;
+                            postCommand(std::move(c));
+                            break;
+                        default:
+                            break; // current-wallpaper info item / none
+                    }
+                    break;
+                }
+            }
         } else if (msg == ControlWindow::pauseMessage()) {
             // Explicit user pause routes through the governor (sole authority).
             if (governor_) {
@@ -265,7 +358,58 @@ int ApplicationController::run() {
         uint32_t reasons = governor_->reasons();
         systemMonitor_->updateBatteryReason(reasons);
         governor_->setReasons(reasons);
+        // M11: every governor transition pushes the playback state to the UI
+        // sink + tray tooltip (spec §10.12 — the Home panel and the tray both
+        // read the PlaybackStateNotification).
+        governor_->setActionObserver([this](governor::State, governor::State, uint32_t) {
+            pushPlaybackState();
+            updateTrayFromState();
+        });
     }
+
+    // M11: minimal library (spec §10.3) — notifications forward to the UI
+    // sink; no subscribers = no-op (the engine never pushes to a closed UI).
+    library_ = std::make_unique<library::LibraryManager>();
+    library_->setChangeSink([this](const vw::ui::LibraryChangeNotification& n) {
+        if (sink_) {
+            sink_->onLibraryChange(n);
+        }
+    });
+
+    // M11: system tray — created at startup, persists while the UI is closed
+    // (spec §10.8: tray must not keep the UI alive; it holds only icon+menu).
+    tray_ = std::make_unique<ui::TrayController>();
+    tray_->create(control_.handle());
+    trayCreated_ = true;
+
+    // M11: the UI window is created LAZILY on first show (spec §10.1). The
+    // object exists so commands/notifications have a target; the window is
+    // built when the user opens it (tray left-click / second instance / …).
+    ui_ = std::make_unique<ui::Win32UI>(
+        [this](vw::ui::Command c) { postCommand(std::move(c)); },
+        [this]() { // Playlists panel re-pull (read path, never a poll timer)
+            if (ui_ && ui_->exists()) {
+                ui_->refreshFromSnapshot(getUiSnapshot());
+            }
+        },
+        [this](vw::ui::LibraryItemId id) { // lazy metadata probe request
+            if (library_) {
+                library_->requestMetadata(id);
+            }
+        });
+    ui_->setOnClose([this]() {
+        // Spec §10.1: close hides to tray per config; otherwise the window is
+        // destroyed (engine + tray keep running either way).
+        if (config_ && config_->config().minimizeToTray) {
+            ui_->hide();
+        } else {
+            ui_->destroy();
+            syncUiSubscription();
+        }
+    });
+
+    // Home panel GPU adapter field (first hardware adapter — cosmetic).
+    adapterName_ = adapterName();
 
     log.info(L"Video Wallpaper v{} starting", L"0.1.0");
     log.info(L"appdata dir: {}", appDataDir_.wstring());
@@ -434,6 +578,9 @@ bool ApplicationController::startPlaylistItem(size_t index) {
     const double openMs = static_cast<double>(util::Clock::instance().now100ns() - t0) / 10000.0;
     lastPlayedPath_ = item->path;
     log.info(L"transition to playlist item {} ('{}') in {:.1f} ms", index, item->path, openMs);
+    // M11: Home panel + tray tooltip reflect the new item/state immediately.
+    pushPlaybackState();
+    updateTrayFromState();
     return true;
 }
 
@@ -673,6 +820,21 @@ void ApplicationController::shutdown() {
     g_controller = nullptr;
     ::KillTimer(control_.handle(), kWallpaperTimerId);
     ::KillTimer(control_.handle(), kWorkloadTimerId);
+    ::KillTimer(control_.handle(), kUiTelemetryTimerId);
+    uiTelemetryRunning_ = false;
+    unsubscribe(); // no callbacks after the UI is gone (spec §10.12)
+    if (ui_) {
+        ui_->destroy();
+        ui_.reset();
+    }
+    if (tray_ && trayCreated_) {
+        tray_->destroy(); // remove the tray icon before the window dies
+        trayCreated_ = false;
+    }
+    tray_.reset();
+    if (library_) {
+        library_.reset(); // joins the watch + probe threads
+    }
     if (playback_) {
         playback_->stop(); // joins the decode worker (no MF use afterwards)
         playback_.reset();
@@ -699,6 +861,647 @@ void ApplicationController::shutdown() {
         mutex_ = nullptr;
     }
     log::Logger::instance().info(L"shutdown complete");
+}
+
+// ---- M11: command queue ----------------------------------------------------
+
+UINT ApplicationController::commandWakeMessage() {
+    static const UINT msg = ::RegisterWindowMessageW(L"VideoWallpaper.CommandWake");
+    return msg;
+}
+
+void ApplicationController::postCommand(vw::ui::Command c) {
+    {
+        std::lock_guard<std::mutex> lk(cmdMu_);
+        commands_.push_back(std::move(c));
+    }
+    // Wake the control thread (it may be blocked in MsgWaitForMultipleObjects).
+    if (control_.handle()) {
+        ::PostMessageW(control_.handle(), commandWakeMessage(), 0, 0);
+    }
+}
+
+void ApplicationController::drainCommands() {
+    std::deque<vw::ui::Command> batch;
+    {
+        std::lock_guard<std::mutex> lk(cmdMu_);
+        batch.swap(commands_);
+    }
+    for (const auto& c : batch) {
+        dispatchCommand(c);
+    }
+}
+
+void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
+    auto& log = log::Logger::instance();
+    switch (c.id) {
+        case vw::ui::CommandId::PlayPauseToggle: {
+            if (governor_) {
+                const bool paused = governor_->state() != governor::State::Active;
+                governor_->setReason(governor::Reason::User, !paused);
+            }
+            break;
+        }
+        case vw::ui::CommandId::Pause:
+            if (governor_) {
+                governor_->setReason(governor::Reason::User, true);
+            }
+            break;
+        case vw::ui::CommandId::Resume:
+            if (governor_) {
+                governor_->setReason(governor::Reason::User, false);
+            }
+            break;
+        case vw::ui::CommandId::Next:
+            playNext();
+            break;
+        case vw::ui::CommandId::Previous:
+            playPrevious();
+            break;
+        case vw::ui::CommandId::SetWallpaperFile:
+            if (!c.s2.empty()) {
+                setWallpaperFile(c.s2);
+            }
+            break;
+        case vw::ui::CommandId::SetWallpaperPlaylist:
+            // v1: the engine has ONE playlist (shared-playlist mode is v2);
+            // "apply playlist" is the current playback — nothing to change.
+            log.info(L"command: SetWallpaperPlaylist (v1 single playlist — no-op)");
+            break;
+        case vw::ui::CommandId::SetGlobalMode: {
+            auto& cfg = config_->config();
+            cfg.wallpaperMode = c.b1 ? config::WallpaperMode::Clone
+                                     : config::WallpaperMode::Independent;
+            config_->markDirty();
+            config_->markConfigChanged();
+            log.info(L"command: wallpaper mode -> {}", c.b1 ? L"clone" : L"independent");
+            pushWallpaperAssignment();
+            break;
+        }
+        case vw::ui::CommandId::SetScaling: {
+            auto& cfg = config_->config();
+            cfg.scaling = static_cast<config::ScalingMode>(c.scaling);
+            if (wallpaper_) {
+                wallpaper_->setScaling(rendererScalingFrom(cfg.scaling));
+            }
+            config_->markDirty();
+            config_->markConfigChanged();
+            log.info(L"command: scaling -> {}", scalingNameForLog(c.scaling));
+            pushWallpaperAssignment();
+            break;
+        }
+        case vw::ui::CommandId::GrabFrameSnapshot:
+            grabFrameSnapshotCommand();
+            break;
+        case vw::ui::CommandId::PlaylistCreate:
+        case vw::ui::CommandId::PlaylistRename:
+        case vw::ui::CommandId::PlaylistDelete:
+        case vw::ui::CommandId::PlaylistDuplicate:
+            // v1: single playlist (multi-playlist is v2 — shared-playlist
+            // mode). Logged, no-op.
+            log.info(L"command: playlist multi-manage is v2 (single playlist in v1)");
+            break;
+        case vw::ui::CommandId::PlaylistAddFiles: {
+            if (!playlist_ || c.paths.empty()) {
+                break;
+            }
+            for (const auto& p : c.paths) {
+                playlist_->add(p);
+            }
+            savePlaylistAndNotify();
+            break;
+        }
+        case vw::ui::CommandId::PlaylistAddLibraryItems: {
+            if (!playlist_ || !library_) {
+                break;
+            }
+            for (const auto id : c.itemIds) {
+                if (const auto* item = library_->itemById(id)) {
+                    playlist_->add(item->path);
+                }
+            }
+            savePlaylistAndNotify();
+            break;
+        }
+        case vw::ui::CommandId::PlaylistRemoveItem:
+            if (playlist_ && c.i1 >= 0 &&
+                c.i1 < static_cast<int32_t>(playlist_->size())) {
+                playlist_->remove(static_cast<size_t>(c.i1));
+                savePlaylistAndNotify();
+            }
+            break;
+        case vw::ui::CommandId::PlaylistMoveItem:
+            if (playlist_ && c.i1 >= 0) {
+                const size_t from = static_cast<size_t>(c.i1);
+                const int64_t to = static_cast<int64_t>(from) + c.i2;
+                if (to >= 0 && to < static_cast<int64_t>(playlist_->size())) {
+                    playlist_->move(from, static_cast<size_t>(to));
+                    savePlaylistAndNotify();
+                }
+            }
+            break;
+        case vw::ui::CommandId::PlaylistToggleItem:
+            if (playlist_ && c.i1 >= 0 &&
+                c.i1 < static_cast<int32_t>(playlist_->size())) {
+                playlist_->setEnabled(static_cast<size_t>(c.i1), c.b1);
+                savePlaylistAndNotify();
+            }
+            break;
+        case vw::ui::CommandId::PlaylistSetItemTimes:
+            if (playlist_ && c.i1 >= 0) {
+                playlist_->setItemTimes(static_cast<size_t>(c.i1),
+                                        static_cast<int64_t>(c.d1 * 10'000'000.0),
+                                        static_cast<int64_t>(c.d2 * 10'000'000.0));
+                savePlaylistAndNotify();
+            }
+            break;
+        case vw::ui::CommandId::PlaylistSetMode:
+            if (playlist_) {
+                playlist_->setMode(static_cast<playlist::Mode>(c.mode));
+                savePlaylistAndNotify();
+            }
+            break;
+        case vw::ui::CommandId::PlaylistSetLoop:
+            if (playlist_) {
+                playlist_->setLoop(c.b1);
+                savePlaylistAndNotify();
+            }
+            break;
+        case vw::ui::CommandId::LibraryAddFiles:
+            if (library_) {
+                library_->addFiles(c.paths);
+            }
+            break;
+        case vw::ui::CommandId::LibraryAddFolder:
+            if (library_ && !c.s1.empty()) {
+                library_->addFolder(c.s1);
+            }
+            break;
+        case vw::ui::CommandId::LibraryRemove:
+            if (library_) {
+                library_->remove(c.itemIds);
+            }
+            break;
+        case vw::ui::CommandId::LibraryRefresh:
+            if (library_) {
+                library_->refresh();
+            }
+            break;
+        case vw::ui::CommandId::ConfigSet:
+            applyConfigSetLive(c.s1, c.s2);
+            break;
+        case vw::ui::CommandId::ShowUi:
+            if (ui_) {
+                ui_->selectTab(c.i1);
+                syncUiSubscription();
+            }
+            break;
+        case vw::ui::CommandId::ToggleUi:
+            if (ui_) {
+                ui_->toggle();
+                syncUiSubscription();
+            }
+            break;
+        case vw::ui::CommandId::Focus:
+            if (ui_) {
+                ui_->show();
+                syncUiSubscription();
+            }
+            break;
+        case vw::ui::CommandId::Exit:
+            log.info(L"command: exit requested (tray)");
+            ::PostMessageW(control_.handle(), WM_APP, 0, 0); // request shutdown
+            break;
+    }
+}
+
+void ApplicationController::savePlaylistAndNotify() {
+    if (!playlist_) {
+        return;
+    }
+    if (auto saved = playlist::PlaylistStore::save(playlistPath_, playlist_->data()); !saved) {
+        log::Logger::instance().warn(L"playlist save failed: {}", saved.error());
+    }
+    vw::ui::PlaylistChangeNotification n;
+    n.kind = vw::ui::PlaylistChangeKind::ItemsChanged;
+    if (sink_) {
+        sink_->onPlaylistChange(n);
+    }
+}
+
+void ApplicationController::pushWallpaperAssignment() {
+    if (!sink_) {
+        return;
+    }
+    vw::ui::WallpaperAssignmentNotification n;
+    n.monitorId = primaryMonitorId();
+    n.source = vw::ui::WallpaperSource::Playlist; // v1: the playlist is the source
+    n.sourceId = L"default";
+    n.scaling = static_cast<vw::ui::ScalingMode>(config_->config().scaling);
+    n.clone = config_->config().wallpaperMode == config::WallpaperMode::Clone;
+    sink_->onWallpaperAssignment(n);
+}
+
+// ---- M11: notification sink + telemetry -----------------------------------
+
+void ApplicationController::subscribe(vw::ui::INotificationSink* sink) {
+    sink_ = sink;
+    if (sink_ && !uiTelemetryRunning_) {
+        // Telemetry only while ≥1 subscriber (spec §10.12): the timer is
+        // armed on subscribe and killed on unsubscribe.
+        ::SetTimer(control_.handle(), kUiTelemetryTimerId, 500, nullptr);
+        uiTelemetryRunning_ = true;
+    } else if (!sink_ && uiTelemetryRunning_) {
+        ::KillTimer(control_.handle(), kUiTelemetryTimerId);
+        uiTelemetryRunning_ = false;
+    }
+}
+
+void ApplicationController::unsubscribe() {
+    subscribe(nullptr);
+}
+
+void ApplicationController::syncUiSubscription() {
+    if (!ui_) {
+        return;
+    }
+    const bool uiExists = ui_->exists();
+    if (uiExists && sink_ != ui_.get()) {
+        subscribe(ui_.get());
+        if (sink_) {
+            sink_->onTelemetry(statsCollector_ ? statsCollector_->snapshot()
+                                               : vw::ui::TelemetrySnapshot{});
+        }
+    } else if (!uiExists && sink_) {
+        unsubscribe();
+    }
+}
+
+void ApplicationController::onUiTelemetryTick() {
+    if (!sink_) {
+        return;
+    }
+    if (library_) {
+        library_->pollChangeEvents();
+    }
+    if (config_) {
+        config_->maybeFlushDirty(std::chrono::steady_clock::now());
+    }
+    sink_->onTelemetry(statsCollector_ ? statsCollector_->snapshot()
+                                       : vw::ui::TelemetrySnapshot{});
+    updateTrayFromState();
+}
+
+std::wstring ApplicationController::currentVideoName() const {
+    if (playlist_ && playlist_->currentItem()) {
+        return std::filesystem::path(playlist_->currentItem()->path).filename().wstring();
+    }
+    return {};
+}
+
+void ApplicationController::pushPlaybackState() {
+    if (!sink_) {
+        return;
+    }
+    vw::ui::PlaybackStateNotification n;
+    n.monitorId = primaryMonitorId();
+    n.videoName = currentVideoName();
+    n.playlistName = L"Playlist";
+    n.pauseReasons = governor_ ? uiPauseReasons(governor_->reasons()) : 0;
+    if (governor_) {
+        switch (governor_->state()) {
+            case governor::State::Active: n.state = vw::ui::PlaybackState::Playing; break;
+            case governor::State::Paused: n.state = vw::ui::PlaybackState::Paused; break;
+            case governor::State::Suspended: n.state = vw::ui::PlaybackState::Suspended; break;
+        }
+    } else {
+        n.state = vw::ui::PlaybackState::NoWallpaper;
+    }
+    if (playback_ && playback_->isOpen()) {
+        if (playback_->hardwareDecoding()) {
+            n.decoderMode = playback_->decoderName().empty() ? L"hardware"
+                                                             : playback_->decoderName();
+        } else {
+            n.decoderMode = L"Software fallback";
+        }
+    }
+    n.adapterName = adapterName_;
+    sink_->onPlaybackState(n);
+}
+
+void ApplicationController::updateTrayFromState() {
+    if (!tray_ || !trayCreated_) {
+        return;
+    }
+    const wchar_t* state = L"Stopped";
+    if (governor_) {
+        switch (governor_->state()) {
+            case governor::State::Active: state = L"Playing"; break;
+            case governor::State::Paused: state = L"Paused"; break;
+            case governor::State::Suspended: state = L"Suspended"; break;
+        }
+    }
+    tray_->setTooltip(std::wstring(L"Video Wallpaper — ") + state);
+    tray_->setCurrentVideo(currentVideoName());
+}
+
+// ---- M11: command helpers --------------------------------------------------
+
+void ApplicationController::playNext() {
+    if (!playlist_ || !playback_) {
+        return;
+    }
+    const size_t next = playlist_->nextIndex();
+    if (next == playlist::PlaylistManager::kNoIndex) {
+        log::Logger::instance().info(L"playlist ended — holding the last frame");
+        playback_->stop();
+        return;
+    }
+    playlist_->setCurrent(next);
+    if (!startPlaylistItem(next)) {
+        log::Logger::instance().warn(L"next item failed to open — holding the last frame");
+    }
+    pushPlaybackState();
+}
+
+void ApplicationController::playPrevious() {
+    if (!playlist_ || !playback_) {
+        return;
+    }
+    const size_t prev = playlist_->previousIndex();
+    if (prev == playlist::PlaylistManager::kNoIndex) {
+        return;
+    }
+    playlist_->setCurrent(prev);
+    if (!startPlaylistItem(prev)) {
+        log::Logger::instance().warn(L"previous item failed to open — holding the last frame");
+    }
+    pushPlaybackState();
+}
+
+void ApplicationController::setWallpaperFile(const std::wstring& path) {
+    if (!playlist_ || !playback_) {
+        return;
+    }
+    // v1: setting a wallpaper file replaces the playlist with that single
+    // item and plays it (the Monitors/Library panels both route here).
+    playlist_->clear();
+    playlist_->add(path);
+    playlist_->setCurrent(0);
+    if (auto saved = playlist::PlaylistStore::save(playlistPath_, playlist_->data()); !saved) {
+        log::Logger::instance().warn(L"playlist save failed: {}", saved.error());
+    }
+    if (!startPlaylistItem(0)) {
+        log::Logger::instance().warn(L"set wallpaper failed to open '{}'", path);
+    }
+    pushPlaybackState();
+    pushWallpaperAssignment();
+}
+
+void ApplicationController::grabFrameSnapshotCommand() {
+    if (!wallpaper_) {
+        return;
+    }
+    auto snap = wallpaper_->grabFrameSnapshot();
+    if (!snap) {
+        log::Logger::instance().warn(L"preview grab failed: {}", snap.error());
+        if (ui_ && ui_->exists()) {
+            ::MessageBoxW(ui_->hwnd(), L"No preview available.\n\nThe current frame "
+                                        L"cannot be read back (hardware path or no frame yet).",
+                          L"Video Wallpaper", MB_OK | MB_ICONINFORMATION);
+        }
+        return;
+    }
+    // BGRA8 rows (top-down) -> top-down DIB section -> HBITMAP.
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = static_cast<LONG>(snap->width);
+    bi.bmiHeader.biHeight = -static_cast<LONG>(snap->height); // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC dc = ::GetDC(nullptr);
+    HBITMAP bmp = ::CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ::ReleaseDC(nullptr, dc);
+    if (!bmp || !bits) {
+        log::Logger::instance().error(L"preview DIB creation failed");
+        if (bmp) {
+            ::DeleteObject(bmp);
+        }
+        return;
+    }
+    std::memcpy(bits, snap->bgra.data(), snap->bgra.size());
+    if (ui_) {
+        ui_->showFrameSnapshot(bmp); // ownership transfers to the Monitors panel
+    } else {
+        ::DeleteObject(bmp);
+    }
+}
+
+void ApplicationController::applyConfigSetLive(const std::wstring& key, const std::wstring& value) {
+    auto& log = log::Logger::instance();
+    if (!config_) {
+        return;
+    }
+    std::wstring error;
+    if (!config::ConfigurationManager::applyConfigSet(config_->config(), key, value, error)) {
+        log.warn(L"CONFIG_SET rejected ({}={}): {}", key, value, error);
+        return;
+    }
+    config_->markDirty();
+    config_->markConfigChanged(); // revision bump — governor reacts to live changes
+    log.info(L"CONFIG_SET: {}={}", key, value);
+
+    // Live apply (spec §10.10: validated/clamped, live effect, no restart).
+    const auto& c = config_->config();
+    if (key == L"cpuPauseThreshold" || key == L"cpuResumeThreshold" ||
+        key == L"gpuPauseThreshold" || key == L"gpuResumeThreshold" ||
+        key == L"memoryPauseThreshold" || key == L"memoryResumeThreshold" ||
+        key == L"pauseDelaySeconds" || key == L"resumeDelaySeconds") {
+        if (workloadMonitor_) {
+            workloadMonitor_->reconfigure(performance::WorkloadMonitor::Config{
+                .cpuPause = static_cast<double>(c.cpuPauseThreshold),
+                .cpuResume = static_cast<double>(c.cpuResumeThreshold),
+                .gpuPause = static_cast<double>(c.gpuPauseThreshold),
+                .gpuResume = static_cast<double>(c.gpuResumeThreshold),
+                .memoryPause = static_cast<double>(c.memoryPauseThreshold),
+                .memoryResume = static_cast<double>(c.memoryResumeThreshold),
+                .pauseDelay = std::chrono::seconds(c.pauseDelaySeconds),
+                .resumeDelay = std::chrono::seconds(c.resumeDelaySeconds),
+            });
+        }
+    } else if (key == L"scaling") {
+        if (wallpaper_) {
+            wallpaper_->setScaling(rendererScalingFrom(c.scaling));
+        }
+        pushWallpaperAssignment();
+    } else if (key == L"wallpaperMode") {
+        pushWallpaperAssignment();
+    } else if (key == L"batteryMode") {
+        if (governor_) {
+            governor_->setBatteryPauses(c.batteryMode == config::BatteryMode::Pause);
+        }
+        // Re-read the battery state with the new policy.
+        if (systemMonitor_ && governor_) {
+            uint32_t reasons = governor_->reasons();
+            systemMonitor_->updateBatteryReason(reasons);
+            governor_->setReasons(reasons);
+        }
+    } else if (key == L"longPauseReleaseSeconds") {
+        if (governor_) {
+            governor_->setLongPauseReleaseSeconds(c.longPauseReleaseSeconds);
+        }
+    } else if (key == L"startWithWindows") {
+        setStartWithWindows(c.startWithWindows);
+    } else if (key == L"logLevel") {
+        log::Logger::instance().setLevel(
+            c.logLevel == L"debug" ? log::Level::Debug
+                                    : (c.logLevel == L"warn" ? log::Level::Warn
+                                                              : (c.logLevel == L"error"
+                                                                     ? log::Level::Error
+                                                                     : log::Level::Info)));
+    }
+}
+
+void ApplicationController::setStartWithWindows(bool on) {
+    // HKCU Run value (no admin, per spec §10.7).
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(HKEY_CURRENT_USER,
+                        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
+                        KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        if (on) {
+            wchar_t exe[MAX_PATH] = {};
+            ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            ::RegSetValueExW(key, L"VideoWallpaper", 0, REG_SZ,
+                             reinterpret_cast<const BYTE*>(exe),
+                             static_cast<DWORD>((std::wcslen(exe) + 1) * sizeof(wchar_t)));
+        } else {
+            ::RegDeleteValueW(key, L"VideoWallpaper");
+        }
+        ::RegCloseKey(key);
+        log::Logger::instance().info(L"start-with-Windows {}", on ? L"enabled" : L"disabled");
+    } else {
+        log::Logger::instance().warn(L"cannot open HKCU Run key ({})", ::GetLastError());
+    }
+}
+
+std::wstring ApplicationController::adapterName() const {
+    const auto adapters = gfx::D3D11DeviceManager::enumerateAdapters();
+    if (adapters) {
+        for (const auto& a : *adapters) {
+            // Skip the Basic Render Driver (software adapter).
+            if (a.vendor != 0x1414) { // 0x1414 = Microsoft
+                return a.description;
+            }
+        }
+        if (!adapters->empty()) {
+            return adapters->front().description;
+        }
+    }
+    return {};
+}
+
+vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
+    vw::ui::UiSnapshot s;
+    if (statsCollector_) {
+        s.telemetry = statsCollector_->snapshot();
+    }
+    if (wallpaper_) {
+        for (const auto& m : wallpaper_->monitors()) {
+            vw::ui::MonitorInfo ui;
+            ui.id = m.id;
+            ui.handle = reinterpret_cast<uintptr_t>(m.handle);
+            ui.x = m.bounds.left;
+            ui.y = m.bounds.top;
+            ui.width = m.bounds.right - m.bounds.left;
+            ui.height = m.bounds.bottom - m.bounds.top;
+            ui.workX = m.workArea.left;
+            ui.workY = m.workArea.top;
+            ui.workW = m.workArea.right - m.workArea.left;
+            ui.workH = m.workArea.bottom - m.workArea.top;
+            ui.refreshNum = m.refreshRateNumerator;
+            ui.refreshDen = m.refreshRateDenominator;
+            ui.primary = m.primary;
+            ui.active = m.active;
+            s.monitors.push_back(std::move(ui));
+        }
+    }
+    if (library_) {
+        s.libraryItems = library_->items();
+    }
+    if (playlist_) {
+        vw::ui::PlaylistSummary ps;
+        ps.id = L"default";
+        ps.name = L"Playlist";
+        ps.itemCount = playlist_->size();
+        ps.mode = static_cast<vw::ui::PlaylistMode>(playlist_->mode());
+        ps.loop = playlist_->loop();
+        ps.shuffle = playlist_->mode() == playlist::Mode::Shuffle;
+        s.playlists.push_back(std::move(ps));
+        for (const auto& item : playlist_->items()) {
+            vw::ui::PlaylistItemView view;
+            view.path = item.path;
+            view.start100ns = item.start100ns;
+            view.end100ns = item.end100ns;
+            view.enabled = item.enabled;
+            view.duration100ns = item.duration100ns;
+            view.width = item.width;
+            view.height = item.height;
+            view.codec = item.codec;
+            s.playlistItems.push_back(std::move(view));
+        }
+    }
+    pushWallpaperAssignmentInto(s.assignments);
+    const auto& c = config_->config();
+    s.config.pauseOnGame = c.pauseOnGame;
+    s.config.pauseOnFullscreen = c.pauseOnFullscreen;
+    s.config.pauseOnHighCPU = c.pauseOnHighCPU;
+    s.config.pauseOnHighGPU = c.pauseOnHighGPU;
+    s.config.pauseOnHighRAM = c.pauseOnHighRAM;
+    s.config.cpuPauseThreshold = c.cpuPauseThreshold;
+    s.config.cpuResumeThreshold = c.cpuResumeThreshold;
+    s.config.gpuPauseThreshold = c.gpuPauseThreshold;
+    s.config.gpuResumeThreshold = c.gpuResumeThreshold;
+    s.config.memoryPauseThreshold = c.memoryPauseThreshold;
+    s.config.memoryResumeThreshold = c.memoryResumeThreshold;
+    s.config.pauseDelaySeconds = c.pauseDelaySeconds;
+    s.config.resumeDelaySeconds = c.resumeDelaySeconds;
+    s.config.longPauseReleaseSeconds = c.longPauseReleaseSeconds;
+    s.config.frameQueue = c.frameQueue;
+    s.config.batteryMode = static_cast<vw::ui::BatteryMode>(c.batteryMode);
+    s.config.playbackMode = static_cast<vw::ui::PlaylistMode>(c.mode);
+    s.config.loop = c.loop;
+    s.config.scaling = static_cast<vw::ui::ScalingMode>(c.scaling);
+    s.config.clone = c.wallpaperMode == config::WallpaperMode::Clone;
+    s.config.startWithWindows = c.startWithWindows;
+    s.config.minimizeToTray = c.minimizeToTray;
+    s.config.logLevel = c.logLevel;
+    return s;
+}
+
+void ApplicationController::pushWallpaperAssignmentInto(
+    std::vector<vw::ui::WallpaperAssignmentNotification>& out) const {
+    if (!config_) {
+        return;
+    }
+    vw::ui::WallpaperAssignmentNotification n;
+    n.monitorId = primaryMonitorId();
+    n.source = vw::ui::WallpaperSource::Playlist; // v1: the playlist is the source
+    n.sourceId = L"default";
+    n.scaling = static_cast<vw::ui::ScalingMode>(config_->config().scaling);
+    n.clone = config_->config().wallpaperMode == config::WallpaperMode::Clone;
+    out.push_back(std::move(n));
+}
+
+const wchar_t* ApplicationController::scalingNameForLog(vw::ui::ScalingMode m) {
+    switch (m) {
+        case vw::ui::ScalingMode::Fill: return L"fill";
+        case vw::ui::ScalingMode::Fit: return L"fit";
+        case vw::ui::ScalingMode::Stretch: return L"stretch";
+        case vw::ui::ScalingMode::Center: return L"center";
+    }
+    return L"fill";
 }
 
 } // namespace vw::app

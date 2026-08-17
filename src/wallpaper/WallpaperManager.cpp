@@ -227,6 +227,59 @@ Result<void> WallpaperManager::discoverDesktop() {
     return {};
 }
 
+Result<WallpaperManager::FrameSnapshot> WallpaperManager::grabFrameSnapshot() const {
+    // The bound frame: Independent mode keeps per-monitor upload textures;
+    // Clone/the software path use the shared frameTexture_. Prefer the
+    // primary monitor's texture (matches what the user sees on the main
+    // display), then the shared one.
+    ID3D11Texture2D* source = frameTexture_.Get();
+    UINT width = frameWidth_;
+    UINT height = frameHeight_;
+    if (!monitors_.empty()) {
+        auto it = std::find_if(monitors_.begin(), monitors_.end(),
+                               [](const monitors::MonitorInfo& m) { return m.primary; });
+        const auto& id = it != monitors_.end() ? it->id : monitors_.front().id;
+        const auto f = perMonitorFrames_.find(id);
+        if (f != perMonitorFrames_.end() && f->second.texture) {
+            source = f->second.texture.Get();
+            width = f->second.width;
+            height = f->second.height;
+        }
+    }
+    if (!source || width == 0 || height == 0) {
+        return std::unexpected(L"no video frame has been presented yet");
+    }
+
+    D3D11_TEXTURE2D_DESC srcDesc{};
+    source->GetDesc(&srcDesc);
+    D3D11_TEXTURE2D_DESC stagingDesc = srcDesc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(deviceManager_.device()->CreateTexture2D(&stagingDesc, nullptr, &staging))) {
+        return std::unexpected(L"preview staging texture creation failed");
+    }
+    ID3D11DeviceContext* ctx = deviceManager_.context();
+    ctx->CopyResource(staging.Get(), source);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+        return std::unexpected(L"preview readback failed");
+    }
+    FrameSnapshot out;
+    out.width = width;
+    out.height = height;
+    out.bgra.resize(static_cast<size_t>(height) * static_cast<size_t>(width) * 4);
+    const auto* src = static_cast<const BYTE*>(mapped.pData);
+    for (UINT y = 0; y < height; ++y) {
+        std::memcpy(out.bgra.data() + static_cast<size_t>(y) * width * 4,
+                    src + static_cast<size_t>(y) * mapped.RowPitch, static_cast<size_t>(width) * 4);
+    }
+    ctx->Unmap(staging.Get(), 0);
+    return out;
+}
+
 void WallpaperManager::logHierarchy() const {
     auto& log = log::Logger::instance();
     log.info(L"desktop hierarchy: Progman=0x{:X}, {}",

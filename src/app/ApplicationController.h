@@ -1,17 +1,23 @@
 #pragma once
 
+#include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 
 #include "app/ControlWindow.h"
+#include "app/UiContract.h"
 #include "config/ConfigurationManager.h"
 #include "detection/FullscreenDetector.h"
 #include "detection/GameDetector.h"
 #include "governor/ResourceGovernor.h"
+#include "library/LibraryManager.h"
 #include "performance/StatsCollector.h"
 #include "performance/WorkloadMonitor.h"
 #include "playlist/PlaylistManager.h"
 #include "system/SystemStateMonitor.h"
+#include "ui/TrayController.h"
+#include "ui/Win32UI.h"
 #include "wallpaper/WallpaperManager.h"
 
 namespace vw::playback {
@@ -53,10 +59,50 @@ private:
     // from onForegroundChange + WM_DISPLAYCHANGE; the governor consumes it).
     detection::WindowState classifyForegroundFullscreen(HWND hwnd) const;
     void feedDetectionReasons(); // M10: game/fullscreen/workload -> governor
+
+    // ---- M11: UI/tray/library command surface (spec §10.10–10.11) ----
+    // postCommand is thread-safe (mutex + wake message); drainCommands runs
+    // on the control thread. The UI never calls engine methods directly.
+    void postCommand(vw::ui::Command c);
+    void drainCommands();
+    void dispatchCommand(const vw::ui::Command& c);
+    static UINT commandWakeMessage();
+
+    // Notification sink: the UI window is the single subscriber; telemetry is
+    // pushed ONLY while subscribed (timer armed on subscribe, killed on
+    // unsubscribe — spec §10.12).
+    void subscribe(vw::ui::INotificationSink* sink);
+    void unsubscribe();
+    void syncUiSubscription();
+
+    // Pull-on-open (spec §10.12): current telemetry, playback states,
+    // monitors, library items, playlist (v1 single), assignments + config.
+    vw::ui::UiSnapshot getUiSnapshot() const;
+
+    void onUiTelemetryTick(); // 500 ms: telemetry push + library drain + config flush
+    void pushPlaybackState(); // PlaybackStateNotification to the sink + tray tooltip
+    void updateTrayFromState();
+    std::wstring currentVideoName() const;
+
+    // Command helpers.
+    void playNext();
+    void playPrevious();
+    void setWallpaperFile(const std::wstring& path); // v1: single-item playlist
+    void grabFrameSnapshotCommand();
+    void applyConfigSetLive(const std::wstring& key, const std::wstring& value);
+    void setStartWithWindows(bool on); // HKCU Run (no admin)
+    std::wstring adapterName() const;
+    void savePlaylistAndNotify();
+    void pushWallpaperAssignment();
+    void pushWallpaperAssignmentInto(
+        std::vector<vw::ui::WallpaperAssignmentNotification>& out) const;
+    static const wchar_t* scalingNameForLog(vw::ui::ScalingMode m);
+
     void shutdown();
 
     static constexpr UINT_PTR kWallpaperTimerId = 1; // 1 Hz Explorer-restart stub
     static constexpr UINT_PTR kWorkloadTimerId = 2;  // M9: ~2 s workload sampling
+    static constexpr UINT_PTR kUiTelemetryTimerId = 3; // M11: 2 Hz while UI open
 
     HANDLE mutex_ = nullptr;
     std::filesystem::path appDataDir_;
@@ -70,6 +116,15 @@ private:
     std::unique_ptr<governor::ResourceGovernor> governor_;        // M10
     std::unique_ptr<system::SystemStateMonitor> systemMonitor_;    // M10
     std::unique_ptr<playlist::PlaylistManager> playlist_; // M7
+    std::unique_ptr<ui::Win32UI> ui_;                     // M11: main window (lazy)
+    std::unique_ptr<ui::TrayController> tray_;            // M11: tray (persists)
+    std::unique_ptr<library::LibraryManager> library_;    // M11: minimal library
+    std::mutex cmdMu_;                                    // M11: command queue
+    std::deque<vw::ui::Command> commands_;
+    vw::ui::INotificationSink* sink_ = nullptr;           // M11: single subscriber
+    bool uiTelemetryRunning_ = false;                     // M11: telemetry timer state
+    bool trayCreated_ = false;                            // M11: Shell_NotifyIcon added
+    std::wstring adapterName_;                            // M11: Home panel field
     HWINEVENTHOOK winEventHook_ = nullptr; // M9: EVENT_SYSTEM_FOREGROUND (out-of-context)
     HWND lastForeground_ = nullptr; // M9: change detection cache
     bool systemMonitorStarted_ = false; // M10: notification registration state

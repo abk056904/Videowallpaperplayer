@@ -590,4 +590,18 @@ bool DecoderManager::copySampleToFrame(IMFSample* sample, UINT width, UINT heigh
     return true;
 }
 
+Result<VideoMetadata> DecoderManager::probeMetadata(const std::wstring& path) {
+    // Metadata-only probe (M11 library panel): no attributes (no hardware
+    // path, no video processing), select the first video stream, read the
+    // native media type + duration, release. The reader's destructor tears
+    // down the media source.
+    ComPtr<IMFSourceReader> reader;
+    VideoMetadata meta;
+    auto prepared = prepareReader(path, nullptr, reader, meta);
+    if (!prepared) {
+        return std::unexpected(prepared.error());
+    }
+    return meta;
+}
+
 } // namespace vw::video

@@ -71,6 +71,13 @@ public:
     // stop() + releases the reader entirely (fresh open() needed afterwards).
     void close();
 
+    // M11 library panel: lightweight metadata-ONLY probe — opens the Source
+    // Reader, selects the first video stream, reads the native media type +
+    // duration, releases everything. No decode pipeline, no frames, no D3D
+    // device. Used lazily (visible/selected library rows only); returns a
+    // Result because corrupt/unsupported files are common in a folder scan.
+    static Result<VideoMetadata> probeMetadata(const std::wstring& path);
+
     bool isRunning() const { return worker_.joinable(); }
 
     // Frames successfully pushed since the last start() (M6 decodedFps stats).

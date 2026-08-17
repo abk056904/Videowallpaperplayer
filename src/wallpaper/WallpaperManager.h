@@ -100,6 +100,19 @@ public:
     // Scaling mode for video frames (config.playback.scaling, Fill default).
     void setScaling(gfx::D3D11Renderer::Scaling scaling) { scaling_ = scaling; }
 
+    // M11 Monitors-panel preview: one-time CPU readback of the CURRENT video
+    // frame (the software-path upload texture). Returns tightly-packed BGRA8
+    // rows (row 0 = top, ready for a top-down DIB) + size. On the hardware/
+    // NV12 path there is no CPU copy — returns an error and the UI shows
+    // "no preview" (honest fallback per spec §10.5; on this machine the
+    // software path is active so preview works).
+    struct FrameSnapshot {
+        std::vector<uint8_t> bgra;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+    Result<FrameSnapshot> grabFrameSnapshot() const;
+
 private:
     Result<void> discoverDesktop();
     Result<void> ensureTestTexture();

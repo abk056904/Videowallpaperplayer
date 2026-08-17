@@ -132,6 +132,26 @@ TEST_CASE("governor: stop-then-resume within the release window reopens "
     CHECK(reopens == 1);
 }
 
+TEST_CASE("governor: live config setters take effect without recreation (M11)") {
+    Harness h;
+    // Battery policy + long-pause threshold are read at use time.
+    h.governor.setBatteryPauses(false);
+    CHECK_FALSE(h.governor.policyConfig().batteryPauses);
+    h.governor.setBatteryPauses(true);
+    CHECK(h.governor.policyConfig().batteryPauses);
+
+    h.governor.setLongPauseReleaseSeconds(2);
+    CHECK(h.governor.policyConfig().longPauseReleaseSeconds == 2);
+
+    // The new 2 s threshold actually drives suspension.
+    auto t = std::chrono::steady_clock::now();
+    h.governor.setClockForTest([&t] { return t; });
+    h.governor.setReason(Reason::Locked, true);
+    t += 3s;
+    h.governor.onTick();
+    CHECK(h.governor.state() == State::Suspended);
+}
+
 TEST_CASE("governor: battery pause latches and clears with the power state") {
     Harness h;
     // Battery mode Pause: the monitor's battery query feeds the reason.

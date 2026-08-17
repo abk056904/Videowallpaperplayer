@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -24,6 +25,7 @@ struct Config {
     // general
     bool startWithWindows = false;
     bool minimizeToTray = true;
+    std::wstring logLevel = L"info"; // M11: Logger level (info|debug), persisted
     // playback
     PlaybackMode mode = PlaybackMode::Loop;
     bool shuffle = false;
@@ -67,7 +69,7 @@ public:
     // Returns false only on I/O failure (e.g. cannot create dir). Missing or
     // corrupt files are handled per policy and startup continues.
     bool load();
-    bool save() const; // atomic: write temp, then rename over target
+    bool save(); // atomic: write temp, then rename over target
 
     const Config& config() const { return config_; }
     Config& config() { return config_; }
@@ -86,14 +88,43 @@ public:
     // logged. Called at load and on every accepted CONFIG_SET.
     static void validateThresholdPairs(Config& cfg);
 
+    // M11 (spec §10.10): pure key -> Config mapping for CONFIG_SET commands
+    // (the UI/tray never touch Config directly). Keys: pauseOnGame /
+    // pauseOnFullscreen / pauseOnHighCPU / pauseOnHighGPU / pauseOnHighRAM /
+    // cpu|gpu|memory{Pause,Resume}Threshold / pauseDelaySeconds /
+    // resumeDelaySeconds / longPauseReleaseSeconds / frameQueue /
+    // batteryMode (continue|reduce|pause) / perfMode (performance|balanced|
+    // quality|ultra-low-resource) / scaling (fill|fit|stretch|center) /
+    // wallpaperMode (independent|clone) / playbackMode (single|sequential|
+    // loop|shuffle) / loop / startWithWindows / minimizeToTray /
+    // logLevel (info|debug). Booleans "true"/"false"/"1"/"0"; numbers are
+    // decimal strings. Clamped like load; threshold pairs re-validated.
+    // Returns false + a human-readable error for unknown keys/bad values.
+    static bool applyConfigSet(Config& cfg, const std::wstring& key,
+                               const std::wstring& value, std::wstring& error);
+
+    // M11 (spec §9 / §10.10): debounced write-batching. CONFIG_SETs call
+    // markDirty(); the app's low-frequency tick calls maybeFlushDirty(now),
+    // which persists once the debounce window (kSaveDebounce = 1.5 s) has
+    // passed since the LAST change. shutdown()'s save() is the final flush.
+    // No per-click disk writes; UI edits survive a crash up to the debounce.
+    // now = the change time (injectable for tests; defaults to the real clock).
+    void markDirty(std::chrono::steady_clock::time_point now =
+                   std::chrono::steady_clock::now());
+    void maybeFlushDirty(std::chrono::steady_clock::time_point now);
+    bool dirty() const { return dirty_; }
+    static constexpr auto kSaveDebounce = std::chrono::milliseconds(1500);
+
 private:
     void applyDefaults();
     static void readInto(Config& cfg, const util::Json& root);
 
     Options opts_;
     Config config_;
-    mutable std::wstring lastError_; // written from const save()
+    std::wstring lastError_; // written from save()
     uint64_t revision_ = 0; // M10: config revision counter (spec §9)
+    bool dirty_ = false; // M11: unsaved change pending (write-batching)
+    std::chrono::steady_clock::time_point lastChange_{}; // M11: debounce anchor
 };
 
 } // namespace vw::config

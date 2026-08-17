@@ -96,6 +96,7 @@ public:
         return State::Active;
     }
 
+    Config& config() { return cfg_; } // M11: live config changes (battery/long-pause)
     const Config& config() const { return cfg_; }
 
 private:

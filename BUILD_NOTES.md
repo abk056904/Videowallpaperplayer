@@ -639,3 +639,30 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.
 
 ---
+
+## M11 — UI, tray & minimal library
+
+**Committed as ``** — per docs/03 §3.13 / spec §10 (the spec's full UI panel specs, `UiContract`, control→command mapping, and tray integration).
+
+## What shipped
+
+- **`UiContract.h`** (spec §10.13 reference): `CommandId` (playback, library, playlist, config, UI, exit), `Command`, `UiSnapshot` (state/reasons/telemetry/monitors/wallpaper/playlist/library), notifications (`LibraryChange`/`PlaylistChange`/`WallpaperAssignment`/`TelemetrySnapshot`), `MonitorInfo`, `LibraryItem`, `INotificationSink`. Every UI control posts a `Command`; the engine never calls into the UI and the UI never calls into the engine.
+- **`Win32UI` + 6 panels** (`src/ui/`): main window created **lazily** on first show (spec §10.1), destroyed on close when `minimizeToTray=false` (hide otherwise), DPI-aware sizing, tab control + per-tab panels. **Home** (wallpaper/video/monitor/state + governor reasons/FPS/decoder/GPU adapter), **Library** (ListView with columns, toolbar add-file/folder/remove/refresh, lazy metadata probe on selection, sorting), **Playlists** (items/mode/loop, next/prev/current), **Monitors** (per-monitor assignment + clone/independent + scaling), **Performance** (advanced toggles/thresholds/delays/modes), **Settings** (start with Windows via HKCU Run, minimize-to-tray, battery mode, log level, README button).
+- **`TrayController`**: icon (the user's `video_wallpaper_engine_compact_rgb.ico`), tooltip, menu (Resume/Pause/Next/Previous/Open/Settings/Exit), left-click toggle (`NIN_SELECT`).
+- **`LibraryManager`** (`src/library/`): add file/folder, remove (index rebuild + watch prune), incremental refresh, **`ReadDirectoryChangesW` recursive watch**, background metadata probe worker (`DecoderManager::probeMetadata`) — the worker never touches `items_` (probe results resolved path→item on the control thread in `pollChangeEvents`).
+- **Config write-batching** (spec §9): `markDirty` (injectable clock) + `maybeFlushDirty` debounced save + `applyConfigSet` pure mapping; **governor live setters** (`setBatteryPauses`, `setLongPauseReleaseSeconds`). Engine helpers: `WallpaperManager::grabFrameSnapshot` (staging readback → preview HBITMAP), `DecoderManager::probeMetadata` (lightweight Source-Reader metadata probe).
+- **App wiring**: command queue (`postCommand`/`drainCommands`, control thread), `subscribe`/`getUiSnapshot`, telemetry timer **armed only while the UI window exists** (spec §10.12), tray lifecycle, FOCUS→UI (second instance), EXIT.
+
+## Verified
+
+- **13 new unit tests** (library: addFiles dedup + extension filter, recursive addFolder + re-add, remove-reindex, watch add/remove, refresh, lazy probe on real clip, non-video probe safety, orphaned probe result drop; config: debounce timing, debounced flush persists, applyConfigSet; governor: battery/long-pause live setters) → **162/162 tests**, Debug + Release, 0 warnings under /WX.
+- **Live (Debug)**: boots + plays; **UI open/close leak cycle** — 5× open via second-instance focus (`second instance requested focus` → window shown) then close (WM_CLOSE → destroy, `minimizeToTray=false` flipped for the test, config restored after) — **0 log errors** across all cycles, no control/timer/subscription leak (spec §10.9).
+- **NOT MEASURED (recorded for M14)**: tray left-click/menu interaction and a 10k-file folder stress (need human eyes/keystrokes — the wiring is code-reviewed and the tray icon is present while running); frame-snapshot preview verified via code review only.
+
+### M11 bugs caught before commit
+
+1. **`addFiles` let non-video files into the library**: it passed raw paths to `addItemInternal`, which never checked the extension (only the watch/`addFolder` paths pre-filtered) — a `.txt` got listed. Fixed centrally: `addItemInternal` now rejects non-video extensions (`isVideoFile`); the metadata probe still validates content (a renamed `.txt` stays listed with unknown metadata, never crashes).
+2. **Config debounce test mixed fake/real clocks**: `markDirty()` anchored at `steady_clock::now()` while the test drove `maybeFlushDirty(t)` with a fake clock — the re-arm case flushed early. `markDirty(now)` is now injectable (defaults to the real clock; app call sites unchanged).
+3. **Test-authoring bugs**: `itemById(0)` is always null (ids start at 1) — replaced with path/iteration-based lookup in the two library tests.
+
+---

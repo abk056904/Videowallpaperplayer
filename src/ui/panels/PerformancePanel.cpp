@@ -1,0 +1,286 @@
+#include "ui/panels/PerformancePanel.h"
+
+#include <windows.h>
+#include <commctrl.h>
+
+#include <cstdio>
+#include <cwchar>
+#include <vector>
+
+namespace vw::ui {
+
+const wchar_t* PerformancePanel::kClassName = L"VideoWallpaper.PerformancePanel";
+
+HWND PerformancePanel::edit(const wchar_t* label, int row, int xCol, const wchar_t* /*key*/) {
+    const Layout L = Layout::from(hwnd_);
+    const int y = L.y(row);
+    ctl(hwnd_, L"STATIC", label, WS_VISIBLE, L.x(xCol), y, ::MulDiv(140, L.u, 5), L.cy, nullptr);
+    return ctl(hwnd_, L"EDIT", L"", WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
+               L.x(xCol) + ::MulDiv(145, L.u, 5), y, ::MulDiv(50, L.u, 5), L.cy, nullptr);
+}
+
+bool PerformancePanel::create(HWND parent) {
+    if (hwnd_) {
+        return true;
+    }
+    hwnd_ = createPanelWindow(parent, kClassName, &PerformancePanel::wndProc, this);
+    if (!hwnd_) {
+        return false;
+    }
+    initPanelFont();
+    const Layout L = Layout::from(hwnd_);
+
+    // Pause toggles (2 columns).
+    const std::pair<UINT, const wchar_t*> toggles[] = {
+        {kCkGame, L"Pause on game"}, {kCkFullscreen, L"Pause on fullscreen"},
+        {kCkCpu, L"Pause on high CPU"}, {kCkGpu, L"Pause on high GPU"},
+        {kCkRam, L"Pause on high RAM"}};
+    for (int i = 0; i < 5; ++i) {
+        checks_[i] = ctl(hwnd_, L"BUTTON", toggles[i].second,
+                         WS_VISIBLE | BS_AUTOCHECKBOX,
+                         L.x(i < 3 ? 0 : 4), L.y(i < 3 ? i : i - 3),
+                         ::MulDiv(160, L.u, 5), L.cy,
+                         reinterpret_cast<HMENU>(static_cast<UINT_PTR>(toggles[i].first)));
+    }
+
+    // Threshold pairs + delays.
+    edits_[0] = edit(L"CPU pause / resume :", 3, 0, L"cpuPauseThreshold");
+    edits_[1] = edit(L"", 3, 2, L"cpuResumeThreshold");
+    edits_[2] = edit(L"GPU pause / resume :", 4, 0, L"gpuPauseThreshold");
+    edits_[3] = edit(L"", 4, 2, L"gpuResumeThreshold");
+    edits_[4] = edit(L"RAM pause / resume :", 5, 0, L"memoryPauseThreshold");
+    edits_[5] = edit(L"", 5, 2, L"memoryResumeThreshold");
+    edits_[6] = edit(L"Pause delay :", 6, 0, L"pauseDelaySeconds");
+    edits_[7] = edit(L"Resume delay :", 6, 2, L"resumeDelaySeconds");
+
+    // Battery mode.
+    ctl(hwnd_, L"STATIC", L"Battery mode :", WS_VISIBLE, L.x(0), L.y(7),
+        ::MulDiv(140, L.u, 5), L.cy, nullptr);
+    batteryCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
+                        L.x(0) + ::MulDiv(145, L.u, 5), L.y(7), ::MulDiv(120, L.u, 5), 200,
+                        reinterpret_cast<HMENU>(kCmBattery));
+    for (const wchar_t* b : {L"Continue", L"Reduce quality", L"Pause"}) {
+        ::SendMessageW(batteryCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(b));
+    }
+
+    // Advanced (collapsible).
+    btnAdvanced_ = ctl(hwnd_, L"BUTTON", L"Advanced Performance", WS_VISIBLE | BS_PUSHBUTTON,
+                       12, 0, ::MulDiv(160, L.u, 5), L.cy, reinterpret_cast<HMENU>(kBtnAdvanced));
+    const int advRow = 9;
+    ctl(hwnd_, L"STATIC", L"Mode :", WS_VISIBLE, L.x(0), L.y(advRow),
+        ::MulDiv(140, L.u, 5), L.cy, nullptr);
+    perfModeCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
+                         L.x(0) + ::MulDiv(145, L.u, 5), L.y(advRow), ::MulDiv(160, L.u, 5), 200,
+                         reinterpret_cast<HMENU>(kCmPerfMode));
+    for (const wchar_t* p : {L"Performance", L"Balanced", L"Quality", L"Ultra Low Resource"}) {
+        ::SendMessageW(perfModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(p));
+    }
+    frameQueueEdit_ = edit(L"Frame queue :", advRow + 1, 0, L"frameQueue");
+    longPauseEdit_ = edit(L"Long-pause release :", advRow + 2, 0, L"longPauseReleaseSeconds");
+    // The advanced section starts collapsed.
+    advancedOpen_ = false;
+    ::ShowWindow(perfModeCombo_, SW_HIDE);
+    ::ShowWindow(frameQueueEdit_, SW_HIDE);
+    ::ShowWindow(longPauseEdit_, SW_HIDE);
+    return true;
+}
+
+void PerformancePanel::relayout() {
+    if (!hwnd_) {
+        return;
+    }
+    RECT rc{};
+    ::GetClientRect(hwnd_, &rc);
+    layout(rc.right - rc.left, rc.bottom - rc.top);
+}
+
+void PerformancePanel::layout(int /*width*/, int /*height*/) {
+    // Controls are positioned at create() from the panel font; nothing needs
+    // re-flowing on resize (the panel content fits the minimum window size).
+}
+
+void PerformancePanel::updateFromConfig(const ConfigSnapshot& c) {
+    cfg_ = c;
+    ::SendMessageW(checks_[0], BM_SETCHECK, c.pauseOnGame ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(checks_[1], BM_SETCHECK, c.pauseOnFullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(checks_[2], BM_SETCHECK, c.pauseOnHighCPU ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(checks_[3], BM_SETCHECK, c.pauseOnHighGPU ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(checks_[4], BM_SETCHECK, c.pauseOnHighRAM ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    const int values[] = {c.cpuPauseThreshold, c.cpuResumeThreshold, c.gpuPauseThreshold,
+                          c.gpuResumeThreshold, c.memoryPauseThreshold, c.memoryResumeThreshold,
+                          c.pauseDelaySeconds, c.resumeDelaySeconds};
+    wchar_t buf[16];
+    for (int i = 0; i < 8; ++i) {
+        std::swprintf(buf, 16, L"%d", values[i]);
+        ::SetWindowTextW(edits_[i], buf);
+    }
+
+    int b = 0;
+    switch (c.batteryMode) {
+        case BatteryMode::Continue: b = 0; break;
+        case BatteryMode::ReduceQuality: b = 1; break;
+        case BatteryMode::Pause: b = 2; break;
+    }
+    ::SendMessageW(batteryCombo_, CB_SETCURSEL, b, 0);
+
+    int p = 0; // perf mode not in ConfigSnapshot; leave combo at Balanced
+    (void)p;
+    std::swprintf(buf, 16, L"%d", c.frameQueue);
+    ::SetWindowTextW(frameQueueEdit_, buf);
+    std::swprintf(buf, 16, L"%d", c.longPauseReleaseSeconds);
+    ::SetWindowTextW(longPauseEdit_, buf);
+}
+
+void PerformancePanel::refreshFromSnapshot(const UiSnapshot& s) {
+    updateFromConfig(s.config);
+}
+
+void PerformancePanel::postBool(const wchar_t* key, bool on) {
+    Command c;
+    c.id = CommandId::ConfigSet;
+    c.s1 = key;
+    c.s2 = on ? L"true" : L"false";
+    post_(c);
+}
+
+void PerformancePanel::postInt(const wchar_t* key, int value) {
+    Command c;
+    c.id = CommandId::ConfigSet;
+    c.s1 = key;
+    c.s2 = std::to_wstring(value);
+    post_(c);
+}
+
+void PerformancePanel::postEnum(const wchar_t* key, const wchar_t* value) {
+    Command c;
+    c.id = CommandId::ConfigSet;
+    c.s1 = key;
+    c.s2 = value;
+    post_(c);
+}
+
+void PerformancePanel::readEdits() {
+    auto getInt = [&](HWND h, int def) {
+        wchar_t buf[32];
+        ::GetWindowTextW(h, buf, 32);
+        try {
+            return std::stoi(buf);
+        } catch (...) {
+            return def;
+        }
+    };
+    postInt(L"cpuPauseThreshold", getInt(edits_[0], cfg_.cpuPauseThreshold));
+    postInt(L"cpuResumeThreshold", getInt(edits_[1], cfg_.cpuResumeThreshold));
+    postInt(L"gpuPauseThreshold", getInt(edits_[2], cfg_.gpuPauseThreshold));
+    postInt(L"gpuResumeThreshold", getInt(edits_[3], cfg_.gpuResumeThreshold));
+    postInt(L"memoryPauseThreshold", getInt(edits_[4], cfg_.memoryPauseThreshold));
+    postInt(L"memoryResumeThreshold", getInt(edits_[5], cfg_.memoryResumeThreshold));
+    postInt(L"pauseDelaySeconds", getInt(edits_[6], cfg_.pauseDelaySeconds));
+    postInt(L"resumeDelaySeconds", getInt(edits_[7], cfg_.resumeDelaySeconds));
+    postInt(L"frameQueue", getInt(frameQueueEdit_, cfg_.frameQueue));
+    postInt(L"longPauseReleaseSeconds", getInt(longPauseEdit_, cfg_.longPauseReleaseSeconds));
+}
+
+void PerformancePanel::toggleAdvanced() {
+    advancedOpen_ = !advancedOpen_;
+    ::SetWindowTextW(btnAdvanced_, advancedOpen_ ? L"Advanced Performance (hide)"
+                                                 : L"Advanced Performance");
+    ::ShowWindow(perfModeCombo_, advancedOpen_ ? SW_SHOW : SW_HIDE);
+    ::ShowWindow(frameQueueEdit_, advancedOpen_ ? SW_SHOW : SW_HIDE);
+    ::ShowWindow(longPauseEdit_, advancedOpen_ ? SW_SHOW : SW_HIDE);
+}
+
+LRESULT CALLBACK PerformancePanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* self = reinterpret_cast<PerformancePanel*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        const auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        self = static_cast<PerformancePanel*>(cs->lpCreateParams);
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    }
+    if (!self) {
+        return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    switch (msg) {
+        case WM_COMMAND: {
+            const UINT id = LOWORD(wParam);
+            const UINT code = HIWORD(wParam);
+            switch (id) {
+                case kCkGame:
+                    if (code == BN_CLICKED) {
+                        self->postBool(L"pauseOnGame",
+                                       ::SendMessageW(self->checks_[0], BM_GETCHECK, 0, 0) ==
+                                           BST_CHECKED);
+                    }
+                    return 0;
+                case kCkFullscreen:
+                    if (code == BN_CLICKED) {
+                        self->postBool(L"pauseOnFullscreen",
+                                       ::SendMessageW(self->checks_[1], BM_GETCHECK, 0, 0) ==
+                                           BST_CHECKED);
+                    }
+                    return 0;
+                case kCkCpu:
+                    if (code == BN_CLICKED) {
+                        self->postBool(L"pauseOnHighCPU",
+                                       ::SendMessageW(self->checks_[2], BM_GETCHECK, 0, 0) ==
+                                           BST_CHECKED);
+                    }
+                    return 0;
+                case kCkGpu:
+                    if (code == BN_CLICKED) {
+                        self->postBool(L"pauseOnHighGPU",
+                                       ::SendMessageW(self->checks_[3], BM_GETCHECK, 0, 0) ==
+                                           BST_CHECKED);
+                    }
+                    return 0;
+                case kCkRam:
+                    if (code == BN_CLICKED) {
+                        self->postBool(L"pauseOnHighRAM",
+                                       ::SendMessageW(self->checks_[4], BM_GETCHECK, 0, 0) ==
+                                           BST_CHECKED);
+                    }
+                    return 0;
+                case kCmBattery:
+                    if (code == CBN_SELCHANGE) {
+                        const int b = static_cast<int>(
+                            ::SendMessageW(self->batteryCombo_, CB_GETCURSEL, 0, 0));
+                        self->postEnum(L"batteryMode",
+                                       b == 0 ? L"continue" : (b == 1 ? L"reduce" : L"pause"));
+                    }
+                    return 0;
+                case kCmPerfMode:
+                    if (code == CBN_SELCHANGE) {
+                        const int p = static_cast<int>(
+                            ::SendMessageW(self->perfModeCombo_, CB_GETCURSEL, 0, 0));
+                        self->postEnum(L"perfMode",
+                                       p == 0 ? L"performance"
+                                              : (p == 1 ? L"balanced"
+                                                        : (p == 2 ? L"quality" : L"ultra-low-resource")));
+                    }
+                    return 0;
+                case kBtnAdvanced:
+                    self->toggleAdvanced();
+                    return 0;
+                default:
+                    // Any edit losing focus applies ALL edit fields at once
+                    // (single CONFIG_SET burst, debounced engine-side).
+                    if (code == EN_KILLFOCUS &&
+                        id >= kEdCpuPause && id <= kEdResumeDelay) {
+                        self->readEdits();
+                    }
+                    if (code == EN_KILLFOCUS && (id == kEdFrameQueue || id == kEdLongPause)) {
+                        self->readEdits();
+                    }
+                    return 0;
+            }
+        }
+        case WM_SIZE: {
+            self->layout(LOWORD(lParam), HIWORD(lParam));
+            return 0;
+        }
+    }
+    return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+} // namespace vw::ui

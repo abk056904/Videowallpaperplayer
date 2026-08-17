@@ -379,3 +379,107 @@ TEST_CASE("config: save fails cleanly when target is unwritable") {
     CHECK_FALSE(mgr.lastError().empty());
     CHECK_FALSE(mgr.load()); // I/O failure surfaces as false (per contract)
 }
+
+// ---- M11: debounced write-batching (spec §9) -------------------------------
+
+TEST_CASE("config: markDirty debounces — no write before the window, one after") {
+    using namespace std::chrono_literals;
+    const auto dir = uniqueTempDir();
+    const auto path = dir / L"config.json";
+    ConfigurationManager mgr(ConfigurationManager::Options{path});
+    REQUIRE(mgr.load()); // first run writes defaults
+
+    auto t = std::chrono::steady_clock::now();
+    mgr.markDirty(t);
+    CHECK(mgr.dirty());
+
+    // Inside the 1.5 s debounce window: nothing written.
+    t += 1s;
+    mgr.maybeFlushDirty(t);
+    CHECK(mgr.dirty());
+
+    // Past the window: saved + flag cleared.
+    t += 1s;
+    mgr.maybeFlushDirty(t);
+    CHECK_FALSE(mgr.dirty());
+
+    // A second change re-arms the debounce (the LAST change anchors the clock).
+    mgr.markDirty(t);
+    t += 500ms;
+    mgr.maybeFlushDirty(t); // still inside the new window
+    CHECK(mgr.dirty());
+    t += 2s;
+    mgr.maybeFlushDirty(t);
+    CHECK_FALSE(mgr.dirty());
+}
+
+TEST_CASE("config: debounced flush persists the last state") {
+    using namespace std::chrono_literals;
+    const auto dir = uniqueTempDir();
+    const auto path = dir / L"config.json";
+    ConfigurationManager mgr(ConfigurationManager::Options{path});
+    REQUIRE(mgr.load());
+
+    mgr.config().pauseOnHighRAM = true;
+    mgr.markDirty();
+    auto t = std::chrono::steady_clock::now() + 2s;
+    mgr.maybeFlushDirty(t);
+
+    // A FRESH manager reading the file must see the flushed value.
+    ConfigurationManager again(ConfigurationManager::Options{path});
+    REQUIRE(again.load());
+    CHECK(again.config().pauseOnHighRAM);
+}
+
+// ---- M11: CONFIG_SET mapping (spec §10.10) --------------------------------
+
+TEST_CASE("config: applyConfigSet maps, clamps, and validates pairs") {
+    vw::config::Config cfg;
+    std::wstring err;
+
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"pauseOnGame", L"false", err));
+    CHECK_FALSE(cfg.pauseOnGame);
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"pauseOnHighRAM", L"true", err));
+    CHECK(cfg.pauseOnHighRAM);
+
+    // Numbers: clamped like load (1..99).
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"cpuPauseThreshold", L"150", err));
+    CHECK(cfg.cpuPauseThreshold == 99);
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"cpuResumeThreshold", L"0", err));
+    CHECK(cfg.cpuResumeThreshold == 1);
+
+    // Pair validation: resume > pause gets clamped UP to pause.
+    cfg.cpuPauseThreshold = 80;
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"cpuResumeThreshold", L"90", err));
+    CHECK(cfg.cpuResumeThreshold == 80);
+
+    // Enums (case-insensitive values).
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"batteryMode", L"reduce", err));
+    CHECK(cfg.batteryMode == vw::config::BatteryMode::ReduceQuality);
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"scaling", L"Stretch", err));
+    CHECK(cfg.scaling == vw::config::ScalingMode::Stretch);
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"wallpaperMode", L"clone", err));
+    CHECK(cfg.wallpaperMode == vw::config::WallpaperMode::Clone);
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"logLevel", L"debug", err));
+    CHECK(cfg.logLevel == L"debug");
+    CHECK(ConfigurationManager::applyConfigSet(cfg, L"loop", L"0", err));
+    CHECK_FALSE(cfg.loop);
+
+    // Bad key / bad value: rejected with a message.
+    CHECK_FALSE(ConfigurationManager::applyConfigSet(cfg, L"nonsenseKey", L"1", err));
+    CHECK_FALSE(err.empty());
+    CHECK_FALSE(ConfigurationManager::applyConfigSet(cfg, L"pauseOnGame", L"maybe", err));
+    CHECK_FALSE(err.empty());
+}
+
+TEST_CASE("config: logLevel round-trips through save/load") {
+    const auto dir = uniqueTempDir();
+    const auto path = dir / L"config.json";
+    ConfigurationManager mgr(ConfigurationManager::Options{path});
+    REQUIRE(mgr.load());
+    mgr.config().logLevel = L"debug";
+    REQUIRE(mgr.save());
+    ConfigurationManager again(ConfigurationManager::Options{path});
+    REQUIRE(again.load());
+    CHECK(again.config().logLevel == L"debug");
+}

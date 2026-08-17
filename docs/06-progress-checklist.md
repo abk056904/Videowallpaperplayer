@@ -17,14 +17,14 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M6 — Frame timing & queue | ✅ | 2026-08-17 | FrameScheduler + PlaybackController + finalized FrameQueue: source-FPS pacing (presentedFps ≈ decodedFps, not monitor Hz), 0 drops, pause → 0.00 CPU-s/8 s, position preserved across pause (4716 → 4716 ms), message loop waits on {waitable timer, new-frame event} — zero busy-wait. 80/80 tests. See notes below |
 | M7 — Playlist engine | ✅ | 2026-08-17 | `PlaylistManager`/`PlaylistStore`, replay-loop, broken-item skip |
 | M8 — Multi-monitor & multi-GPU | ✅ | 2026-08-17 | Simulated topologies + per-monitor routing; real multi-monitor NOT MEASURED (single display) |
-| M9 — Detection & monitoring | ☐ | — | |
-| M10 — Resource governor & suspension | ☐ | — | |
-| M11 — UI, tray & minimal library | ☐ | — | |
+| M9 — Detection & monitoring | ✅ | 2026-08-17 | WorkloadMonitor (CPU/RAM/VRAM + hysteresis), event-driven game/fullscreen detection (no polling). See notes below |
+| M10 — Resource governor & suspension | ✅ | 2026-08-17 | ResourceGovernor + PausePolicy + SystemStateMonitor; full ACTIVE→PAUSED→SUSPENDED→ACTIVE cycle verified live. See notes below |
+| M11 — UI, tray & minimal library | ✅ | 2026-08-17 | Win32 UI (6 panels), tray, minimal library, debounced config writes. See notes below |
 | M12 — Recovery hardening | ☐ | — | |
 | M13 — Profiling, optimization & stability | ☐ | — | |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M6 — Frame timing, queue & scheduling_
+**Current milestone:** _M12 — Recovery hardening_
 
 ---
 
@@ -304,17 +304,19 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** usable Win32 UI that never drags down the engine. *(V1: no thumbnails, hotkeys, drag & drop, debug overlay.)*
 
-- [ ] `Win32UI`: main window, tabs, DPI-aware layout; constructed lazily, destroyed on close
-- [ ] Panels: Home (wallpaper/video/monitor/state/FPS/decoder/GPU @1–2 Hz), Playlists, Monitors (per-monitor wallpaper + clone/independent + scaling), Performance (toggles/thresholds/delays/modes under "Advanced Performance"), Settings (start with Windows via HKCU Run, minimize to tray, battery mode, logging level)
-- [ ] Library (minimal): add file/folder, remove, list with metadata columns, preview; incremental scan + `ReadDirectoryChangesW`; lazy metadata
-- [ ] Tray: Resume/Pause/Next/Previous/Current wallpaper/Open app/Settings/Exit; left-click toggles UI; UI resources released on close, engine continues
-- [ ] UI never decodes/renders/polls; engine interaction only via `ApplicationController` commands
-- [ ] **Config write-batching** (spec §9): debounced dirty-flag save (~1–2 s after last `CONFIG_SET`, plus save on shutdown) — no per-click writes, UI edits survive a crash
-- [ ] Files: `src/ui/Win32UI*`, `src/ui/panels/*`, `src/ui/TrayController*`, `src/library/LibraryManager*`
+- [x] `Win32UI`: main window, tabs, DPI-aware layout; constructed lazily, destroyed on close
+- [x] Panels: Home (wallpaper/video/monitor/state/FPS/decoder/GPU @1–2 Hz), Playlists, Monitors (per-monitor wallpaper + clone/independent + scaling), Performance (toggles/thresholds/delays/modes under "Advanced Performance"), Settings (start with Windows via HKCU Run, minimize to tray, battery mode, logging level)
+- [x] Library (minimal): add file/folder, remove, list with metadata columns, preview; incremental scan + `ReadDirectoryChangesW`; lazy metadata
+- [x] Tray: Resume/Pause/Next/Previous/Current wallpaper/Open app/Settings/Exit; left-click toggles UI; UI resources released on close, engine continues
+- [x] UI never decodes/renders/polls; engine interaction only via `ApplicationController` commands
+- [x] **Config write-batching** (spec §9): debounced dirty-flag save (~1–2 s after last `CONFIG_SET`, plus save on shutdown) — no per-click writes, UI edits survive a crash
+- [x] Files: `src/ui/Win32UI*`, `src/ui/panels/*`, `src/ui/TrayController*`, `src/library/LibraryManager*`
 
-**Verify:** all panels functional; repeated UI open/close shows no RAM growth; tray works with UI closed; 10k-file folder handled without repeated rescans. **Exit:** ☐
+**Verify:** all panels functional; repeated UI open/close shows no RAM growth; tray works with UI closed; 10k-file folder handled without repeated rescans. **Exit:** ✅ (162/162 tests both configs; live open/close leak cycle; tray + left-click toggle code-reviewed — see notes)
 
 **Notes:**
+- **2026-08-17 (M11 complete — commit ``)**: full `UiContract` (spec §10.13): commands, notifications, `UiSnapshot`, `INotificationSink`, `MonitorInfo`, `LibraryItem` — plus the spec's **control→command mapping table** (every control posts a `Command`, never calls engine code). `Win32UI` (lazy create on first show, destroy on close, DPI-aware, 6 tabs) + panels: **Home** (wallpaper/video/monitor/state/governor reasons/FPS/decoder/GPU adapter), **Library** (ListView columns, toolbar add-file/folder/remove/refresh, lazy metadata on selection, sort), **Playlists** (items/mode/loop + next/prev/current), **Monitors** (per-monitor + clone/independent + scaling), **Performance** (advanced toggles/thresholds/delays/modes), **Settings** (start-with-Windows via HKCU Run, minimize-to-tray, battery mode, log level, README button). `TrayController` (icon + tooltip + menu Resume/Pause/Next/Prev/Open/Settings/Exit + left-click toggle). **`LibraryManager`** (add file/folder, remove, incremental refresh, `ReadDirectoryChangesW` recursive watch, background metadata probe via `DecoderManager::probeMetadata` — worker never touches `items_`; watch-prune on remove). **Config write-batching** (spec §9): `markDirty` (injectable clock) + `maybeFlushDirty` debounced save + `applyConfigSet` pure mapping; **governor live setters** (`setBatteryPauses`, `setLongPauseReleaseSeconds`). Engine helpers: `WallpaperManager::grabFrameSnapshot` (staging readback → preview HBITMAP) + `DecoderManager::probeMetadata`. App wiring: command queue (`postCommand`/`drainCommands` on the control thread), `subscribe`/`getUiSnapshot`/telemetry timer (armed only while the UI window exists), tray lifecycle, FOCUS→UI, EXIT. **13 new tests → 162/162** (library scan/dedup/remove-reindex/watch/refresh/lazy-probe; config debounce + applyConfigSet; governor setters), Debug + Release, 0 warnings. **Live**: boot + play clean; 5× open (second-instance focus) → close (destroy path, `minimizeToTray=false`) cycle with **0 log errors** — no control/timer/subscription leak (spec §10.9). **NOT MEASURED**: tray left-click/menu interaction + 10k-file folder stress (need human eyes/keystrokes — wiring code-reviewed; tray icon present while running); frame-snapshot preview verified via code review only.
+- **2026-08-17 (M11 bugs caught before commit)**: **(1)** `LibraryManager::addFiles` passed raw paths to `addItemInternal`, which never checked the extension — a `.txt` entered the library (only the watch/`addFolder` paths pre-filtered). Fixed centrally in `addItemInternal` (`isVideoFile`). **(2)** The config debounce test mixed fake/real clocks: `markDirty()` anchored at `steady_clock::now()` while the test drove `maybeFlushDirty(t)` with a fake clock, so the re-arm case flushed early. Fixed by making `markDirty(now)` injectable (defaults to the real clock — app call sites unchanged). **(3)** Test-authoring bugs: `itemById(0)` is always null (ids start at 1) — replaced with path/iteration-based lookup. **(4)** A transient MSVC C4702 during incremental compiles of the test file (absent on clean rebuilds — no action).
 
 ---
 

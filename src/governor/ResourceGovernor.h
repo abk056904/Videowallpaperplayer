@@ -57,6 +57,16 @@ public:
     // The reason set as a human-readable string (debug log).
     static std::wstring describeReasons(uint32_t reasons);
 
+    // M11 live config: battery-pause policy and the long-pause release
+    // threshold are read by onTick/transitionTo at use time, so changing the
+    // policy config takes effect immediately (no recreation needed).
+    void setBatteryPauses(bool pause) { policy_.config().batteryPauses = pause; }
+    void setLongPauseReleaseSeconds(int seconds) {
+        policy_.config().longPauseReleaseSeconds = seconds;
+    }
+    // Test/UI read access to the live policy config.
+    const PausePolicy::Config& policyConfig() const { return policy_.config(); }
+
     // Test hook: action observer fired on every transition (assert the
     // transition table without a real playback session).
     void setActionObserver(Action a) { action_ = std::move(a); }
