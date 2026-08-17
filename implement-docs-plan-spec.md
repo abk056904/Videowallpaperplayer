@@ -52,7 +52,7 @@ Audio playback, HDR rendering (v1 detects + documents + SDR fallback only), glob
 - **Toolchain (installed + verified, M0 done):** MSVC 14.44.35207 (VS 2022 Build Tools 17.14.37), Windows SDK 10.0.26100.0 (MF/D3D11/DXGI headers+libs present), CMake 4.4.2 (`C:\Program Files\CMake\bin\cmake.exe`). Generator: `Visual Studio 17 2022`, x64. Verified via Debug+Release hello build.
 - **Test videos:** `C:\Users\mbk43\Videos\bgcmp\` (10× H.264 incl. 4K/"4K60", 1× HEVC `Furina-…mp4`) and `C:\Users\mbk43\Downloads\Video\` (1080p H.264). **No AV1/VP9/HDR content on disk.**
 - **ffmpeg:** not installed (see §6, ffmpeg row — install temporarily for clip synthesis, then remove).
-- **Displays:** **one display only** — `\\.\DISPLAY1` 1536×864, primary. Real multi-monitor hot-plug cannot be exercised on this machine (see §6 and M8 note).
+- **Displays:** **one display only** — `\\.\DISPLAY1`, **1920×1080 @ 144 Hz physical** (the 1536×864 figure from the M0 audit was the 125%-scaled value), primary. Real multi-monitor hot-plug cannot be exercised on this machine (see §6 and M8 note).
 - **Git:** **not a git repository** (`git rev-parse` → fatal). The commit-per-milestone workflow requires `git init` + an initial commit as the first M1 action.
 - **fxc.exe:** present at `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe` — build-time shader compilation confirmed feasible.
 
@@ -79,7 +79,7 @@ Audio playback, HDR rendering (v1 detects + documents + SDR fallback only), glob
 | **24 h stability run** | **Shorter runs OK** | Replace the 24 h soak with **4–8 h runs** + aggressive leak-cycle tests (play/pause/resume/next/monitor/UI-open-close loops with RAM/VRAM/handle/thread tracking). M14 report states the reduced duration explicitly. |
 | **Personal videos** | **Reference by path only** | Tests reference `C:\Users\mbk43\Videos\bgcmp\…` and `Downloads\Video\…` by absolute path. **Never copy personal videos into the repo.** No test-media folder; add a `.gitignore` guard if any media path ever needs staging. |
 | **ffmpeg** | **Install temporarily, then remove** | `winget install Gyan.FFmpeg` as a **dev/testing-only** tool to (a) probe/verify codec metadata and (b) synthesize AV1/VP9/HDR test clips for M13 coverage. After the clips are produced and M13 is done, `winget uninstall` ffmpeg. ffmpeg is **never** a runtime dependency of the app. Generated clips go in a gitignored temp location or are deleted after use. |
-| **Multi-monitor (M8)** | **Single display on this machine** | Only one monitor (1536×864) exists, so real hot-plug / multi-monitor rendering cannot be verified here. Substitute: unit-test `MonitorManager` events and per-monitor session logic with simulated topologies; verify single-monitor behavior end-to-end; report real multi-monitor items as **`NOT MEASURED — no second display on dev machine`** in the M14 report (revisit if a second monitor becomes available). |
+| **Multi-monitor (M8)** | **Single display on this machine** | Only one monitor (1920×1080 @ 144 Hz physical) exists, so real hot-plug / multi-monitor rendering cannot be verified here. Substitute: unit-test `MonitorManager` events and per-monitor session logic with simulated topologies; verify single-monitor behavior end-to-end; report real multi-monitor items as **`NOT MEASURED — no second display on dev machine`** in the M14 report (revisit if a second monitor becomes available). |
 
 ---
 
@@ -198,7 +198,7 @@ Wireframe:
 ┌─ Home ─────────────────────────────────────────────────────────┐
 │ Current wallpaper : Ganyu - Twilight Blossom ….mp4             │
 │ Playback state    : PLAYING          (reasons: none)           │
-│ Current monitor   : DISPLAY1  1536×864 @ 60 Hz   (primary)     │
+│ Current monitor   : DISPLAY1  1920×1080 @ 144 Hz (primary)     │
 │ Presented FPS     : 30        Dropped frames : 0               │
 │ Decode latency    : 8 ms                                       │
 │ Decoder           : NVIDIA NVDEC / hardware                    │
@@ -272,7 +272,7 @@ Wireframe:
 │ Wallpaper mode:  (•) Independent    ( ) Clone                  │
 │ ┌────────────────────────────────────────────────────────────┐ │
 │ │ Monitor    Resolution    Refresh    Primary                │ │
-│ │ DISPLAY1   1536×864      60 Hz      ✔                      │ │
+│ │ DISPLAY1   1920×1080    144 Hz      ✔                      │ │
 │ └────────────────────────────────────────────────────────────┘ │
 │ Wallpaper source : [My Wallpapers ▾]   (playlist or file)      │
 │ Scaling          : [Fill ▾]                                    │
@@ -780,7 +780,7 @@ struct INotificationSink {
 - The `%APPDATA%` path rename touches docs/02 §2.9/§2.10, docs/03 M1, and docs/06 M1 — watch for stragglers.
 - C++23 flag: `/std:c++23` smoke test at M1; fall back to `/std:c++latest` if needed.
 - **Not a git repository** — resolved: `git init` + initial commit is the first M1 action (needed for the chosen commit-per-milestone workflow).
-- **Single display (1536×864)** — real multi-monitor verification is impossible on this machine; mitigated via simulated-topology unit tests + documented `NOT MEASURED` (see §6).
+- **Single display (1920×1080 @ 144 Hz physical)** — real multi-monitor verification is impossible on this machine; mitigated via simulated-topology unit tests + documented `NOT MEASURED` (see §6).
 - ~~License~~ — **RESOLVED (2026-08-17): Apache-2.0** (user requirement: "it must be full open source"). All open items are now closed; M1 can start.
 
 ---

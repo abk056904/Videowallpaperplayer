@@ -10,11 +10,15 @@ namespace {
 
 class Parser {
 public:
+    // Bounded recursion: config is a user-writable file, and unbounded nesting
+    // would let a malicious/corrupt file smash the stack (see BUILD_NOTES).
+    static constexpr int kMaxDepth = 512;
+
     explicit Parser(const std::wstring& text) : s_(text) {}
 
     Result<Json> run() {
         skipWs();
-        auto v = parseValue();
+        auto v = parseValue(0);
         if (!v) return v;
         skipWs();
         if (pos_ != s_.size()) return error(L"trailing characters after value");
@@ -47,11 +51,11 @@ private:
         return false;
     }
 
-    Result<Json> parseValue() {
+    Result<Json> parseValue(int depth) {
         if (pos_ >= s_.size()) return error(L"unexpected end of input");
         const wchar_t c = s_[pos_];
-        if (c == L'{') return parseObject();
-        if (c == L'[') return parseArray();
+        if (c == L'{') return parseObject(depth + 1);
+        if (c == L'[') return parseArray(depth + 1);
         if (c == L'"') return parseString();
         if (c == L't') return parseLiteral(L"true", Json::boolean(true));
         if (c == L'f') return parseLiteral(L"false", Json::boolean(false));
@@ -143,7 +147,8 @@ private:
         return Json::number(d);
     }
 
-    Result<Json> parseObject() {
+    Result<Json> parseObject(int depth) {
+        if (depth > kMaxDepth) return error(L"nesting too deep");
         ++pos_; // consume '{'
         Json::Object obj;
         skipWs();
@@ -157,23 +162,27 @@ private:
             skipWs();
             if (!consume(L':')) return error(L"expected ':' after key");
             skipWs();
-            auto val = parseValue();
+            auto val = parseValue(depth);
             if (!val) return std::unexpected(val.error());
-            obj.emplace(std::move(*key), std::move(*val));
+            // Strict validation (D-06): duplicate keys are ambiguous — reject.
+            if (!obj.emplace(std::move(*key), std::move(*val)).second) {
+                return error(L"duplicate key");
+            }
             skipWs();
             if (consume(L'}')) return Json::object(std::move(obj));
             if (!consume(L',')) return error(L"expected ',' or '}'");
         }
     }
 
-    Result<Json> parseArray() {
+    Result<Json> parseArray(int depth) {
+        if (depth > kMaxDepth) return error(L"nesting too deep");
         ++pos_; // consume '['
         Json::Array arr;
         skipWs();
         if (consume(L']')) return Json::array(std::move(arr));
         for (;;) {
             skipWs();
-            auto val = parseValue();
+            auto val = parseValue(depth);
             if (!val) return std::unexpected(val.error());
             arr.push_back(std::move(*val));
             skipWs();

@@ -1,7 +1,10 @@
 #include "config/ConfigurationManager.h"
 
 #include <fstream>
+#include <iterator>
 #include <sstream>
+
+#include "util/utf8.h"
 
 namespace vw::config {
 
@@ -157,21 +160,8 @@ bool ConfigurationManager::load() {
         return save();
     }
 
-    std::wstring text;
-    {
-        std::wifstream in(opts_.configPath, std::ios::binary);
-        if (!in) {
-            lastError_ = L"cannot open config file";
-            return false;
-        }
-        std::wstringstream ss;
-        ss << in.rdbuf();
-        text = ss.str();
-    } // stream closed here so the rename below cannot hit a sharing violation
-
-    auto parsed = util::Json::parse(text);
-    if (!parsed || !parsed->isObject()) {
-        // Corrupt config: back it up, fall back to defaults, continue startup.
+    // Corrupt config (bad UTF-8 or bad JSON): back it up, fall back to defaults.
+    auto backupAndReset = [&]() {
         auto bak = opts_.configPath;
         bak += L".bak"; // config.json -> config.json.bak
         std::error_code ec2;
@@ -180,6 +170,27 @@ bool ConfigurationManager::load() {
         lastError_ = L"corrupt config backed up to " + bak.filename().wstring();
         applyDefaults();
         save();
+    };
+
+    std::string bytes;
+    {
+        std::ifstream in(opts_.configPath, std::ios::binary);
+        if (!in) {
+            lastError_ = L"cannot open config file";
+            return false;
+        }
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    } // stream closed here so the rename below cannot hit a sharing violation
+
+    auto decoded = util::utf8ToWide(bytes);
+    if (!decoded) {
+        // Invalid UTF-8 (e.g. ANSI file) — treated as corrupt.
+        backupAndReset();
+        return true;
+    }
+    auto parsed = util::Json::parse(*decoded);
+    if (!parsed || !parsed->isObject()) {
+        backupAndReset();
         return true;
     }
 
@@ -243,14 +254,15 @@ bool ConfigurationManager::save() const {
     auto tmp = opts_.configPath;
     tmp += L".tmp";
     {
-        // UTF-8 storage: MSVC wfstream converts wchar_t -> UTF-8 (CRT codecvt).
-        // Round-trips through wifstream on load; friendly for manual editing.
-        std::wofstream out(tmp, std::ios::out | std::ios::trunc | std::ios::binary);
+        // UTF-8 storage via explicit conversion (wfstream is ANSI-codepage
+        // dependent on write and would corrupt non-ASCII values — see BUILD_NOTES).
+        std::ofstream out(tmp, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!out) {
             lastError_ = L"cannot write config";
             return false;
         }
-        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        const std::string utf8 = util::wideToUtf8(text);
+        out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
     }
     std::filesystem::rename(tmp, opts_.configPath, ec);
     if (ec) {

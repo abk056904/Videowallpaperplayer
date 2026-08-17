@@ -78,7 +78,7 @@ private:
     uint64_t maxBytes_ = 5ull * 1024 * 1024;
     uint64_t bytes_ = 0;
     std::mutex mu_;
-    std::wofstream file_; // UTF-8 sink (MSVC wfstream converts wchar_t via CRT codecvt)
+    std::ofstream file_; // UTF-8 byte sink (lines converted explicitly)
     std::atomic<Level> level_{Level::Info};
 };
 

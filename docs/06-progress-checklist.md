@@ -71,6 +71,11 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - Toolchain: compiler is MSVC **19.44.35228.0** (cl.exe in VS 2022 Build Tools 17.14.37) with `/std:c++23` confirmed.
 - `doctest.h` vendored at **v2.4.11** (fetched once from GitHub, committed for offline builds).
 - Config is UTF-8 JSON with sections: `general` / `playback` / `performance` / `battery` / `detection`; corrupt file → `.bak` backup + defaults rewrite (covered by test).
+- JSON tests expanded post-commit: 7 → 17 cases (28 total). Edge cases locked: all escapes, `\u` incl. surrogate pairs + `\u0000`, number formats (`-0`, `1e+5`, `1e999`→inf rejected, leading/trailing dots), empty containers/nesting, trailing commas, literal word boundaries (`truex`), control-char `\u` serialization, key escaping round-trip.
+- **Config + logger tests deepened: 47 test cases / 2267 assertions total, green in Debug+Release.** Config: invalid-UTF-8 → corrupt recovery, duplicate keys → corrupt recovery (strict JSON), empty object/sections → defaults, enum strings case-sensitive, min-bound clamping, string-array element filtering, full-field round-trip, deterministic repeated saves, save-fails-cleanly (unwritable target). Logger: level-boundary filtering (WARN level), non-ASCII UTF-8 sink round-trip, 4-thread × 500-line concurrency (every line exactly once), repeated rotation keeps current.log bounded.
+- **Strictness decision (locked by test): duplicate JSON keys are rejected as a parse error** (were silently first-wins via `std::map::emplace`) — ambiguous config → corrupt-file recovery path instead of silent value pick.
+- **UTF-8 encoding bug found + fixed in review**: MSVC `wfstream` write = ANSI codepage (drops non-ANSI chars), read = UTF-8 — asymmetric, so non-ASCII config values were corrupted. Now explicit `wideToUtf8`/`utf8ToWide` (`src/util/utf8.*`) with byte streams; invalid UTF-8 → corrupt-recovery path. Covered by `tests/test_utf8.cpp` + non-ASCII config round-trip.
+- **Review refactors applied**: JSON recursion depth cap (512, locked by test); `initPaths` fallback → `%TEMP%` (never writes next to exe); build hygiene — `/WX` on app/harness targets, `/RTC1` in Debug, Release PDBs (`/Zi` + `/DEBUG`).
 - Logger: 5 MB/file rotation (`current.log` → `previous.log`), aggregate events only, thread-safe via mutex.
 
 ---
@@ -90,6 +95,9 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 **Verify:** solid color + UV gradient renders to test window at 60 FPS (Debug); Release has no debug layer; adapter/output log matches reality. **Exit:** ☐
 
 **Notes:**
+- Pre-verification done via `harness/gfx_harness.cpp` (target `vw_gfx_harness`, dev-only): device creation + UV-gradient render verified on **both GPUs** at ~144 FPS (vsync), feature level 11_1, clean `--frames N` exit; enumeration logs 3 adapters (AMD iGPU default, NVIDIA dGPU, Basic Render). See `BUILD_NOTES.md` "M2 pre-verification" for details.
+- **Debug layer NOT installed on this machine** (hr=0x887A002D) — device creation falls back gracefully; enabling requires the optional *Graphics Tools* Windows feature (elevated; not installed, documented in BUILD_NOTES).
+- **Display corrected: 1920×1080 @ 144 Hz physical** (1536×864 was the 125%-scaled value).
 
 ---
 

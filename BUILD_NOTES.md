@@ -75,7 +75,7 @@ M1 exit criteria met: Debug+Release x64 build green, 16/16 unit tests pass in bo
 ## Findings
 
 - **`/std:c++23` confirmed** — compiler is MSVC **19.44.35228.0**; no fallback to `/std:c++latest` needed. `std::expected` + `std::format` (wide) compile clean.
-- **Config & log storage are UTF-8** — MSVC's `wfstream` converts `wchar_t` ↔ UTF-8 through the CRT codecvt even in binary mode. Config (`%APPDATA%\VideoWallpaper\config.json`) and logs are therefore UTF-8, not UTF-16 as initially assumed. Round-trip verified by unit tests; friendly for manual editing.
+- **Config & log storage are UTF-8** (explicit conversion via `util/utf8.h`, `CP_UTF8`). Initial M1 assumption was wrong and was caught by review: MSVC `std::wfstream` is **asymmetric** — its *write* path converts to the ANSI codepage (drops chars > 0xFF) while its *read* path decodes UTF-8. ASCII worked by coincidence; any non-ASCII value (é, CJK paths) was corrupted or silently dropped. **Fixed: byte streams (`std::ofstream`/`std::ifstream`) + explicit `wideToUtf8`/`utf8ToWide`**; invalid UTF-8 on read is treated as corrupt config (backup + defaults). Covered by `tests/test_utf8.cpp` + a non-ASCII config round-trip test.
 - **Config format** — JSON sections `general` / `playback` / `performance` / `battery` / `detection`; first run writes defaults; corrupt file → `config.json.bak` + defaults rewrite; atomic save (temp + rename).
 - **Single instance** — `Local\VideoWallpaper.SingleInstance` mutex; second instance finds the control window via class name, posts a registered focus message, exits 0 (verified live: first instance logged "second instance requested focus").
 - **Control window** — class `VideoWallpaperControl`, `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, no taskbar; `WM_APP` = shutdown request; message pump blocks when idle (`GetMessageW`).
@@ -88,3 +88,36 @@ M1 exit criteria met: Debug+Release x64 build green, 16/16 unit tests pass in bo
   5. `std::format` wide format string requires **wide** string literals for all args (`L"0.1.0"`, not `"0.1.0"`).
   6. `ControlWindow` is non-copyable (owns an HWND) — deterministic shutdown via an idempotent `destroy()` method, not copy-assignment.
   7. Template params that never appear in the parameter list are not deducible (`readStrings` had a stray `typename F`).
+  8. `std::map::emplace` does **not** overwrite existing keys — duplicate JSON keys were silently first-wins; changed to reject (strict validation, D-06) so ambiguous config hits the corrupt-recovery path.
+  9. Test literals with nested quotes/backslashes are error-prone — use C++ raw string literals (`LR"(...)"`) for JSON fixtures.
+  10. **Never use `std::wfstream`/`std::wifstream` for files** — MSVC write = ANSI codepage (drops non-ANSI), read = UTF-8 decode (asymmetric, corrupts non-ASCII). Byte streams + explicit `CP_UTF8` conversion (`util/utf8.h`) instead.
+
+## Pre-M2 review refactors (2026-08-17, applied)
+
+- **JSON recursion depth cap (512)** — user-writable config could otherwise stack-overflow the parser; deep nesting is now a clean parse error → corrupt-recovery path (test locks it).
+- **`initPaths` fallback** → `%TEMP%\VideoWallpaper` instead of the working directory (plan rule: never write next to the executable).
+- **Build hygiene**: `/WX` (warnings-as-errors) on app + harness targets (Debug+Release are warning-free); `/RTC1` in Debug; `/Zi` + link `/DEBUG` in Release (PDBs now produced — verified `VideoWallpaper.pdb` in build/release/Release/).
+
+---
+
+# M2 pre-verification — D3D11 harness findings (2026-08-17)
+
+`harness/gfx_harness.cpp` (dev-only target `vw_gfx_harness`) verified the M2 renderer prerequisites on this machine.
+
+## Verified working ✅
+
+- **Device creation on both GPUs** — feature level **0xB100 (11_1)**, BGRA support, on the AMD iGPU (default adapter) and the NVIDIA RTX 3050 (`--adapter 1`).
+- **Rendering + vsync present** — UV-gradient fullscreen triangle renders; **~142–146 FPS** at vsync on the 144 Hz display (i.e. vsync-locked to the display refresh), clean exit via `--frames N`.
+- **Enumeration matches reality** — DXGI reports **3 adapters**: `AMD Radeon(TM) Graphics` (vendor 0x1002, **default adapter 0**), `NVIDIA GeForce RTX 3050 Laptop GPU` (0x10DE, adapter 1), `Microsoft Basic Render Driver` (0x1414, adapter 2).
+
+## Corrected environment facts
+
+- **Display is 1920×1080 @ 144 Hz physical** — the M0 audit's "1536×864" was the **125%-scaled** value; `EnumDisplaySettingsW` reports 1920×1080 @ 144 Hz. Still **one display** (single-monitor `NOT MEASURED` posture in the spec is unchanged).
+- **Default adapter is the AMD iGPU**, not the NVIDIA dGPU — relevant to M8 adapter selection ("don't wake the discrete GPU needlessly"): the power-efficient iGPU is already the default.
+
+## Debug layer: NOT installed ⚠️
+
+- `D3D11CreateDevice` with `D3D11_CREATE_DEVICE_DEBUG` fails with **hr=0x887A002D (`DXGI_ERROR_SDK_COMPONENT_MISSING`)** on both GPUs — the D3D11 debug-layer runtime is absent even though the Windows SDK is installed.
+- The harness (and M2's device manager) **gracefully falls back** to a non-debug device — correct pattern, no crash.
+- To enable real debug-layer validation later (useful for M2/M13 debugging), install the optional **Graphics Tools** Windows feature:
+  `DISM /Online /Add-Capability /CapabilityName:Graphics.Tools~~~~0.0.1.0` (requires elevation; **not installed without permission** — documented here instead).

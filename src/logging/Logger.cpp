@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "util/utf8.h"
+
 namespace vw::log {
 
 const wchar_t* levelName(Level l) {
@@ -68,11 +70,11 @@ void Logger::log(Level l, std::wstring msg) {
 
     std::lock_guard lock(mu_);
     if (file_) {
-        // Approximate byte count (UTF-16 code units); rotation bound is a cap, not exact.
-        const uint64_t approxBytes = line.size() * 2;
+        const std::string utf8 = util::wideToUtf8(line);
+        const uint64_t approxBytes = utf8.size();
         if (maxBytes_ > 0 && bytes_ + approxBytes > maxBytes_) rotateLocked();
         if (file_) {
-            file_.write(line.data(), static_cast<std::streamsize>(line.size()));
+            file_.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
             bytes_ += approxBytes;
         }
     }

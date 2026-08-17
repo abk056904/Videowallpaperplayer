@@ -35,7 +35,9 @@ void ApplicationController::initPaths() {
     if (SUCCEEDED(::SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
         appDataDir_ = std::filesystem::path(buf) / L"VideoWallpaper";
     } else {
-        appDataDir_ = std::filesystem::current_path() / L"VideoWallpaper";
+        // Never write next to the executable (plan rule): use the temp dir as
+        // the last-resort fallback instead of the working directory.
+        appDataDir_ = std::filesystem::temp_directory_path() / L"VideoWallpaper";
     }
 }
 
