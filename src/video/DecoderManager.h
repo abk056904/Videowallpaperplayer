@@ -73,6 +73,9 @@ public:
 
     bool isRunning() const { return worker_.joinable(); }
 
+    // Frames successfully pushed since the last start() (M6 decodedFps stats).
+    uint64_t decodedFrames() const { return decodedFrames_.load(); }
+
     // open() split: hardware path (DXGI manager + NV12 + probe), software
     // path (VP MFT + RGB32). The hardware path PROBES the first sample — on
     // machines where NV12 negotiates but the decoder hands back system-memory
@@ -99,6 +102,7 @@ private:
     ID3D11Device* d3dDevice_ = nullptr; // non-owning; must outlive this manager
     std::thread worker_;
     std::atomic<bool> stopRequested_{false};
+    std::atomic<uint64_t> decodedFrames_{0}; // M6: since last start()
     FrameQueue* queue_ = nullptr;
     std::wstring decoderName_;
     bool hardware_ = false;

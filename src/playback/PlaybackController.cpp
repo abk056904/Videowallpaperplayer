@@ -1,0 +1,233 @@
+#include "playback/PlaybackController.h"
+
+#include <utility>
+
+#include "logging/Logger.h"
+#include "util/clock.h"
+#include "video/DecodedFrame.h"
+#include "video/VideoPlayer.h"
+
+namespace vw::playback {
+
+namespace {
+constexpr LONGLONG k100nsPerSecond = 10'000'000LL;
+} // namespace
+
+PlaybackController::PlaybackController() {
+    // High-resolution waitable timer (Win10 1803+); plain timer as fallback.
+    timer_ = ::CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                      TIMER_ALL_ACCESS);
+    if (!timer_) {
+        timer_ = ::CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    }
+}
+
+PlaybackController::~PlaybackController() {
+    stop();
+    if (timer_) {
+        ::CloseHandle(timer_);
+    }
+}
+
+Result<void> PlaybackController::open(const std::wstring& path, ID3D11Device* d3dDevice,
+                                      size_t queueCapacity) {
+    stop();
+    auto player = std::make_unique<video::VideoPlayer>();
+    if (d3dDevice) {
+        player->setD3DDevice(d3dDevice);
+    }
+    player->setQueueCapacity(queueCapacity);
+    auto result = player->open(path);
+    if (!result) {
+        return result; // player discarded; state stays Stopped
+    }
+    scheduler_.setSourceFps(player->metadata().fps);
+    player_ = std::move(player);
+    stats_ = {};
+    return {};
+}
+
+Result<void> PlaybackController::start() {
+    if (!player_) {
+        return std::unexpected(L"PlaybackController::start: no file opened");
+    }
+    if (state_ == State::Playing) {
+        return {};
+    }
+    // Anchor the timeline: media time 0 is due now (start-of-file playback).
+    scheduler_.reset(util::Clock::instance().now100ns(), 0);
+    auto result = player_->start();
+    if (!result) {
+        return result;
+    }
+    state_ = State::Playing;
+    statsWindowStart_ = util::Clock::instance().now100ns();
+    decodedAtWindowStart_ = player_->decodedFrames();
+    presentedAtWindowStart_ = stats_.presentedFrames;
+    armTimer();
+    return {};
+}
+
+void PlaybackController::pause() {
+    if (state_ != State::Playing || !player_) {
+        return;
+    }
+    cancelTimer();
+    player_->pause(); // joins the worker; keeps position for resume
+    state_ = State::Paused;
+    logStatsSummary(); // DEBUG detail at pause boundaries
+    log::Logger::instance().info(L"playback paused at {} ms",
+                                 player_->position100ns() / 10000);
+}
+
+Result<void> PlaybackController::resume() {
+    if (state_ != State::Paused || !player_) {
+        return state_ == State::Stopped
+                   ? std::unexpected(L"PlaybackController::resume: not paused (stopped)")
+                   : Result<void>{};
+    }
+    // Re-anchor: the saved position is due now (the decode worker seeks there).
+    scheduler_.reset(util::Clock::instance().now100ns(), player_->position100ns());
+    auto result = player_->resume();
+    if (!result) {
+        return result;
+    }
+    state_ = State::Playing;
+    statsWindowStart_ = util::Clock::instance().now100ns();
+    decodedAtWindowStart_ = player_->decodedFrames();
+    presentedAtWindowStart_ = stats_.presentedFrames;
+    armTimer();
+    return {};
+}
+
+void PlaybackController::stop() {
+    cancelTimer();
+    if (player_) {
+        player_->stop();
+        player_.reset();
+    }
+    if (state_ != State::Stopped) {
+        logStatsSummary();
+    }
+    state_ = State::Stopped;
+}
+
+const video::VideoMetadata& PlaybackController::metadata() const {
+    static const video::VideoMetadata empty;
+    return player_ ? player_->metadata() : empty;
+}
+
+bool PlaybackController::hardwareDecoding() const {
+    return player_ && player_->hardwareDecoding();
+}
+
+const std::wstring& PlaybackController::decoderName() const {
+    static const std::wstring empty;
+    return player_ ? player_->decoderName() : empty;
+}
+
+HANDLE PlaybackController::newFrameEvent() const {
+    return player_ ? player_->queue()->newFrameEvent() : nullptr;
+}
+
+std::optional<video::DecodedFrame> PlaybackController::onWake() {
+    const LONGLONG now = util::Clock::instance().now100ns();
+    if (state_ != State::Playing || !player_) {
+        return std::nullopt;
+    }
+    video::FrameQueue* queue = player_->queue();
+    if (!queue) {
+        return std::nullopt; // pause raced a wake; the pump re-checks state
+    }
+    // Reset BEFORE draining: a push during the drain re-signals the event
+    // (no lost wakeups).
+    ::ResetEvent(queue->newFrameEvent());
+
+    video::DecodedFrame frame;
+    const bool got = scheduler_.pacingEnabled()
+                         ? queue->popNewestUpTo(scheduler_.dueMediaAt(now), frame)
+                         : player_->pollFrame(frame);
+    if (!got) {
+        // Deadline passed with nothing due (decoder still working): re-arm
+        // relative to now — never a past deadline (no busy re-fire).
+        scheduler_.advanceIdle(now);
+        armTimer();
+        return std::nullopt;
+    }
+    if (frame.endOfStream) {
+        armTimer(); // caller stops immediately; harmless
+        return frame;
+    }
+    scheduler_.advanceAfterPresent(now, frame.timestamp);
+    ++stats_.presentedFrames;
+    player_->setPosition(frame.timestamp); // keeps resume/seek accurate
+    updateStats(now, frame.decodeTime100ns);
+    armTimer();
+    return frame;
+}
+
+void PlaybackController::noteRenderTime(double ms) {
+    stats_.renderTimeMs = ms;
+}
+
+void PlaybackController::armTimer() {
+    if (!timer_ || !scheduler_.pacingEnabled()) {
+        return; // pacing disabled: presentation is new-frame-event driven
+    }
+    const LONGLONG now = util::Clock::instance().now100ns();
+    LARGE_INTEGER due{};
+    due.QuadPart = -static_cast<LONGLONG>(scheduler_.msUntilNextDeadline(now)) * 10000;
+    ::SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE);
+}
+
+void PlaybackController::cancelTimer() {
+    if (timer_) {
+        ::CancelWaitableTimer(timer_);
+    }
+}
+
+void PlaybackController::updateStats(LONGLONG now, LONGLONG frameDecodeTime100ns) {
+    // Latency: decode wall time (stamped by the worker) -> presentation now.
+    if (frameDecodeTime100ns > 0) {
+        latencySumMs_ += static_cast<double>(now - frameDecodeTime100ns) / 10000.0;
+        ++latencyCount_;
+    }
+    if (now - statsWindowStart_ < k100nsPerSecond) {
+        return; // one rate sample per second of wall time
+    }
+    const double elapsedSec =
+        static_cast<double>(now - statsWindowStart_) / static_cast<double>(k100nsPerSecond);
+    const uint64_t decoded = player_ ? player_->decodedFrames() : 0;
+    stats_.decodedFps = static_cast<double>(decoded - decodedAtWindowStart_) / elapsedSec;
+    stats_.presentedFps =
+        static_cast<double>(stats_.presentedFrames - presentedAtWindowStart_) / elapsedSec;
+    stats_.decodedFrames = decoded;
+    stats_.droppedFrames = player_ && player_->queue() ? player_->queue()->droppedFrames() : 0;
+    stats_.decodeLatencyMs = latencyCount_ > 0 ? latencySumMs_ / static_cast<double>(latencyCount_)
+                                               : 0.0;
+    latencySumMs_ = 0.0;
+    latencyCount_ = 0;
+    statsWindowStart_ = now;
+    decodedAtWindowStart_ = decoded;
+    presentedAtWindowStart_ = stats_.presentedFrames;
+
+    // Aggregate DEBUG stats ~ every 5 s (never spams the INFO log).
+    if (now - lastStatsLog_ >= 5 * k100nsPerSecond) {
+        lastStatsLog_ = now;
+        log::Logger::instance().debug(
+            L"stats: decoded {:.1f} fps, presented {:.1f} fps, dropped {}, "
+            L"decodeLatency {:.1f} ms, render {:.1f} ms",
+            stats_.decodedFps, stats_.presentedFps, stats_.droppedFrames,
+            stats_.decodeLatencyMs, stats_.renderTimeMs);
+    }
+}
+
+void PlaybackController::logStatsSummary() const {
+    log::Logger::instance().info(
+        L"playback session: decoded {:.1f} fps, presented {:.1f} fps, {} frame(s) "
+        L"dropped, avg decodeLatency {:.1f} ms, render {:.1f} ms, {} frame(s) presented",
+        stats_.decodedFps, stats_.presentedFps, stats_.droppedFrames, stats_.decodeLatencyMs,
+        stats_.renderTimeMs, stats_.presentedFrames);
+}
+
+} // namespace vw::playback

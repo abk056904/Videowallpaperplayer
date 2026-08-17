@@ -33,7 +33,7 @@ Result<void> VideoPlayer::start() {
     if (state_ == State::Playing) {
         return {};
     }
-    queue_ = std::make_unique<FrameQueue>(3);
+    queue_ = std::make_unique<FrameQueue>(queueCapacity_);
     auto result = decoder_.start(queue_.get(), position_);
     if (!result) {
         return result;
@@ -54,7 +54,8 @@ void VideoPlayer::pause() {
         queue_.reset();
     }
     state_ = State::Paused;
-    log::Logger::instance().info(L"playback paused at {} ms", position_ / 10000);
+    // (PlaybackController logs the pause position — it is the integration
+    // owner and keeps the position in sync; this layer stays quiet.)
 }
 
 Result<void> VideoPlayer::resume() {

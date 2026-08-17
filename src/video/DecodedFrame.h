@@ -19,6 +19,8 @@ struct DecodedFrame {
     UINT width = 0;
     UINT height = 0;
     LONGLONG timestamp = 0;     // media time, 100 ns units
+    LONGLONG decodeTime100ns = 0; // wall clock (util::Clock) at decode, 100 ns
+                                // units — for decodeLatencyMs stats (M6)
     bool endOfStream = false;   // sentinel: the source reached the end
     bool hardware = false;      // true when `texture` is the payload
 };

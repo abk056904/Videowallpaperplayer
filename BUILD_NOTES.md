@@ -380,3 +380,39 @@ H.264/HEVC decode output is **limited range** (luma 16–235, chroma 16–240; `
 - Deferred (noted for M13): `bindGpuFrame` creates 2 SRVs per decoded frame — cache per decoder texture when the hardware path is exercised on a working machine.
 
 ---
+
+# M6 Build Notes — frame timing, queue & scheduling (2026-08-17)
+
+M6 exit criteria met: source-FPS pacing verified live, drops ≈ 0, pause → CPU near-zero, no busy loop, FrameQueue unit tests green.
+
+## What shipped
+
+- **`src/playback/FrameScheduler`** — pure pacing math over the QPC 100 ns clock (no threads, no Win32 waits): source-FPS interval, a media↔wall anchor (`dueMediaAt(now) = anchorMedia + (now − anchorWall)`), deadline advance derived from the **presented frame's media timestamp** (exact even for early/late presents), and idle re-arms that snap forward so a stale deadline never busy re-fires. Unit-tested.
+- **`src/playback/PlaybackController`** — owns `VideoPlayer` + `FrameScheduler` + a high-resolution **waitable timer** + the per-session stats. `onWake()` (called on timer OR new-frame events) drains the queue per the scheduler and returns the frame to present (or nothing — no redraw of static frames). Pause cancels the timer, stops the decoder, preserves position; resume re-anchors and seeks to the saved position. `config.playback.frameQueue` is now wired as the queue capacity.
+- **`FrameQueue` finalization** — manual-reset **new-frame event** (signaled on push — the loop's "wake on new frame"), `popNewestUpTo(due)` (pops the NEWEST frame whose media timestamp is due, dropping stale ones into a `droppedFrames` counter; the EOS sentinel is delivered immediately), event reset on clear/close.
+- **Message loop restructure** — the app no longer uses a fixed 16 ms `SetTimer`. It waits on `MsgWaitForMultipleObjects({waitable timer, new-frame event}, QS_ALLINPUT)` while playing (messages only otherwise): **zero busy-wait**, deadline-precise, and the slow-decoder path presents each frame as soon as it arrives (new-frame wake) instead of waiting for the next deadline.
+- **Stats (M6 collection; M9 `StatsCollector` subscribes)** — decodedFps / presentedFps / droppedFrames / decodeLatencyMs / renderTimeMs, recomputed once per second, DEBUG-logged every 5 s and summarized at pause/stop (INFO). `DecoderManager` counts produced frames; `DecodedFrame.decodeTime100ns` stamps decode wall-time for latency.
+
+## Design decision: rendering stays on the UI thread
+
+The docs describe a dedicated render worker thread waiting on a waitable timer + events. For M6 the single-threaded design was kept (M2 review note): the UI thread's message loop already blocks on the waitable timer + new-frame event + messages, which satisfies the zero-busy-wait policy and the M6 exit criteria. A separate render thread (with the renderer thread-safety guard the M2 review flagged) is revisited at **M8** when multi-session presentation lands.
+
+## Verified live (this machine, Debug + Release)
+
+| Check | Result |
+|---|---|
+| Source-FPS pacing | `decoded 36.4 fps ≈ presented 36.4 fps` on the 60 fps 1440p clip — decode-limited (software ≈ 0.5×), and **not** 144 Hz; static frames are not redrawn |
+| Drops | **0** in steady state (freshness drops only on decode catch-up bursts) |
+| Pause → CPU | **0.00 CPU-s per 8 s** (thread-level sample, pause confirmed in log first) — decode worker joined, timer cancelled, loop blocks on messages |
+| Position preserved | `paused at 4716 ms` → `started (position 4716 ms)` (resume seeks to the exact saved position — the controller keeps `VideoPlayer::position` in sync via `setPosition` on every present) |
+| EOS | clean stop + `playback session: … 0 frame(s) dropped, … N frame(s) presented` summary |
+| Tests | **80/80 cases, 2652 assertions** (Debug) / 2633 (Release), 0 warnings under /WX; 7 scheduler + 4 queue + 1 controller integration tests added |
+
+## Gotchas (new)
+
+1. **Test-design deadlock found while testing**: a consumer loop that can run ahead of the producer (200 fast `yield()` iterations before the producer thread even started) let the producer fill the capacity-3 queue and block forever with no consumer. The production loop never has this problem — it always waits on the new-frame event/timer — but the test now explicitly waits for the producer. (A doctest filter quirk also fought back: names containing `/` + wildcards don't match in this doctest version — use exact names or narrower patterns.)
+2. **FrameScheduler cadence bug caught by unit tests**: advancing the arming deadline from the previous *deadline* (not the presented frame's timestamp) doubled the first interval when the first frame presented early (ahead of its deadline). Fixed: `advanceAfterPresent(now, frameTimestamp)` derives the next deadline from the frame's media timestamp through the anchor.
+3. **Pause position double-logged**: `VideoPlayer::pause` and `PlaybackController::pause` both logged "playback paused at …" — removed the player's duplicate (the controller is the integration owner).
+4. **Probe staleness bit me mid-verification**: a reused `probe_pause.exe` binary (12 s hold) made a STOP message look 9 s late and a CPU sample look busy — rebuild scratch probes before trusting their timing.
+
+---

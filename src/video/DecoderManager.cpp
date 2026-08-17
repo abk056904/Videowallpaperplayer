@@ -13,6 +13,7 @@
 #include <evr.h>
 
 #include "logging/Logger.h"
+#include "util/clock.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -371,6 +372,7 @@ Result<void> DecoderManager::start(FrameQueue* queue, LONGLONG position100ns) {
     }
 
     stopRequested_.store(false);
+    decodedFrames_.store(0); // M6 stats: counts since this start
     log::Logger::instance().debug(L"starting decode worker (hardware={})", hardware_);
     // The worker uses a LOCAL copy of the queue pointer: stop() closes the
     // queue then joins BEFORE nulling queue_, so the worker can never see a
@@ -485,9 +487,11 @@ void DecoderManager::workerLoop(FrameQueue* queue) {
                 continue;
             }
         }
+        frame.decodeTime100ns = util::Clock::instance().now100ns(); // M6 latency stats
         if (!queue->push(std::move(frame))) {
             break; // queue closed (stop requested)
         }
+        decodedFrames_.fetch_add(1);
     }
 
     if (SUCCEEDED(comHr)) {

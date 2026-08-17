@@ -34,8 +34,13 @@ public:
     // decoding. Idempotent re-open.
     Result<void> open(const std::wstring& path);
 
-    // Starts the decode worker at the current position.
+    // Starts the decode worker at the current position. A fresh FrameQueue
+    // (capacity set via setQueueCapacity, default 3) is created per start.
     Result<void> start();
+
+    // M6: queue capacity (config.playback.frameQueue). Applied on the next
+    // start(); clamped to >= 1.
+    void setQueueCapacity(size_t capacity) { queueCapacity_ = capacity == 0 ? 1 : capacity; }
 
     // Pauses: joins the worker, clears the queue, keeps the position. Safe
     // when not playing.
@@ -54,6 +59,13 @@ public:
     State state() const { return state_; }
     const VideoMetadata& metadata() const { return decoder_.metadata(); }
     LONGLONG position100ns() const { return position_; }
+    // M6: the scheduler consumes the queue directly (popNewestUpTo + the
+    // new-frame event) — null unless Playing.
+    FrameQueue* queue() const { return queue_.get(); }
+    // M6: the scheduler updates the playback position as frames are presented
+    // (pollFrame() no longer does when the scheduler drains the queue).
+    void setPosition(LONGLONG pos) { position_ = pos; }
+    uint64_t decodedFrames() const { return decoder_.decodedFrames(); }
     bool isOpen() const { return opened_; }
     bool hardwareDecoding() const { return decoder_.hardwareDecoding(); }
     const std::wstring& decoderName() const { return decoder_.decoderName(); }
@@ -65,6 +77,7 @@ private:
     std::unique_ptr<FrameQueue> queue_;
     State state_ = State::Stopped;
     LONGLONG position_ = 0;
+    size_t queueCapacity_ = 3; // config.playback.frameQueue default
     bool opened_ = false;
 };
 

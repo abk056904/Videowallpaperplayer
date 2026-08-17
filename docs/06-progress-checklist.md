@@ -14,7 +14,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M3 — Wallpaper host | ✅ | 2026-08-17 | Checkerboard behind desktop icons, per-monitor hosts, Explorer-restart recovery verified live (kill/restart). See notes below |
 | M4 — MF playback (software first) | ✅ | 2026-08-17 | Source Reader + RGB32 software decode + FrameQueue + VideoPlayer; app plays the configured clip (pause/resume/stop via registered messages, EOS, corrupt-file grace verified live). See notes below |
 | M5 — Hardware decoding + GPU color | ✅ | 2026-08-17 | DXGI manager + NV12 GPU path + YUV shader + honest decoder detection + **runtime probe with clean software fallback** (this machine's MF stack has no hardware MFT — see notes). Verified live. See notes below |
-| M6 — Frame timing & queue | ☐ | — | |
+| M6 — Frame timing & queue | ✅ | 2026-08-17 | FrameScheduler + PlaybackController + finalized FrameQueue: source-FPS pacing (presentedFps ≈ decodedFps, not monitor Hz), 0 drops, pause → 0.00 CPU-s/8 s, position preserved across pause (4716 → 4716 ms), message loop waits on {waitable timer, new-frame event} — zero busy-wait. 80/80 tests. See notes below |
 | M7 — Playlist engine | ☐ | — | |
 | M8 — Multi-monitor & multi-GPU | ☐ | — | |
 | M9 — Detection & monitoring | ☐ | — | |
@@ -185,17 +185,22 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** smooth source-FPS pacing with tiny bounded buffering.
 
-- [ ] `FrameQueue` bounded (default 3, configurable); producer backpressure; drop-oldest for freshness; `droppedFrames` counter
-- [ ] `FrameScheduler`: QPC monotonic clock, waitable-timer deadlines, wake on {deadline, new frame, pause, shutdown, monitor change}; **no busy loop**
-- [ ] Source-FPS respect (30 FPS video ≠ 144 decodes/presents on 144 Hz); no redraw of static frames
-- [ ] Pause semantics: stop decode, clear queue, cancel timer, preserve position; resume from saved position
-- [ ] Stats: decodedFps, presentedFps, droppedFrames, decodeLatencyMs, renderTimeMs → `StatsCollector` (M9)
-- [ ] Files: `src/playback/FrameScheduler*`, `PlaybackController*`, `src/video/FrameQueue*` (final)
+- [x] `FrameQueue` bounded (default 3, configurable); producer backpressure; drop-oldest for freshness; `droppedFrames` counter
+- [x] `FrameScheduler`: QPC monotonic clock, waitable-timer deadlines, wake on {deadline, new frame, pause, shutdown, monitor change}; **no busy loop**
+- [x] Source-FPS respect (30 FPS video ≠ 144 decodes/presents on 144 Hz); no redraw of static frames
+- [x] Pause semantics: stop decode, clear queue, cancel timer, preserve position; resume from saved position
+- [x] Stats: decodedFps, presentedFps, droppedFrames, decodeLatencyMs, renderTimeMs → `StatsCollector` (M9)
+- [x] Files: `src/playback/FrameScheduler*`, `PlaybackController*`, `src/video/FrameQueue*` (final)
 
-**Verify:** CPU low/stable on 4K/60 HW path; presentedFps ≈ source fps; drops ≈ 0 steady state; pause → CPU/GPU near-zero. **Exit:** ☐
+**Verify:** CPU low/stable on 4K/60 HW path; presentedFps ≈ source fps; drops ≈ 0 steady state; pause → CPU/GPU near-zero. **Exit:** ✅ (see notes — SW path on this machine)
 
 **Notes:**
-- **M2 review note: `D3D11Renderer` is single-threaded today** (render + resize touch shared RTV/viewport/swap-chain state). When M6 moves rendering to a worker thread, guard with a mutex or ownership transfer between the UI and render threads.
+- **Pacing verified live (software path)**: `decoded 36.4 fps ≈ presented 36.4 fps` on the 60 fps 1440p clip — decode-limited (SW ≈ 0.5× real time), **not** 144 Hz; 0 drops steady state; pause → **0.00 CPU-s/8 s** (thread sample); `paused at 4716 ms` → `started (position 4716 ms)` (position preserved — the controller keeps the player position in sync via `setPosition`); EOS → clean stop + session summary. The HW path's pacing is the same code (verified via unit tests; end-to-end HW NOT MEASURED on this machine).
+- **Design decision**: rendering stays on the UI thread — the message loop blocks on the **waitable timer + new-frame event + messages** (`MsgWaitForMultipleObjects`), satisfying the zero-busy-wait policy without a separate render thread. Revisit at M8 (renderer thread-safety guard) when multi-session presentation lands.
+- **FrameScheduler cadence bug caught by tests**: advancing from the previous *deadline* (not the presented frame's timestamp) doubled the first interval after an early first present — `advanceAfterPresent(now, frameTs)` derives the next deadline from the frame's media timestamp through the anchor.
+- **Tests**: 7 scheduler + 4 FrameQueue (popNewestUpTo staleness/event/dropped/thread-safety) + 1 PlaybackController real-clip integration → **80/80, 2652 assertions**, both configs, 0 warnings.
+- **Stats**: collected per-second (decodedFps/presentedFps/droppedFrames/decodeLatencyMs/renderTimeMs), DEBUG-logged every 5 s, INFO summary at pause/stop; `StatsCollector` subscription is M9.
+- **M2 review note (carried): `D3D11Renderer` is single-threaded today** — if M8 moves rendering to a worker thread, guard with a mutex or ownership transfer between the UI and render threads.
 
 ---
 

@@ -7,8 +7,9 @@
 #include <string>
 
 #include "logging/Logger.h"
+#include "playback/PlaybackController.h"
 #include "util/clock.h"
-#include "video/VideoPlayer.h"
+#include "video/DecodedFrame.h"
 
 namespace vw::app {
 
@@ -90,26 +91,20 @@ int ApplicationController::run() {
             log.info(L"second instance requested focus (UI arrives in M11)");
         } else if (msg == WM_TIMER && wParam == kWallpaperTimerId && wallpaper_) {
             wallpaper_->onTick(); // Explorer-restart validity stub (~1 Hz)
-        } else if (msg == WM_TIMER && wParam == kFrameTimerId) {
-            onFrameTick(); // M4: decode -> upload -> present at ~vsync cadence
         } else if (msg == ControlWindow::pauseMessage()) {
-            // VideoPlayer logs the pause position.
-            if (player_ && player_->state() == video::VideoPlayer::State::Playing) {
-                player_->pause();
-                ::KillTimer(control_.handle(), kFrameTimerId);
+            // PlaybackController logs the pause position + cancels the timer.
+            if (playback_ && playback_->state() == playback::PlaybackController::State::Playing) {
+                playback_->pause();
             }
         } else if (msg == ControlWindow::resumeMessage()) {
-            if (player_ && player_->state() == video::VideoPlayer::State::Paused) {
-                if (auto r = player_->resume(); r) {
-                    ::SetTimer(control_.handle(), kFrameTimerId, 16, nullptr);
-                } else {
+            if (playback_ && playback_->state() == playback::PlaybackController::State::Paused) {
+                if (auto r = playback_->resume(); !r) {
                     log.warn(L"resume failed: {}", r.error());
                 }
             }
         } else if (msg == ControlWindow::stopMessage()) {
-            if (player_) {
-                player_->stop();
-                ::KillTimer(control_.handle(), kFrameTimerId);
+            if (playback_) {
+                playback_->stop();
             }
         } else if ((msg == WM_DISPLAYCHANGE || msg == WM_DEVICECHANGE) && wallpaper_) {
             wallpaper_->onDisplayChange();
@@ -147,11 +142,32 @@ int ApplicationController::run() {
              configLoaded ? L"yes" : L"no");
     log.debug(L"clock frequency: {:.0f} Hz", 1.0 / util::Clock::instance().ticksToSeconds(1));
 
-    // Message loop: blocks when idle (zero busy-wait).
+    // Message loop: blocks when idle (zero busy-wait, docs/02 §2.8). While
+    // playback runs, wait on the FrameScheduler's waitable timer + the
+    // decoder's new-frame event alongside messages (M6); anything else waits
+    // on messages alone.
     MSG msg{};
-    while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        ::TranslateMessage(&msg);
-        ::DispatchMessageW(&msg);
+    bool running = true;
+    while (running) {
+        HANDLE waits[2] = {};
+        DWORD waitCount = 0;
+        if (playback_ && playback_->state() == playback::PlaybackController::State::Playing) {
+            waits[0] = playback_->timerHandle();
+            waits[1] = playback_->newFrameEvent();
+            waitCount = 2;
+        }
+        const DWORD waitResult = ::MsgWaitForMultipleObjects(waitCount, waits, FALSE, INFINITE,
+                                                             QS_ALLINPUT);
+        if (waitCount > 0 && (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_OBJECT_0 + 1)) {
+            onFrameWake(); // deadline fired or a new frame arrived
+        }
+        while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            ::TranslateMessage(&msg);
+            ::DispatchMessageW(&msg);
+            if (msg.message == WM_QUIT) {
+                running = false;
+            }
+        }
     }
 
     shutdown();
@@ -165,68 +181,64 @@ void ApplicationController::startPlayback() {
         return;
     }
     const std::wstring path = config_->config().videoPath;
-    player_ = std::make_unique<video::VideoPlayer>();
+    playback_ = std::make_unique<playback::PlaybackController>();
     // M5: hardware decode on the wallpaper's D3D device (same adapter);
     // scaling per config.playback.scaling (Fill default).
     if (wallpaper_) {
         wallpaper_->setScaling(rendererScalingFrom(config_->config().scaling));
-        player_->setD3DDevice(wallpaper_->device());
     }
-    auto opened = player_->open(path);
+    auto opened =
+        playback_->open(path, wallpaper_ ? wallpaper_->device() : nullptr,
+                        static_cast<size_t>(config_->config().frameQueue));
     if (!opened) {
         log.warn(L"cannot open video '{}': {}", path, opened.error());
-        player_.reset();
+        playback_.reset();
         return;
     }
-    // VideoPlayer logs the full open + start diagnostics.
-    if (auto started = player_->start(); !started) {
+    // PlaybackController logs the full open + start diagnostics.
+    if (auto started = playback_->start(); !started) {
         log.warn(L"playback start failed: {}", started.error());
-        player_.reset();
+        playback_.reset();
         return;
     }
-    // ~60 Hz frame pump (docs/03 §3.6): each tick pulls the newest decoded
-    // frame, uploads it, and presents (vsync-blocked). M6 replaces this with
-    // the FrameScheduler.
-    ::SetTimer(control_.handle(), kFrameTimerId, 16, nullptr);
+    // M6: no frame timer — the message loop waits on the controller's
+    // waitable timer + new-frame event (source-FPS pacing, zero busy-wait).
 }
 
-void ApplicationController::onFrameTick() {
+void ApplicationController::onFrameWake() {
     auto& log = log::Logger::instance();
-    if (!player_ || !wallpaper_) {
+    if (!playback_ || !wallpaper_) {
         return;
     }
-    if (player_->state() != video::VideoPlayer::State::Playing) {
-        return; // paused/stopped: nothing to pump (timer is killed on pause)
+    // Scheduler-gated drain: only present when a new frame is actually due
+    // (no redraw of static frames — the idle wake re-arms the timer only).
+    auto frame = playback_->onWake();
+    if (!frame) {
+        return;
     }
-
-    // Drain whatever the worker decoded (usually 0-1 frames at source rate),
-    // upload the newest, and present once per tick (vsync-paced).
-    video::DecodedFrame frame;
-    while (player_->pollFrame(frame)) {
-        if (frame.endOfStream) {
-            log.info(L"video stream ended — stopping playback");
-            ::KillTimer(control_.handle(), kFrameTimerId);
-            player_->stop(); // last frame stays on screen (loop/next is M7)
-            break;
-        }
-        if (auto set = wallpaper_->setVideoFrame(frame); !set) {
-            log.warn(L"video frame upload failed: {}", set.error());
-        }
+    if (frame->endOfStream) {
+        log.info(L"video stream ended — stopping playback");
+        playback_->stop(); // last frame stays on screen (loop/next is M7)
+        return;
     }
-
+    if (auto set = wallpaper_->setVideoFrame(*frame); !set) {
+        log.warn(L"video frame upload failed: {}", set.error());
+    }
+    const LONGLONG renderStart = util::Clock::instance().now100ns();
     if (auto rendered = wallpaper_->renderAll(); !rendered) {
         log.warn(L"frame render failed: {}", rendered.error());
     }
+    playback_->noteRenderTime(
+        static_cast<double>(util::Clock::instance().now100ns() - renderStart) / 10000.0);
 }
 
 void ApplicationController::shutdown() {
     // docs/03 §3.17: stop workers -> stop rendering -> release GPU resources
     // -> MFShutdown -> save state -> close window -> flush logs -> exit.
     ::KillTimer(control_.handle(), kWallpaperTimerId);
-    ::KillTimer(control_.handle(), kFrameTimerId);
-    if (player_) {
-        player_->stop(); // joins the decode worker (no MF use afterwards)
-        player_.reset();
+    if (playback_) {
+        playback_->stop(); // joins the decode worker (no MF use afterwards)
+        playback_.reset();
     }
     if (wallpaper_) {
         wallpaper_->shutdown(); // tear down hosts + release GPU resources

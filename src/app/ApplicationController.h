@@ -7,8 +7,8 @@
 #include "config/ConfigurationManager.h"
 #include "wallpaper/WallpaperManager.h"
 
-namespace vw::video {
-class VideoPlayer;
+namespace vw::playback {
+class PlaybackController;
 }
 
 namespace vw::app {
@@ -33,17 +33,16 @@ private:
     void notifyExistingInstance() const;
     void initPaths();
     void startPlayback();
-    void onFrameTick();
+    void onFrameWake(); // M6: deadline or new-frame event -> schedule + present
     void shutdown();
 
     static constexpr UINT_PTR kWallpaperTimerId = 1; // 1 Hz Explorer-restart stub
-    static constexpr UINT_PTR kFrameTimerId = 2;     // ~60 Hz frame pump (M4; M6 scheduler)
 
     HANDLE mutex_ = nullptr;
     std::filesystem::path appDataDir_;
     std::unique_ptr<config::ConfigurationManager> config_;
     std::unique_ptr<wallpaper::WallpaperManager> wallpaper_;
-    std::unique_ptr<video::VideoPlayer> player_;
+    std::unique_ptr<playback::PlaybackController> playback_;
     bool mfStarted_ = false;
     ControlWindow control_;
 };
