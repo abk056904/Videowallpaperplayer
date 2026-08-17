@@ -103,7 +103,11 @@ std::optional<PlaylistData> PlaylistStore::load(const std::filesystem::path& pat
         data.mode = *mode;
     }
     data.loop = root.get(kKeyLoop).asBool(data.loop);
-    data.current = static_cast<size_t>(root.get(kKeyCurrent).asInt(-1));
+    // kNoIndex is serialized as -1 (docs in save()); a missing key defaults to
+    // -1 too. Any negative read is kNoIndex — never cast a huge double that a
+    // 2^64 value would produce (out-of-range int64 cast is UB).
+    const int64_t current = root.get(kKeyCurrent).asInt(-1);
+    data.current = current < 0 ? PlaylistManager::kNoIndex : static_cast<size_t>(current);
     for (const util::Json& v : root.get(kKeyShuffleOrder).asArray()) {
         const int64_t i = v.asInt(-1);
         if (i >= 0) {
@@ -130,7 +134,11 @@ Result<void> PlaylistStore::save(const std::filesystem::path& path, const Playli
     root.emplace(L"version", util::Json::number(kFormatVersion));
     root.emplace(kKeyMode, util::Json::string(modeName(data.mode)));
     root.emplace(kKeyLoop, util::Json::boolean(data.loop));
-    root.emplace(kKeyCurrent, util::Json::number(static_cast<double>(data.current)));
+    // Serialize kNoIndex as -1: casting size_t(-1) to double (1.84e19) and
+    // back through int64_t on load is an out-of-range cast (UB).
+    const int64_t current =
+        data.current == PlaylistManager::kNoIndex ? -1 : static_cast<int64_t>(data.current);
+    root.emplace(kKeyCurrent, util::Json::number(static_cast<double>(current)));
     root.emplace(kKeyShuffleOrder, util::Json::array(std::move(order)));
     root.emplace(kKeyItems, util::Json::array(std::move(items)));
 

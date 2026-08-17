@@ -233,6 +233,73 @@ TEST_CASE("playlist: shuffle without loop stops at the cycle end") {
 
 // ---- adopt / load repair ---------------------------------------------------
 
+// ---- M7 review fixes -------------------------------------------------------
+
+TEST_CASE("playlist: empty playlist in Shuffle mode never crashes navigation") {
+    // Regression: shuffledPermutation(n=0) underflowed i to SIZE_MAX and
+    // dereferenced order[i] out of bounds (empty playlist + Shuffle mode,
+    // reachable via config mode=shuffle with no videoPath).
+    PlaylistManager pm;
+    pm.setMode(vw::playlist::Mode::Shuffle);
+    CHECK(pm.shuffleOrder().empty());
+    CHECK(pm.nextIndex() == PlaylistManager::kNoIndex);
+    CHECK(pm.previousIndex() == PlaylistManager::kNoIndex);
+    pm.add(L"a.mp4"); // adding to an empty Shuffle playlist is safe too
+    CHECK(pm.shuffleOrder().size() == 1);
+    CHECK(pm.nextIndex() == 0);
+}
+
+TEST_CASE("playlist: shuffle navigation never returns a non-playable item") {
+    // Every public mutation keeps the shuffle order a full permutation, so the
+    // "stale order" branch in nextIndex() is defense-in-depth — but BOTH that
+    // branch and shuffleForward's wrap branch must skip disabled/unavailable
+    // items and land on a playable one (review fix).
+    PlaylistManager pm;
+    pm.add(L"a.mp4");
+    pm.add(L"b.mp4");
+    pm.add(L"c.mp4");
+    pm.setMode(vw::playlist::Mode::Shuffle);
+    pm.setCurrent(1);
+    pm.markUnavailable(0);
+    pm.markUnavailable(2);
+    // Only b is playable — navigation must land on it from either direction.
+    CHECK(pm.nextIndex() == 1);
+    CHECK(pm.previousIndex() == 1);
+    // A fresh cycle (wrap) with the same constraint still finds the one
+    // playable item.
+    pm.setCurrent(1);
+    CHECK(pm.nextIndex() == 1);
+}
+
+TEST_CASE("playlist: kNoIndex current survives the store round-trip") {
+    // Regression: size_t(-1) cast to double (1.84e19) then back through
+    // int64_t was an out-of-range cast (UB) — kNoIndex came back as garbage.
+    const auto path = std::filesystem::temp_directory_path() / L"vw_playlist_noindex.json";
+    std::filesystem::remove(path);
+    PlaylistData data;
+    data.items = {PlaylistItem{L"C:/videos/a.mp4"}, PlaylistItem{L"C:/videos/b.mp4"}};
+    data.current = PlaylistManager::kNoIndex; // e.g. after remove() of current
+    REQUIRE(PlaylistStore::save(path, data));
+    auto loaded = PlaylistStore::load(path);
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->current == PlaylistManager::kNoIndex);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("playlist: replace clears stale cached metadata") {
+    PlaylistManager pm = threeItemPlaylist();
+    pm.updateCachedMetadata(0, 30'000'000, 1920, 1080, L"H.264");
+    CHECK(pm.itemAt(0)->duration100ns == 30'000'000);
+    PlaylistItem replacement{L"C:/videos/new.mp4"};
+    REQUIRE(pm.replace(0, replacement));
+    // A different file may sit behind the same index — cached metadata is
+    // stale until the next real open refreshes it.
+    CHECK(pm.itemAt(0)->path == L"C:/videos/new.mp4");
+    CHECK(pm.itemAt(0)->duration100ns == 0);
+    CHECK(pm.itemAt(0)->width == 0);
+    CHECK(pm.itemAt(0)->codec.empty());
+}
+
 TEST_CASE("playlist: adopt clamps out-of-range current and repairs the order") {
     PlaylistData data;
     data.items = {PlaylistItem{L"a.mp4"}, PlaylistItem{L"b.mp4"}, PlaylistItem{L"c.mp4"}};

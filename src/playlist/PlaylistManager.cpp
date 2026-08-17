@@ -7,8 +7,12 @@ namespace vw::playlist {
 
 namespace {
 // Fisher-Yates over [0, n). `avoid` (kNoIndex = none) is excluded from
-// position 0 when n > 1 (no immediate repeat of the item just played).
+// position 0 when n > 1 (no immediate repeat of the item just played). n == 0
+// returns an empty order (the caller checks .empty() — never dereference).
 std::vector<size_t> shuffledPermutation(std::mt19937& rng, size_t n, size_t avoid) {
+    if (n == 0) {
+        return {};
+    }
     std::vector<size_t> order(n);
     for (size_t i = 0; i < n; ++i) {
         order[i] = i;
@@ -85,6 +89,12 @@ bool PlaylistManager::replace(size_t index, const PlaylistItem& item) {
         return false;
     }
     data_.items[index] = item;
+    // A different file may be behind the same index — clear the cached
+    // metadata (stale until the next real open refreshes it, docs §32).
+    data_.items[index].duration100ns = 0;
+    data_.items[index].width = 0;
+    data_.items[index].height = 0;
+    data_.items[index].codec.clear();
     return true;
 }
 
@@ -147,9 +157,16 @@ size_t PlaylistManager::nextIndex() {
                 return shuffleForward(static_cast<size_t>(it - data_.shuffleOrder.begin()),
                                       data_.loop);
             }
-            // Current not in the (possibly stale) order — regenerate.
+            // Current not in the (possibly stale) order — regenerate and
+            // return the first PLAYABLE item (the front may be disabled /
+            // unavailable; same policy as shuffleForward's wrap branch).
             regenerateShuffle();
-            return data_.shuffleOrder.empty() ? kNoIndex : data_.shuffleOrder.front();
+            for (const size_t i : data_.shuffleOrder) {
+                if (isPlayable(i)) {
+                    return i;
+                }
+            }
+            return kNoIndex;
         }
     }
     return kNoIndex;

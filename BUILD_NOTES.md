@@ -498,6 +498,19 @@ The M6-collected playback stats now flow into a `StatsCollector` telemetry snaps
 - **Broken-item skip**: nonexistent file marked unavailable (`MFCreateSourceReaderFromURL failed: 0x80070002`), the loop advanced to the next playable item in ~40 ms, and the broken item was skipped on every subsequent cycle (0→2→0→2…).
 - **109/109 tests, 0 warnings under /WX, both configs** (26 playlist tests: ops, modes, shuffle permutation/no-immediate-repeat/regenerate-on-wrap/no-loop-stop, persistence round-trip, corrupt recovery, adoption).
 
+## M7 review fixes (2026-08-17, before M8)
+
+Fresh-eyes review of the M7 commit found four issues (all fixed + regression-tested):
+
+1. **`shuffledPermutation(n=0)` crashed on an empty Shuffle playlist** — `for (size_t i = n - 1; ...)` underflows `i` to `SIZE_MAX` and dereferences `order[i]` out of bounds. Reachable in the app: `config.playback.mode=shuffle` with no `videoPath` → empty playlist in Shuffle mode → `nextIndex()` → regenerate. Now returns an empty order for n=0.
+2. **`nextIndex()`'s stale-order branch returned a non-playable item** — when current was missing from the (defensive) stale shuffle order, it returned `shuffleOrder.front()` without an `isPlayable` check; now scans for the first playable item (same policy as `shuffleForward`'s wrap branch).
+3. **`current: kNoIndex` broke the store round-trip** — `size_t(-1)` cast to double (1.84e19) and back through `int64_t` on load was an out-of-range cast (UB) → garbage current (e.g. after `remove()` of the current item). kNoIndex is now serialized as `-1` and negative reads clamp to kNoIndex.
+4. **`replace()` left stale cached metadata** — swapping a different file behind the same index kept the old duration/width/height/codec until the next real open; now clears the cached fields.
+
+**113/113 tests** (30558 Debug / 351045 Release assertions), both configs, 0 warnings under /WX; live smoke (seed-from-config path) clean.
+
+---
+
 ## Real bug caught live (and why the unit tests didn't)
 
 **`VideoPlayer::replay()` hung at EOS — use-after-free on the frame queue.** The original order was `queue_->close(); queue_.reset(); decoder_.stop();` — but `DecoderManager` holds a raw pointer to that same `FrameQueue` and calls `queue_->close()` inside `stop()`. Resetting the queue first left `stop()` closing a **destroyed** queue (freed mutex/condvar) → the app thread hung silently right after `decode end of stream` (no crash, no log). The multi-item path never hit it (transitions go through `open()`, which tears down cleanly); only the same-item loop exercised replay. Instrumented with probe logs → bisected to the replay chain → fixed by stopping the decoder BEFORE dropping the queue (matching `pause()`'s order). **All live-verified paths (multi-item, same-item loop, broken-skip) now confirmed end-to-end.**
