@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 
 #include <windows.h>
 
@@ -43,6 +44,10 @@ public:
     // immediately once it reaches the front (never stale-dropped). Returns
     // false when nothing is due.
     bool popNewestUpTo(LONGLONG due100ns, DecodedFrame& out);
+
+    // Media timestamp of the front frame (nullopt when empty or the front is
+    // the EOS sentinel). Used to anchor the scheduler to the first frame's PTS.
+    std::optional<LONGLONG> peekTimestamp() const;
 
     // Drops all frames (pause) and resets the dropped counter + event.
     // Consumers/producers are not unblocked.

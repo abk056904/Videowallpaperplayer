@@ -152,9 +152,16 @@ int ApplicationController::run() {
         HANDLE waits[2] = {};
         DWORD waitCount = 0;
         if (playback_ && playback_->state() == playback::PlaybackController::State::Playing) {
-            waits[0] = playback_->timerHandle();
-            waits[1] = playback_->newFrameEvent();
-            waitCount = 2;
+            // Both handles are valid while Playing; if one were ever null, fall
+            // back to messages-only rather than WAIT_FAILED busy-spinning on a
+            // null handle in the array.
+            const HANDLE timer = playback_->timerHandle();
+            const HANDLE event = playback_->newFrameEvent();
+            if (timer && event) {
+                waits[0] = timer;
+                waits[1] = event;
+                waitCount = 2;
+            }
         }
         const DWORD waitResult = ::MsgWaitForMultipleObjects(waitCount, waits, FALSE, INFINITE,
                                                              QS_ALLINPUT);

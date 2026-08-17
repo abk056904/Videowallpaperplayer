@@ -416,3 +416,15 @@ The docs describe a dedicated render worker thread waiting on a waitable timer +
 4. **Probe staleness bit me mid-verification**: a reused `probe_pause.exe` binary (12 s hold) made a STOP message look 9 s late and a CPU sample look busy — rebuild scratch probes before trusting their timing.
 
 ---
+
+# M6 review fixes (2026-08-17, before M7)
+
+Post-M6 review of the playback/pacing diff with fresh eyes. Three fixes:
+
+1. **`PlaybackController::newFrameEvent()` was not null-safe** — it dereferenced `player_->queue()` unconditionally, which crashes if the queue is null (paused state). The app loop guarded on state first, but the method now returns `nullptr` when the queue is absent. The message loop additionally skips the wait handles entirely if either is null (`waits[2]`, `waitCount` computed at the top of each iteration — a null handle in the array would make `MsgWaitForMultipleObjects` return `WAIT_FAILED` and busy-spin, since a failed wait leaves the message queue untouched).
+2. **Nonzero initial PTS delayed the first present** — the scheduler anchored media-time-0 to `start()`, so a file whose first frame has a nonzero PTS (edit lists, trimmed starts) would show the placeholder for the PTS offset while the deadline "caught up". `onWake()` now re-anchors the timeline to the **first frame's actual PTS** once it arrives (`anchorPending_`, driven by the new `FrameQueue::peekTimestamp()`), so playback starts the moment the first frame is ready. Resume keeps the old behavior (saved position is already due).
+3. **`FrameQueue::peekTimestamp()` added** — returns the front frame's media timestamp (nullopt when empty or the front is the EOS sentinel), with a dedicated unit test covering empty / nonzero-PTS / pop-advance / EOS-front / clear cases.
+
+Verified: **81/81 tests, 2653 assertions, Debug + Release, 0 warnings under /WX**; live smoke — app opens the 1440p60 clip and plays cleanly with the review build.
+
+---

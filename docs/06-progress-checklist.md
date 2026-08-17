@@ -201,6 +201,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - **Tests**: 7 scheduler + 4 FrameQueue (popNewestUpTo staleness/event/dropped/thread-safety) + 1 PlaybackController real-clip integration → **80/80, 2652 assertions**, both configs, 0 warnings.
 - **Stats**: collected per-second (decodedFps/presentedFps/droppedFrames/decodeLatencyMs/renderTimeMs), DEBUG-logged every 5 s, INFO summary at pause/stop; `StatsCollector` subscription is M9.
 - **M2 review note (carried): `D3D11Renderer` is single-threaded today** — if M8 moves rendering to a worker thread, guard with a mutex or ownership transfer between the UI and render threads.
+- **M6 review fixes (2026-08-17, before M7)**: (1) `PlaybackController::newFrameEvent()` made null-safe (paused state has no queue — the app loop also skips the wait handles entirely if either is null, avoiding a `WAIT_FAILED` busy-spin); (2) **first-frame PTS anchor** — files with a nonzero initial PTS (edit lists, trimmed starts) no longer show the placeholder for the PTS offset: `onWake()` re-anchors the timeline to the first frame's actual PTS via the new `FrameQueue::peekTimestamp()` (`anchorPending_`); (3) `peekTimestamp()` covered by a dedicated unit test. **81/81 tests, 2653 assertions**, Debug + Release, live smoke clean.
 
 ---
 

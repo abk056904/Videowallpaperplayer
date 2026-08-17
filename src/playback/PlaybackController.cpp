@@ -55,7 +55,10 @@ Result<void> PlaybackController::start() {
         return {};
     }
     // Anchor the timeline: media time 0 is due now (start-of-file playback).
+    // onWake() re-anchors to the first frame's actual PTS when it arrives
+    // (anchorPending_) — files with a nonzero initial PTS start immediately.
     scheduler_.reset(util::Clock::instance().now100ns(), 0);
+    anchorPending_ = true;
     auto result = player_->start();
     if (!result) {
         return result;
@@ -87,7 +90,9 @@ Result<void> PlaybackController::resume() {
                    : Result<void>{};
     }
     // Re-anchor: the saved position is due now (the decode worker seeks there).
+    // The first resumed frame is already >= the position — no re-anchor.
     scheduler_.reset(util::Clock::instance().now100ns(), player_->position100ns());
+    anchorPending_ = false;
     auto result = player_->resume();
     if (!result) {
         return result;
@@ -127,7 +132,9 @@ const std::wstring& PlaybackController::decoderName() const {
 }
 
 HANDLE PlaybackController::newFrameEvent() const {
-    return player_ ? player_->queue()->newFrameEvent() : nullptr;
+    // Null-safe: the queue only exists while Playing (pause destroys it); the
+    // message loop additionally gates on state(), but never deref a null queue.
+    return player_ && player_->queue() ? player_->queue()->newFrameEvent() : nullptr;
 }
 
 std::optional<video::DecodedFrame> PlaybackController::onWake() {
@@ -142,6 +149,17 @@ std::optional<video::DecodedFrame> PlaybackController::onWake() {
     // Reset BEFORE draining: a push during the drain re-signals the event
     // (no lost wakeups).
     ::ResetEvent(queue->newFrameEvent());
+
+    // Anchor to the FIRST frame's media timestamp so playback starts the
+    // moment the first frame is ready: files with a nonzero initial PTS (edit
+    // lists, trimmed starts) would otherwise show the placeholder for the PTS
+    // offset. Resume re-anchors to the saved position instead (already due).
+    if (anchorPending_) {
+        if (auto ts = queue->peekTimestamp(); ts.has_value()) {
+            scheduler_.reset(now, *ts);
+            anchorPending_ = false;
+        }
+    }
 
     video::DecodedFrame frame;
     const bool got = scheduler_.pacingEnabled()

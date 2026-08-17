@@ -180,6 +180,38 @@ TEST_CASE("queue: EOS sentinel is delivered immediately, never stale-dropped") {
     CHECK(q.droppedFrames() == 0); // EOS never counts against the staleness policy
 }
 
+TEST_CASE("queue: peekTimestamp reports the front frame's PTS (M6 review)") {
+    FrameQueue q(3);
+    CHECK_FALSE(q.peekTimestamp().has_value()); // empty
+
+    DecodedFrame f;
+    f.timestamp = 42'000'000LL; // nonzero initial PTS (edit-list / trimmed file)
+    CHECK(q.tryPush(f));
+    CHECK(q.peekTimestamp().has_value());
+    CHECK(*q.peekTimestamp() == 42'000'000LL);
+
+    // Popping the front advances the peek to the next frame.
+    DecodedFrame out;
+    CHECK(q.popNewestUpTo(42'000'000LL, out));
+    CHECK_FALSE(q.peekTimestamp().has_value());
+
+    // The EOS sentinel at the front reports nullopt (nothing to anchor to).
+    DecodedFrame eos;
+    eos.endOfStream = true;
+    CHECK(q.tryPush(eos));
+    CHECK_FALSE(q.peekTimestamp().has_value());
+
+    // clear() empties the queue (EOS and all); peek is nullopt again, then
+    // reports a newly pushed frame normally.
+    q.clear();
+    CHECK_FALSE(q.peekTimestamp().has_value());
+    DecodedFrame g;
+    g.timestamp = 1LL;
+    CHECK(q.tryPush(g));
+    CHECK(q.peekTimestamp().has_value());
+    CHECK(*q.peekTimestamp() == 1LL);
+}
+
 TEST_CASE("queue: new-frame event signals on push and resets on clear") {
     FrameQueue q(2);
     CHECK(q.newFrameEvent() != nullptr);

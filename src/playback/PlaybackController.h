@@ -102,6 +102,7 @@ private:
     FrameScheduler scheduler_;
     State state_ = State::Stopped;
     HANDLE timer_ = nullptr;
+    bool anchorPending_ = true; // re-anchor to the first frame's PTS (start only)
 
     PlaybackStats stats_;
     LONGLONG statsWindowStart_ = 0; // wall 100 ns at the last per-second update

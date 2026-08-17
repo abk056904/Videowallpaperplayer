@@ -91,6 +91,14 @@ bool FrameQueue::popNewestUpTo(LONGLONG due100ns, DecodedFrame& out) {
     return true;
 }
 
+std::optional<LONGLONG> FrameQueue::peekTimestamp() const {
+    std::lock_guard lock(mu_);
+    if (queue_.empty() || queue_.front().endOfStream) {
+        return std::nullopt;
+    }
+    return queue_.front().timestamp;
+}
+
 void FrameQueue::clear() {
     std::lock_guard lock(mu_);
     queue_.clear();
