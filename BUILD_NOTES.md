@@ -714,7 +714,8 @@ M13 Part A (profiling + optimization) complete; Part B soak running. Per the int
 - **Per-frame cost split (after the pool):** resize+zero **0.00 ms/f** (pool hit 300/300), memcpy ~1.45 ms/f (irreducible 14.7 MB copy), push ~0.01 ms/f, copy total ~1.5 ms/f.
 - **Baselines (Release, per docs/04 §4.6):** playing ~190% CPU / 408 MB private / 1367 handles / 40 threads (steady, no growth); paused → SUSPENDED 0.0–0.8% CPU, RAM 124 MB; resume back to ~410 MB. After the pool, playing ~185–210% CPU / ~423 MB private — the end-to-end CPU delta is within sample noise because the software decode dominates; the pool's ~16%-of-one-core win is real and measured in-thread.
 - **Leak-cycle stress (Release):** 6× play/pause + 4× UI open/close: private memory flat at 423 MB (388 MB paused), handles 1366–1368, threads 37–40, 0 unexpected WARN/ERROR.
-- **Soak:** 4 h run started 18:50, playback looping, samples every minute to `build/release/soak_m13.csv`; verified alive at minute 1 (423 MB / 1366 handles / 37 threads).
+- **Soak #1 (superseded):** 4 h run started 18:50, sampled every minute; **abandoned at minute 32** (rebuilds stopped the app; minutes 7+ contaminated by the UI the packaged-exe focus test opened). Data not used for the M13 gate.
+- **Soak #2 — final run:** fresh 4 h run started **2026-08-17 20:05** on the final binary (UI telemetry-timer fix + desktop-click fix; UI stays closed — verification runs done). Minute 1: **426.0 MB private / 1365 handles / 37 threads** (clean baseline). Completion ~00:05; CSV read and recorded at completion before M13 closes.
 
 ## Findings
 
@@ -724,7 +725,7 @@ M13 Part A (profiling + optimization) complete; Part B soak running. Per the int
 - **2 new tests → 171/171** (recycle pool: take/recycle/refuse-small/bounded/clear-drain/close-drain; stale-drop recycles dropped buffers), Debug + Release, 0 warnings under /WX.
 - **M13 review fixes (2026-08-17):** (1) `takeSpareBuffer` moved inside the software branch — the hardware path's `copySampleToTexture` never touches `frame.bytes`, so a 14 MB spare would ride the queue unused (capacity_ × 14 MB in flight); (2) `PlaybackController::recycleFrame` now null-checks the queue like `newFrameEvent()` (unreachable in practice — same-thread — but matches the established defensive pattern). Both latent on this machine (software decode only); Debug + Release re-verified 171/171, soak restarted on the fixed binary.
 
-**NOT MEASURED (recorded for M14):** VRAM (no hardware decode on this machine; textures are one dynamic upload + hosts), 4K/AV1/HDR stress rows (no HW MFT), power/hot-plug scenarios (declined — disruptive, single display), and the soak result itself (completion ~22:50; CSV at `build/release/soak_m13.csv`).
+**NOT MEASURED (recorded for M14):** VRAM (no hardware decode on this machine; textures are one dynamic upload + hosts), 4K/AV1/HDR stress rows (no HW MFT), power/hot-plug scenarios (declined — disruptive, single display), and the soak result itself (final run completes ~00:05; CSV at `build/release/soak_m13.csv`).
 
 ---
 
@@ -743,7 +744,7 @@ M13 Part A (profiling + optimization) complete; Part B soak running. Per the int
 - **Root cause (PE forensics, not guessing):** the resource directory showed RT_VERSION with a **named** entry (offset to a string) instead of **numeric ID 1** — `VS_VERSION_INFO` in the .rc is a macro (`= 1`) defined in `winres.h`, which the .rc never included, so rc.exe emitted a string-named resource. Windows version APIs (`GetFileVersionInfo` → `FindResource(MAKEINTRESOURCE(1), RT_VERSION)`) look up by **ID 1**, hence empty. Verified against `cmd.exe` (RT_VERSION subdir `named=0 id=1`).
 - **Fix:** `#include <winres.h>` in `app.rc`. Verified: `FileVersion 1.0.0.0`, `ProductVersion 1.0.0.0`, description/company present; resource tree now `named=0 id=1` (matches cmd.exe). Package rebuilt with the fixed exe.
 - **Tooling lessons:** (1) `dumpbin /RESOURCES` is unrecognized in this SDK's dumpbin (use `/ALL` + grep or a direct PE walk); (2) a correct PE resource-directory walk must read the data directory at `optStart+112` for PE32+ and section headers at 40-byte stride with `NumberOfSections` at `peOff+6` (I burned several iterations on off-by-header errors); (3) Git-bash mangles `/RESOURCES`-style flags — use a `.bat` wrapper or double slash; (4) the version data block itself was valid all along (wLength 812, key `VS_VERSION_INFO`, VS_FIXEDFILEINFO sig 0xFEEF04BD, fileVersion 1.0.0.0) — the problem was purely the resource *name*.
-- **Soak note:** the running 4 h soak held the exe, so the version-resource rebuild required stopping it; the soak was restarted on the fixed binary (minute 1: 423.9 MB / 1368 handles / 37 threads — flat).
+- **Soak note (superseded):** the running 4 h soak held the exe, so the version-resource rebuild required stopping it; that restart was itself abandoned at minute 32 (see M13 section — soak #2 is the final run).
 
 ## Docs
 
