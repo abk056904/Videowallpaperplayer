@@ -559,6 +559,27 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ---
 
+## M9 — Detection & monitoring (workload sampling + game/fullscreen detection)
+
+**Committed as `0b8f3c2`** — per docs/03 §3.11 / docs/04 §2. This milestone produces the DETECTION SIGNALS; the pause/resume ACTIONS land in M10's ResourceGovernor.
+
+## What shipped
+
+- **`WorkloadMonitor`** (`src/performance/WorkloadMonitor.*`): 2 s sampling of CPU (`GetSystemTimes` delta), RAM (`GlobalMemoryStatusEx`), GPU VRAM (`IDXGIAdapter3::QueryVideoMemoryInfo` via `dxgi1_4.h` — this SDK's unusual split). Results flow into `StatsCollector.updateWorkload` (UI telemetry) + `WorkloadState` (`cpuHigh/gpuHigh/memoryHigh` + `anyHigh()`).
+- **`HysteresisEngine`** (pure, header-only): per-metric pause/resume thresholds + debounce delays — latch HIGH after the metric holds ≥ pauseThreshold for pauseDelay; clear after < resumeThreshold for resumeDelay; boundary bounces never latch/flap. Config-driven thresholds/delays.
+- **`FullscreenDetector`** (pure classification): window rect vs monitor rect + styles → Windowed / Maximized / Fullscreen (WS_POPUP) / BorderlessFullscreen. **Maximized ≠ fullscreen** (a maximized editor keeps its caption frame — never classified fullscreen).
+- **`GameDetector`**: foreground-pid → path (`OpenProcess` + `QueryFullProcessImageNameW`, injectable for tests) → exe basename matched against config `alwaysPause`/`neverPause` (deny wins); same-pid **cache** (no repeated process scans); invalidation on pid change / `reset()`. No injection, no hooks, no admin.
+- **App wiring**: 2 s workload timer (`kWorkloadTimerId`), `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT)` + initial foreground classification, Debug-only `workload:`/`foreground:` log lines (no per-second spam in Release).
+
+## Verified
+
+- **15 new unit tests** (hysteresis latch/clear/boundary table, CPU-delta math incl. the kernel-includes-idle convention, sample→collector plumbing, config reload, all four window-state classifications, list matching incl. deny-wins + case/basename normalization, pid cache, failed-lookup fallback) → **139/139 tests**, Debug + Release, 0 warnings under /WX.
+- **Live (Debug build)**: `workload: cpu 0%/58%, ram 88% (12515 MB), gpu mem 112/8386 MB | high: all no`; launching Notepad + Windows Terminal fired `foreground: pid … (unlisted)` with real paths; after adding `notepad.exe` to `detection.alwaysPause`, relaunch classified it `(game [allow])` end-to-end. Config restored after the test.
+- **Known limitation (documented)**: GPU-engine utilization counters (`gpuperfcounters.h`) are absent from this SDK — `gpuUsage` stays 0 (never fabricated per R-03); VRAM + hysteresis is the GPU metric. `IDXGIAdapter3`/`QueryVideoMemoryInfo` live in `dxgi1_4.h` (this SDK's shared/ layout is unusual).
+- **M10 handoff**: `WorkloadState.anyHigh()` + `GameDetector::state()` + `FullscreenDetector::isFullscreenState()` are the inputs to the ResourceGovernor's pause/suspend policy.
+
+---
+
 ## UNIVERSAL CROP/SCALE RULE — anamorphic (SAR) correction (2026-08-17, user: "make the crop and scale rule more universal")
 
 **Committed as `f5e33b2`** — the crop/scale rule (crop evenly to the target aspect, scale to fill, no bars, no distortion) was already universal in one sense: `ScaleMath.h` computes against the **window's** aspect ratio, never a hardcoded 16:9. The gap was **sample aspect ratio (SAR)**: the renderer consumed the raw pixel dims, so anamorphic content (non-square pixels — e.g. 720×480 DVD, SAR 10:11) cropped/scaled to the wrong aspect and distorted.

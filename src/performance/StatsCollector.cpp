@@ -28,6 +28,16 @@ void StatsCollector::updatePlayback(double decodedFps, double presentedFps,
         hardwareDecode ? L"yes" : L"no");
 }
 
+void StatsCollector::updateWorkload(double cpuUsage, double gpuUsage, uint64_t gpuMemoryUsed,
+                                    uint64_t gpuMemoryBudget, uint64_t systemMemoryUsed) {
+    std::lock_guard lock(mu_);
+    latest_.cpuUsage = cpuUsage;
+    latest_.gpuUsage = gpuUsage;
+    latest_.gpuMemoryUsed = gpuMemoryUsed;
+    latest_.gpuMemoryBudget = gpuMemoryBudget;
+    latest_.systemMemoryUsed = systemMemoryUsed;
+}
+
 void StatsCollector::updatePerMonitor(const std::wstring& monitorId, double presentedFps,
                                       uint64_t droppedFrames) {
     std::lock_guard lock(mu_);

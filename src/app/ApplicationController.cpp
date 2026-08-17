@@ -4,8 +4,10 @@
 #include <mfapi.h>
 #include <shlobj.h>
 
+#include <chrono>
 #include <string>
 
+#include "detection/FullscreenDetector.h"
 #include "logging/Logger.h"
 #include "playback/PlaybackController.h"
 #include "playlist/PlaylistStore.h"
@@ -15,6 +17,10 @@
 namespace vw::app {
 
 namespace {
+// M9: the WinEventHook callback (out-of-context, dispatched on the UI thread)
+// needs the instance; the app is single-instance so one pointer is enough.
+ApplicationController* g_controller = nullptr;
+
 const wchar_t* kSingleInstanceMutex = L"Local\\VideoWallpaper.SingleInstance";
 
 // config.playback.scaling -> renderer scaling (Fill default).
@@ -101,6 +107,29 @@ int ApplicationController::run() {
     // playback session feeds it ~1 Hz; WorkloadMonitor completes it at M9.
     statsCollector_ = std::make_unique<performance::StatsCollector>();
 
+    // M9: workload monitor (CPU/GPU/RAM + hysteresis) + game/fullscreen
+    // detection. Configured from the performance/detection sections; M10's
+    // ResourceGovernor will consume the latched states.
+    {
+        const auto& c = config_->config();
+        workloadMonitor_ = std::make_unique<performance::WorkloadMonitor>(
+            performance::WorkloadMonitor::Config{
+                .cpuPause = static_cast<double>(c.cpuPauseThreshold),
+                .cpuResume = static_cast<double>(c.cpuResumeThreshold),
+                .gpuPause = static_cast<double>(c.gpuPauseThreshold),
+                .gpuResume = static_cast<double>(c.gpuResumeThreshold),
+                .memoryPause = static_cast<double>(c.memoryPauseThreshold),
+                .memoryResume = static_cast<double>(c.memoryResumeThreshold),
+                .pauseDelay = std::chrono::seconds(c.pauseDelaySeconds),
+                .resumeDelay = std::chrono::seconds(c.resumeDelaySeconds),
+            });
+        gameDetector_ = std::make_unique<detection::GameDetector>();
+        gameDetector_->setLists(c.alwaysPause, c.neverPause);
+        log.info(L"M9 detection: {} allow / {} deny entries, workload sampling @{}s/{}",
+                 c.alwaysPause.size(), c.neverPause.size(), c.pauseDelaySeconds,
+                 c.resumeDelaySeconds);
+    }
+
     // M7: playlist (items/modes/persistence). Loaded from AppData; seeded
     // from config.playback on first run.
     loadPlaylist();
@@ -111,6 +140,8 @@ int ApplicationController::run() {
             log.info(L"second instance requested focus (UI arrives in M11)");
         } else if (msg == WM_TIMER && wParam == kWallpaperTimerId && wallpaper_) {
             wallpaper_->onTick(); // Explorer-restart validity stub (~1 Hz)
+        } else if (msg == WM_TIMER && wParam == kWorkloadTimerId) {
+            onWorkloadTick(); // M9: ~2 s CPU/GPU/RAM sampling
         } else if (msg == ControlWindow::pauseMessage()) {
             // PlaybackController logs the pause position + cancels the timer.
             if (playback_ && playback_->state() == playback::PlaybackController::State::Playing) {
@@ -137,6 +168,31 @@ int ApplicationController::run() {
         return 1;
     }
 
+    // M9: foreground-window change events (EVENT_SYSTEM_FOREGROUND — no
+    // polling). Out-of-context so the callback is dispatched by THIS thread's
+    // message loop (the hook must live as long as the loop). The lambda needs
+    // the instance: a file-scope pointer is set here (single instance).
+    g_controller = this;
+    winEventHook_ = ::SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                                      [](HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, DWORD,
+                                         DWORD) {
+                                          if (g_controller) {
+                                              g_controller->onForegroundChange(hwnd);
+                                          }
+                                      },
+                                      0, 0, WINEVENT_OUTOFCONTEXT);
+    if (!winEventHook_) {
+        log.warn(L"SetWinEventHook failed (game/fullscreen detection disabled)");
+    }
+    // Initial classification of the current foreground window.
+    if (gameDetector_) {
+        DWORD pid = 0;
+        if (const HWND fg = ::GetForegroundWindow()) {
+            ::GetWindowThreadProcessId(fg, &pid);
+        }
+        gameDetector_->updateForeground(pid);
+    }
+
     // M3: wallpaper behind desktop icons.
     wallpaper_ = std::make_unique<wallpaper::WallpaperManager>();
     const auto wallpaperResult = wallpaper_->start();
@@ -146,6 +202,10 @@ int ApplicationController::run() {
         // 1 Hz validity check — only while the wallpaper runs (docs/02 §2.8).
         ::SetTimer(control_.handle(), kWallpaperTimerId, 1000, nullptr);
     }
+
+    // M9: ~2 s workload sampling (CPU/GPU/RAM + hysteresis) — only while the
+    // app runs; sampling is cheap and the collector holds the latest values.
+    ::SetTimer(control_.handle(), kWorkloadTimerId, 2000, nullptr);
 
     // M4: Media Foundation single-video playback (docs/03 §3.6).
     const HRESULT mf = ::MFStartup(MF_VERSION);
@@ -421,10 +481,58 @@ void ApplicationController::onFrameWake() {
         static_cast<double>(util::Clock::instance().now100ns() - renderStart) / 10000.0);
 }
 
+void ApplicationController::onWorkloadTick() {
+    if (!workloadMonitor_ || !statsCollector_) {
+        return;
+    }
+    const auto state = workloadMonitor_->sample(std::chrono::steady_clock::now());
+    performance::WorkloadMonitor::pushToCollector(*statsCollector_, state);
+    // DEBUG telemetry (~2 s, Debug builds only — no per-second log spam in
+    // Release; the UI (M11) reads the snapshot instead).
+    auto& log = log::Logger::instance();
+    log.debug(L"workload: cpu {:.0f}%, ram {:.0f}% ({} MB used), gpu mem {:.0f}/{:.0f} MB"
+              L" | high: cpu={} gpu={} mem={}",
+              state.cpuUsage, state.memoryUsage, state.systemMemoryUsed / (1024 * 1024),
+              state.gpuMemoryUsed / (1024.0 * 1024.0), state.gpuMemoryBudget / (1024.0 * 1024.0),
+              state.cpuHigh ? L"yes" : L"no", state.gpuHigh ? L"yes" : L"no",
+              state.memoryHigh ? L"yes" : L"no");
+}
+
+void ApplicationController::onForegroundChange(HWND hwnd) {
+    if (!gameDetector_) {
+        return;
+    }
+    if (hwnd == lastForeground_) {
+        return; // duplicate event — no rescans
+    }
+    lastForeground_ = hwnd;
+    DWORD pid = 0;
+    if (hwnd) {
+        ::GetWindowThreadProcessId(hwnd, &pid);
+    }
+    const auto state = gameDetector_->updateForeground(pid);
+    if (state.pid == 0) {
+        return;
+    }
+    auto& log = log::Logger::instance();
+    log.debug(L"foreground: pid {} {} ({})", state.pid, state.processPath,
+              state.classification == detection::GameClass::Game
+                  ? L"game [allow]"
+                  : (state.classification == detection::GameClass::NotGame
+                         ? L"not-game [deny]"
+                         : L"unlisted"));
+}
+
 void ApplicationController::shutdown() {
     // docs/03 §3.17: stop workers -> stop rendering -> release GPU resources
     // -> MFShutdown -> save state -> close window -> flush logs -> exit.
+    if (winEventHook_) {
+        ::UnhookWinEvent(winEventHook_);
+        winEventHook_ = nullptr;
+    }
+    g_controller = nullptr;
     ::KillTimer(control_.handle(), kWallpaperTimerId);
+    ::KillTimer(control_.handle(), kWorkloadTimerId);
     if (playback_) {
         playback_->stop(); // joins the decode worker (no MF use afterwards)
         playback_.reset();

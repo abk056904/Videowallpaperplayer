@@ -33,7 +33,10 @@ public:
                           uint64_t droppedFrames);
 
     // M9: WorkloadMonitor fills the system-level fields (cpuUsage, gpuUsage,
-    // gpuMemoryUsed/Budget, systemMemoryUsed) via updateWorkload(...).
+    // gpuMemoryUsed/Budget, systemMemoryUsed). Never samples here — the
+    // monitor owns the sampling loop; this is a plain copy-in.
+    void updateWorkload(double cpuUsage, double gpuUsage, uint64_t gpuMemoryUsed,
+                        uint64_t gpuMemoryBudget, uint64_t systemMemoryUsed);
 
     // Latest consistent snapshot (copy under the lock).
     vw::ui::TelemetrySnapshot snapshot() const;
