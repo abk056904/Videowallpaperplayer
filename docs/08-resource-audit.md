@@ -13,10 +13,11 @@ at build time and embedded — no runtime file lookups.
 
 **2. What is the total installed size?**
 
-Portable ZIP = **1,047,290 bytes (1.0 MB)**, 6 files: `VideoWallpaper.exe` +
-`msvcp140.dll` (545 KB) + `vcruntime140.dll` (122 KB) + `vcruntime140_1.dll`
-(49 KB) + `README.md` + `LICENSE`. No samples, no debug binaries, no symbols, no
-test assets, no docs copies. Runtime data (config/logs) is written to
+Portable ZIP = **1,054,769 bytes (1.0 MB)**; uncompressed **2,366,103 bytes
+(2.3 MB)** across 6 files: `VideoWallpaper.exe` (1,602,048) + `msvcp140.dll`
+(557,728) + `vcruntime140.dll` (124,544) + `vcruntime140_1.dll` (49,792) +
+`README.md` (20,633) + `LICENSE` (11,358). No samples, no debug binaries, no
+symbols, no test assets, no docs copies. Runtime data (config/logs) is written to
 `%APPDATA%\VideoWallpaper\` (~KB).
 
 **3. How much RAM does the application use while actively playing?**

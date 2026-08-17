@@ -133,6 +133,11 @@ private:
     std::mutex probeMu_;
     std::condition_variable probeCv_;
     std::vector<std::wstring> probeQueue_;
+    // Paths popped from probeQueue_ but whose probe has not completed yet —
+    // still "pending" for requestMetadata dedup (the worker probes outside
+    // the lock, so a popped path would otherwise be re-enqueued by a second
+    // request in that window, returning true instead of false).
+    std::vector<std::wstring> probeInFlight_;
     std::vector<ProbeResult> probeResults_;
     size_t probeResultsCount_ = 0; // completed probes (control-thread owned)
     std::thread probeThread_;

@@ -1,7 +1,7 @@
 # 7. Final Report (M14)
 
-> Date: 2026-08-17 · Build: Release x64, commit `c2b2e41` + M14 packaging/version
-> resource. All numbers below were **measured on the dev machine** (Windows 11 Home
+> Date: 2026-08-17 · Build: Release x64, commits `c2b2e41` (M13 review) through
+> `4d9e341` (M14). All numbers below were **measured on the dev machine** (Windows 11 Home
 > 24H2 build 26200, Ryzen 5 7535HS, 13.8 GB RAM, NVIDIA RTX 3050 Laptop + AMD Radeon
 > iGPU, 1920×1080 @ 144 Hz physical) unless explicitly marked `NOT MEASURED`.
 > **No number is invented.** Anything that could not be measured is stated as
@@ -57,7 +57,7 @@ per-milestone detail):
 
 ## Tests
 
-- **169/169 unit-test cases** (Debug + Release, ~350k assertions per run), 0 warnings.
+- **171/171 unit-test cases** (Debug + Release), 0 warnings. (Assertion counts are not stated — they vary run-to-run because the lazy-metadata and library-watch tests are timing-dependent; see the M14 review note in BUILD_NOTES about the requestMetadata in-flight dedup fix.)
 - Coverage: config/JSON edge cases, logger concurrency/rotation/UTF-8, UTF-8
   round-trips, scale math, FrameQueue + recycle pool, scheduler pacing, playlist
   modes/shuffle/persistence, monitor topology diff, governor transition table,
@@ -163,9 +163,10 @@ harness/         vw_gfx_harness (dev-only)
    MF can open; validated by metadata, not extension). Audio: none (video-only).
 5. **Executable size** — **1,602,048 bytes** (Release x64, stripped of debug info,
    PDB separate).
-6. **Installed size** — portable ZIP: **1,047,290 bytes** for 6 files (exe +
-   `msvcp140.dll` + `vcruntime140.dll` + `vcruntime140_1.dll` + README + LICENSE) =
-   **1.0 MB**. No installer; no bundled codecs/assets/samples.
+6. **Installed size** — portable ZIP: **1,054,769 bytes (1.0 MB)**; uncompressed
+   **2,366,103 bytes (2.3 MB)** for 6 files (exe 1,602,048 + `msvcp140.dll`
+   557,728 + `vcruntime140.dll` 124,544 + `vcruntime140_1.dll` 49,792 + README
+   20,633 + LICENSE 11,358). No installer; no bundled codecs/assets/samples.
 7. **Active RAM usage** — ~**408–424 MB private** (Release, 1440p60 H.264 software
    decode; dominated by the MF software decode pipeline + 14.7 MB × few RGB32
    frames).

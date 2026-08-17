@@ -409,8 +409,9 @@ bool LibraryManager::requestMetadata(vw::ui::LibraryItemId id) {
         return false;
     }
     std::lock_guard<std::mutex> lk(probeMu_);
-    if (std::find(probeQueue_.begin(), probeQueue_.end(), item->path) != probeQueue_.end()) {
-        return false; // already pending
+    if (std::find(probeQueue_.begin(), probeQueue_.end(), item->path) != probeQueue_.end() ||
+        std::find(probeInFlight_.begin(), probeInFlight_.end(), item->path) != probeInFlight_.end()) {
+        return false; // already pending (queued or currently being probed)
     }
     probeQueue_.push_back(item->path);
     probeCv_.notify_one();
@@ -428,6 +429,7 @@ void LibraryManager::probeLoop() {
             }
             path = probeQueue_.front();
             probeQueue_.erase(probeQueue_.begin());
+            probeInFlight_.push_back(path);
         }
         // Probe OUTSIDE the lock (Source Reader open is slow) and WITHOUT
         // touching items_ (control-thread owned).
@@ -439,6 +441,10 @@ void LibraryManager::probeLoop() {
             result.meta = std::move(*meta);
         }
         std::lock_guard<std::mutex> lk(probeMu_);
+        const auto it = std::find(probeInFlight_.begin(), probeInFlight_.end(), path);
+        if (it != probeInFlight_.end()) {
+            probeInFlight_.erase(it);
+        }
         probeResults_.push_back(std::move(result));
     }
 }
