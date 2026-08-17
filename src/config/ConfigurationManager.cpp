@@ -123,6 +123,8 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
     readBool(playback, L"loop", cfg.loop, [&](bool v) { cfg.loop = v; });
     readBool(playback, L"audio", cfg.audio, [&](bool v) { cfg.audio = v; });
     readInt(playback, L"frameQueue", cfg.frameQueue, 1, 16, [&](int v) { cfg.frameQueue = v; });
+    const auto& pathStr = playback.get(L"videoPath");
+    if (pathStr.isString()) cfg.videoPath = pathStr.asString();
     const auto& modeStr = playback.get(L"mode");
     if (modeStr.isString()) cfg.mode = playbackModeFrom(modeStr.asString());
     const auto& scaleStr = playback.get(L"scaling");
@@ -212,6 +214,7 @@ bool ConfigurationManager::save() const {
         {L"scaling", util::Json::string(scalingName(config_.scaling))},
         {L"frameQueue", util::Json::number(static_cast<double>(config_.frameQueue))},
         {L"audio", util::Json::boolean(config_.audio)},
+        {L"videoPath", util::Json::string(config_.videoPath)},
     };
     util::Json::Object perf{
         {L"pauseOnGame", util::Json::boolean(config_.pauseOnGame)},

@@ -9,6 +9,21 @@ UINT ControlWindow::focusMessage() {
     return msg;
 }
 
+UINT ControlWindow::pauseMessage() {
+    static const UINT msg = ::RegisterWindowMessageW(L"VideoWallpaper.PlaybackPause");
+    return msg;
+}
+
+UINT ControlWindow::resumeMessage() {
+    static const UINT msg = ::RegisterWindowMessageW(L"VideoWallpaper.PlaybackResume");
+    return msg;
+}
+
+UINT ControlWindow::stopMessage() {
+    static const UINT msg = ::RegisterWindowMessageW(L"VideoWallpaper.PlaybackStop");
+    return msg;
+}
+
 ControlWindow::~ControlWindow() {
     destroy();
 }

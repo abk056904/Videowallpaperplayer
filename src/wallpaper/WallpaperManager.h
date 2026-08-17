@@ -12,6 +12,10 @@
 #include "monitors/MonitorManager.h"
 #include "util/Result.h"
 
+namespace vw::video {
+struct DecodedFrame;
+}
+
 namespace vw::wallpaper {
 
 class WallpaperHost;
@@ -52,6 +56,12 @@ public:
     // sustained rendering.
     Result<void> renderAll();
 
+    // Uploads one decoded frame (tightly-packed B8G8R8A8) to a persistent
+    // texture and rebinds it on every host (M4 software path; M5 swaps to GPU
+    // surfaces). EOS/empty frames keep the last presented frame. Recreates the
+    // texture if the frame size changes (loop across resolutions).
+    Result<void> setVideoFrame(const video::DecodedFrame& frame);
+
     // Monitor changes (WM_DISPLAYCHANGE / WM_DEVICECHANGE): refresh + sync
     // hosts via the add/remove/change events.
     void onDisplayChange();
@@ -76,6 +86,7 @@ private:
     Result<void> discoverDesktop();
     Result<void> ensureTestTexture();
     Result<void> createHosts();
+    Result<void> bindFrameTexture();
     void teardownHosts();
     void addHostFor(const std::wstring& monitorId);
     void removeHostFor(const std::wstring& monitorId);
@@ -88,6 +99,10 @@ private:
     std::vector<std::unique_ptr<WallpaperHost>> hosts_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> testTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> testTextureSrv_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> frameTexture_; // M4: video upload
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frameTextureSrv_;
+    UINT frameWidth_ = 0;
+    UINT frameHeight_ = 0;
     DesktopLayer layer_;
     bool running_ = false;
 };

@@ -1,12 +1,14 @@
 #include "app/ApplicationController.h"
 
 #include <windows.h>
+#include <mfapi.h>
 #include <shlobj.h>
 
 #include <string>
 
 #include "logging/Logger.h"
 #include "util/clock.h"
+#include "video/VideoPlayer.h"
 
 namespace vw::app {
 
@@ -71,12 +73,33 @@ int ApplicationController::run() {
         log.warn(L"config: {}", config_->lastError());
     }
 
-    control_.setHandler([this](UINT msg, WPARAM, LPARAM) {
+    control_.setHandler([this](UINT msg, WPARAM wParam, LPARAM) {
         auto& log = log::Logger::instance();
         if (msg == ControlWindow::focusMessage()) {
             log.info(L"second instance requested focus (UI arrives in M11)");
-        } else if (msg == WM_TIMER && wallpaper_) {
+        } else if (msg == WM_TIMER && wParam == kWallpaperTimerId && wallpaper_) {
             wallpaper_->onTick(); // Explorer-restart validity stub (~1 Hz)
+        } else if (msg == WM_TIMER && wParam == kFrameTimerId) {
+            onFrameTick(); // M4: decode -> upload -> present at ~vsync cadence
+        } else if (msg == ControlWindow::pauseMessage()) {
+            // VideoPlayer logs the pause position.
+            if (player_ && player_->state() == video::VideoPlayer::State::Playing) {
+                player_->pause();
+                ::KillTimer(control_.handle(), kFrameTimerId);
+            }
+        } else if (msg == ControlWindow::resumeMessage()) {
+            if (player_ && player_->state() == video::VideoPlayer::State::Paused) {
+                if (auto r = player_->resume(); r) {
+                    ::SetTimer(control_.handle(), kFrameTimerId, 16, nullptr);
+                } else {
+                    log.warn(L"resume failed: {}", r.error());
+                }
+            }
+        } else if (msg == ControlWindow::stopMessage()) {
+            if (player_) {
+                player_->stop();
+                ::KillTimer(control_.handle(), kFrameTimerId);
+            }
         } else if ((msg == WM_DISPLAYCHANGE || msg == WM_DEVICECHANGE) && wallpaper_) {
             wallpaper_->onDisplayChange();
         }
@@ -98,6 +121,15 @@ int ApplicationController::run() {
         ::SetTimer(control_.handle(), kWallpaperTimerId, 1000, nullptr);
     }
 
+    // M4: Media Foundation single-video playback (docs/03 §3.6).
+    const HRESULT mf = ::MFStartup(MF_VERSION);
+    if (FAILED(mf)) {
+        log.error(L"MFStartup failed: 0x{:08X}", static_cast<unsigned>(mf));
+    } else {
+        mfStarted_ = true;
+        startPlayback();
+    }
+
     log.info(L"Video Wallpaper v{} starting", L"0.1.0");
     log.info(L"appdata dir: {}", appDataDir_.wstring());
     log.info(L"config: {} (loaded={})", config_->lastError().empty() ? L"ok" : config_->lastError(),
@@ -115,15 +147,79 @@ int ApplicationController::run() {
     return 0;
 }
 
+void ApplicationController::startPlayback() {
+    auto& log = log::Logger::instance();
+    if (!config_ || config_->config().videoPath.empty()) {
+        log.info(L"no playback.videoPath configured — wallpaper shows the test texture");
+        return;
+    }
+    const std::wstring path = config_->config().videoPath;
+    player_ = std::make_unique<video::VideoPlayer>();
+    auto opened = player_->open(path);
+    if (!opened) {
+        log.warn(L"cannot open video '{}': {}", path, opened.error());
+        player_.reset();
+        return;
+    }
+    // VideoPlayer logs the full open + start diagnostics.
+    if (auto started = player_->start(); !started) {
+        log.warn(L"playback start failed: {}", started.error());
+        player_.reset();
+        return;
+    }
+    // ~60 Hz frame pump (docs/03 §3.6): each tick pulls the newest decoded
+    // frame, uploads it, and presents (vsync-blocked). M6 replaces this with
+    // the FrameScheduler.
+    ::SetTimer(control_.handle(), kFrameTimerId, 16, nullptr);
+}
+
+void ApplicationController::onFrameTick() {
+    auto& log = log::Logger::instance();
+    if (!player_ || !wallpaper_) {
+        return;
+    }
+    if (player_->state() != video::VideoPlayer::State::Playing) {
+        return; // paused/stopped: nothing to pump (timer is killed on pause)
+    }
+
+    // Drain whatever the worker decoded (usually 0-1 frames at source rate),
+    // upload the newest, and present once per tick (vsync-paced).
+    video::DecodedFrame frame;
+    while (player_->pollFrame(frame)) {
+        if (frame.endOfStream) {
+            log.info(L"video stream ended — stopping playback");
+            ::KillTimer(control_.handle(), kFrameTimerId);
+            player_->stop(); // last frame stays on screen (loop/next is M7)
+            break;
+        }
+        if (auto set = wallpaper_->setVideoFrame(frame); !set) {
+            log.warn(L"video frame upload failed: {}", set.error());
+        }
+    }
+
+    if (auto rendered = wallpaper_->renderAll(); !rendered) {
+        log.warn(L"frame render failed: {}", rendered.error());
+    }
+}
+
 void ApplicationController::shutdown() {
-    // docs/03 §3.17 (M1 subset): stop accepting commands -> save state -> close
-    // window -> flush logs -> release handles -> exit.
-    if (config_) config_->save();
+    // docs/03 §3.17: stop workers -> stop rendering -> release GPU resources
+    // -> MFShutdown -> save state -> close window -> flush logs -> exit.
+    ::KillTimer(control_.handle(), kWallpaperTimerId);
+    ::KillTimer(control_.handle(), kFrameTimerId);
+    if (player_) {
+        player_->stop(); // joins the decode worker (no MF use afterwards)
+        player_.reset();
+    }
     if (wallpaper_) {
-        ::KillTimer(control_.handle(), kWallpaperTimerId);
-        wallpaper_->shutdown(); // tear down hosts BEFORE the pump dies
+        wallpaper_->shutdown(); // tear down hosts + release GPU resources
         wallpaper_.reset();
     }
+    if (mfStarted_) {
+        ::MFShutdown();
+        mfStarted_ = false;
+    }
+    if (config_) config_->save();
     control_.destroy(); // destroys the window
     log::Logger::instance().flush();
     if (mutex_) {

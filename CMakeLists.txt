@@ -93,6 +93,17 @@ set(VW_GRAPHICS_SOURCES
     src/graphics/TextureManager.cpp
 )
 
+# Video module sources (M4: Media Foundation playback, software first).
+set(VW_VIDEO_SOURCES
+    src/video/VideoMetadata.cpp
+    src/video/FrameQueue.cpp
+    src/video/DecoderManager.cpp
+    src/video/VideoPlayer.cpp
+)
+
+# Media Foundation libraries (M4+).
+set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf)
+
 # ---- application ----
 add_executable(VideoWallpaper WIN32
     src/app/main.cpp
@@ -106,10 +117,11 @@ add_executable(VideoWallpaper WIN32
     src/util/json.cpp
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
+    ${VW_VIDEO_SOURCES}
     ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr}
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 d3d11 dxgi)
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 d3d11 dxgi ${VW_MF_LIBS})
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug
@@ -135,15 +147,17 @@ add_executable(vw_tests
     tests/test_utf8.cpp
     tests/test_graphics.cpp
     tests/test_monitors.cpp
+    tests/test_video.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
     src/monitors/MonitorManager.cpp
     src/util/json.cpp
     src/util/utf8.cpp
     src/graphics/D3D11DeviceManager.cpp
+    ${VW_VIDEO_SOURCES}
 )
 target_include_directories(vw_tests PRIVATE src tests)
-target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 d3d11 dxgi)
+target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 d3d11 dxgi ${VW_MF_LIBS})
 target_compile_definitions(vw_tests PRIVATE ${VW_PUBLIC_DEFS})
 add_test(NAME vw_tests COMMAND vw_tests)
 

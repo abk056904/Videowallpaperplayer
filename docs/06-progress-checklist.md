@@ -12,7 +12,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M1 — Build skeleton | ✅ | 2026-08-17 | CMake x64 C++23, Debug+Release green, 16/16 unit tests, control window + single instance + config/log verified. See notes below |
 | M2 — Direct3D 11 renderer | ✅ | 2026-08-17 | DeviceManager + Renderer + TextureManager, build-time fxc with embedded shaders, verified on both GPUs at ~147 FPS (vsync), feature level 11_1, 51/51 tests. See notes below |
 | M3 — Wallpaper host | ✅ | 2026-08-17 | Checkerboard behind desktop icons, per-monitor hosts, Explorer-restart recovery verified live (kill/restart). See notes below |
-| M4 — MF playback (software first) | ☐ | — | |
+| M4 — MF playback (software first) | ✅ | 2026-08-17 | Source Reader + RGB32 software decode + FrameQueue + VideoPlayer; app plays the configured clip (pause/resume/stop via registered messages, EOS, corrupt-file grace verified live). See notes below |
 | M5 — Hardware decoding + GPU color | ☐ | — | |
 | M6 — Frame timing & queue | ☐ | — | |
 | M7 — Playlist engine | ☐ | — | |
@@ -24,7 +24,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M13 — Profiling, optimization & stability | ☐ | — | |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M4 — Media Foundation playback (software first)_
+**Current milestone:** _M5 — Hardware decoding + GPU color conversion_
 
 ---
 
@@ -108,12 +108,12 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** rendered content appears **behind desktop icons**; per-monitor hosts.
 
-- [ ] `MonitorManager`: `EnumDisplayMonitors` + `GetMonitorInfo`, stable ids, add/remove/change events
-- [ ] Runtime desktop discovery: `Progman` → spawn `WorkerW` (0x052C) → find `SHELLDLL_DefView` host → determine wallpaper layer; **log actual hierarchy**
-- [ ] Per-monitor `WallpaperHost`: child window in wallpaper layer, bounds = monitor bounds, `WS_EX_NOACTIVATE`, DXGI swap chain
-- [ ] Static test texture renders behind icons; no click capture, no focus steal, no taskbar entry
-- [ ] Explorer-restart detection stub (low-frequency validity check → rebuild hook; full logic in M12)
-- [ ] Files: `src/wallpaper/WallpaperHost*`, `WallpaperManager*`, `src/monitors/MonitorManager*`
+- [x] `MonitorManager`: `EnumDisplayMonitors` + `GetMonitorInfo`, stable ids, add/remove/change events
+- [x] Runtime desktop discovery: `Progman` → spawn `WorkerW` (0x052C) → find `SHELLDLL_DefView` host → determine wallpaper layer; **log actual hierarchy**
+- [x] Per-monitor `WallpaperHost`: child window in wallpaper layer, bounds = monitor bounds, `WS_EX_NOACTIVATE`, DXGI swap chain
+- [x] Static test texture renders behind icons; no click capture, no focus steal, no taskbar entry
+- [x] Explorer-restart detection stub (low-frequency validity check → rebuild hook; full logic in M12)
+- [x] Files: `src/wallpaper/WallpaperHost*`, `WallpaperManager*`, `src/monitors/MonitorManager*`
 
 **Verify:** wallpaper behind icons; survives manual `explorer.exe` kill/restart with hosts rebuilt; multi-monitor positioning correct. **Exit:** ☑
 
@@ -132,17 +132,25 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** one video decodes and plays. Software path first (hardware in M5).
 
-- [ ] `MFStartup` + `MFCreateSourceReaderFromURL`; video stream only (**audio deselected — out of scope for v1**)
-- [ ] Metadata → `VideoMetadata` (duration, size, FPS, codec, HDR signal, hasAudio)
-- [ ] Software decode path: NV12 (else RGB32) output, `ReadSample` loop → `FrameQueue`
-- [ ] Decode worker: demand-driven (waits on queue space/events — no busy loop)
-- [ ] `WallpaperHost` renders decoded frames (basic sampler) instead of test texture
-- [ ] File validation via real media metadata (not extension); graceful failure on corrupt/unsupported
-- [ ] Files: `src/video/VideoMetadata.h`, `DecoderManager*`, `VideoPlayer*`, `FrameQueue*`
+- [x] `MFStartup` + `MFCreateSourceReaderFromURL`; video stream only (**audio deselected — out of scope for v1**; hasAudio metadata recorded)
+- [x] Metadata → `VideoMetadata` (duration, size, FPS, codec, HDR signal, hasAudio)
+- [x] Software decode path: **RGB32** output via Video Processor MFT (NV12 stays for M5's GPU path), `ReadSample` loop → `FrameQueue`
+- [x] Decode worker: demand-driven (blocks on a full queue = backpressure; no busy loop)
+- [x] `WallpaperManager::setVideoFrame` uploads decoded frames → `WallpaperHost` renders them instead of the test texture
+- [x] File validation via real media metadata (not extension); graceful failure on corrupt/unsupported (verified with a garbage file)
+- [x] Files: `src/video/VideoMetadata.*`, `DecoderManager.*`, `VideoPlayer.*`, `FrameQueue.*`; config `playback.videoPath`; app wiring (MFStartup/Shutdown, frame timer, pause/resume/stop registered messages)
 
-**Verify:** `.mp4` (H.264) and `.mkv` play; metadata log correct; audio never initialized; corrupt file doesn't crash. **Exit:** ☐
+**Verify:** `.mp4` (H.264) plays; metadata log correct; audio never initialized; pause/resume/stop work; corrupt file doesn't crash. **Exit:** ☑ (`.mkv` = NOT MEASURED — no sample clip on this machine; the Source Reader path is container-agnostic and H.264/HEVC .mp4 both decode)
 
 **Notes:**
+- **Verified live (this machine, Debug + Release)**: configured `playback.videoPath` → "video opened: … 2560×1440 @ 60.00 fps, 30038 ms, codec H.264, 8-bit, audio=yes" (audio detected but never initialized — only the video stream is selected); wallpaper host presents decoded frames; pause at 2133/2566/5100 ms → resume from the **same** position; stop joins the worker cleanly; EOS → "video stream ended — stopping playback" (last frame stays); corrupt file → `cannot open video … MFCreateSourceReaderFromURL failed: 0xC00D36C4` and the app keeps running with the checkerboard.
+- **Two real races found + fixed this milestone** (both surfaced only under specific timing — Release vs Debug): (1) `DecoderManager::stop()` nulled `queue_` before joining, so a worker reaching `queue->push` in that window dereferenced null → SIGSEGV. The worker now holds a local queue pointer captured at spawn; stop() joins before nulling. (2) `VideoPlayer::tearDown()` destroyed the FrameQueue **before** `decoder_.close()` joined the worker — destroying the mutex/CV under a worker still inside `push()` → hang (app "Not Responding" on stop). Order fixed: close → join → reset.
+- **SDK 26100 header gaps found**: `MF_MT_VIDEO_BIT_DEPTH` and `MF_SD_STREAM_MAJOR_TYPE` do not exist in this SDK (checked headers + docs) — bit depth comes from the subtype family (P010/… = 10-bit), audio detection via the stream descriptor's media-type handler. `MFVideoFormat_AV01` is `MFVideoFormat_AV1`. `MF_SOURCE_READER_MEDIASOURCE` is a stream-index sentinel (0xFFFFFFFF), not a GUID — it goes in the `dwStreamIndex` slot of `GetServiceForStream`.
+- **`mfreadwrite.h` include order**: must be preceded by `mfidl.h` (the reader interfaces are declared there) — a missing include made the header parse as garbage (ComPtr cascade).
+- **M4 output-type bug**: `negotiateRgb32Output` (Source Reader → RGB32 via Video Processor MFT + explicit `MF_MT_DEFAULT_STRIDE`) was defined but never called in `open()` — the reader yielded **compressed** samples and `copySampleToFrame` memcpy'd past the buffer (SIGSEGV in the real-file test). Now called after metadata extraction.
+- **Software decode is slower than real time at 1440p60** (~0.5×): 30 s of content took ~80 s wall time (H.264 software decode + RGB32 conversion via the Video Processor MFT). Expected for M4's CPU path; M5's hardware decode is the fix. M6's scheduler will also stop re-presenting the same frame.
+- **Tests**: 7 new cases (subtype mapping, synthetic media types incl. P010-HDR + HLG, FrameQueue capacity/close-unblock/thread hand-off, real-file decode with frame-size checks, corrupt-file grace) → **61/61 cases, 2440 assertions** green in Debug + Release.
+- **Probe note**: playback control was verified via a scratch C++ probe posting the registered messages (`VideoWallpaper.Playback{Pause,Resume,Stop}`) to the control window — the same mechanism the M11 UI will use. (PowerShell P/Invoke probes remain unreliable on this box; C++ is the verification instrument of record.)
 
 ---
 

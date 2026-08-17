@@ -26,6 +26,7 @@ struct Config {
     ScalingMode scaling = ScalingMode::Fill;
     int frameQueue = 3;
     bool audio = false;
+    std::wstring videoPath; // M4: single clip to play (empty = none, wallpaper shows checkerboard)
     // performance
     bool pauseOnGame = true;
     bool pauseOnFullscreen = true;

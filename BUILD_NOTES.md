@@ -242,3 +242,50 @@ Deferred notes for later milestones:
 - **Device-loss while running**: `render()` errors propagate and are logged; the full teardown/recreate path is M12.
 - `MonitorManager::refresh` doesn't detect `workArea`-only changes (taskbar resize) — M8.
 - The 0x052C `SendMessageTimeout` result is not checked (arrangement-B/fallback discovery covers a failed spawn) — acceptable, logged hierarchy shows what actually exists.
+
+---
+
+# M4 Build Notes — Media Foundation playback (software first) (2026-08-17)
+
+## What shipped
+
+- `src/video/`: `VideoMetadata` (subtype/codec/size/fps/duration/bit-depth/HDR/hasAudio from the **native** media type + presentation descriptor), `FrameQueue` (bounded, blocking push = backpressure, `close()` unblocks), `DecoderManager` (Source Reader, RGB32 output, demand-driven decode worker), `VideoPlayer` (open/start/pause/resume/stop/pollFrame, position tracking, EOS sentinel).
+- Config: `playback.videoPath` (read/write/round-trip). App: `MFStartup`/`MFShutdown` in the deterministic shutdown sequence, ~60 Hz frame timer (M4 placeholder; M6 replaces with the FrameScheduler), pause/resume/stop via registered window messages (`VideoWallpaper.Playback{Pause,Resume,Stop}`), EOS → clean stop with the last frame on screen.
+- `WallpaperManager::setVideoFrame()`: persistent dynamic texture + SRV (recreated on frame-size change), upload of tightly-packed B8G8R8A8, rebind on all hosts.
+
+## SDK 26100 gotchas (headers checked against this SDK)
+
+- **`MF_MT_VIDEO_BIT_DEPTH` does not exist** in the platform headers (also absent from the official media-type attribute list). Bit depth comes from the subtype family: P010/P016/Y210/Y216/v210/v216/Y410 → 10-bit, else 8.
+- **`MF_SD_STREAM_MAJOR_TYPE` does not exist** in mfidl.h. Detect audio via the stream descriptor's media-type handler (`GetMediaTypeHandler` → `GetMajorType == MFMediaType_Audio`).
+- **`MFVideoFormat_AV01` does not exist** — it's `MFVideoFormat_AV1` (FCC `AV01`).
+- **`MF_SOURCE_READER_MEDIASOURCE` is a stream-index sentinel (0xFFFFFFFF), not a GUID.** It goes in the `dwStreamIndex` slot of `IMFSourceReader::GetServiceForStream` with `GUID_NULL` as the service GUID.
+- **`mfreadwrite.h` must be included AFTER `mfidl.h`** (the reader interfaces are declared there). Including it alone parses as garbage (ComPtr/C2065 cascade).
+- `MF_SOURCE_READER_FIRST_VIDEO_STREAM`/`ALL_STREAMS` are signed enum constants — cast to `DWORD` explicitly.
+
+## Two real races found by live verification (both fixed)
+
+1. **`DecoderManager::stop()` SIGSEGV (Release)**: `stop()` set `stopRequested_` and **nulled `queue_` before joining** the worker; a worker that reached `queue->push()` in that window dereferenced null. The worker now uses a **local copy of the queue pointer** captured at spawn; `stop()` closes the queue, joins, then nulls the member. (Surfaced as a flaky crash in the real-file decode test — Debug passed, Release crashed, classic timing-dependent race.)
+2. **`VideoPlayer::tearDown()` hang on stop ("Not Responding")**: the queue was destroyed (`queue_.reset()`) **before** `decoder_.close()` joined the worker — destroying the mutex/CV under a worker still inside `push()`. Order fixed: `close()` → join → `reset()`. (`pause()` already had the correct order — only `tearDown()` was wrong.)
+
+Lesson: any object a worker holds a raw pointer to must outlive the worker — join before destroy, or own it in the worker.
+
+## M4 output-type bug
+
+`negotiateRgb32Output` (Source Reader → RGB32 via `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING` + explicit `MF_MT_DEFAULT_STRIDE`) was defined but **never called from `open()`** — the reader yielded compressed samples at the native type and `copySampleToFrame` memcpy'd past the small buffer (SIGSEGV in the real-file test). Now called after metadata extraction. (This is the same class of bug the M5-preview harness documented: the decoder's own converter rejects RGB32; the Video Processor MFT is the documented path.)
+
+## Verified live (this machine, Debug + Release)
+
+| Check | Result |
+|---|---|
+| Open + metadata | 2560×1440 @ 60.00 fps, 30038 ms, codec H.264, 8-bit, audio=yes (audio never initialized — video stream only) |
+| Frames advance | pause at 2133/2566/5100 ms — position tracks real decode progress |
+| Pause/resume | resume continues from the **same** position (fresh worker + queue, reader kept) |
+| Stop | worker joins cleanly, app stays responsive |
+| EOS | "video stream ended — stopping playback", last frame stays, no crash |
+| Corrupt file | `cannot open video … 0xC00D36C4`, app keeps running (checkerboard) |
+| Tests | 61/61 cases, 2440 assertions, both configs, 0 warnings under /WX |
+| Debug layer | ON in Debug, OFF in Release (correct) |
+
+## Performance note (expected, not a defect)
+
+Software decode of 1440p60 H.264 → RGB32 (Video Processor MFT) runs at roughly **half real time** (~30 s of content in ~80 s wall). That's the M4 CPU path — M5's hardware MFT + GPU surfaces is the fix, and M6's scheduler will stop re-presenting the same frame while waiting.

@@ -38,6 +38,10 @@ public:
     // Draws the bound texture + presents (vsync). No-op-safe only while valid.
     Result<void> render();
 
+    // Rebinds the texture rendered on the next render() (M4: per-frame video
+    // texture swaps; null restores whatever init bound).
+    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv);
+
     // Repositions/resizes the window + swap chain (monitor change).
     Result<void> setBounds(const RECT& bounds);
 

@@ -34,6 +34,11 @@ public:
     static const wchar_t* kClassName;
     // Registered message: a second instance asks us to focus.
     static UINT focusMessage();
+    // Registered messages (M4): external/UI playback control. Posting one of
+    // these is a no-op when the player is not in the matching state.
+    static UINT pauseMessage();
+    static UINT resumeMessage();
+    static UINT stopMessage();
 
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

@@ -1,11 +1,13 @@
 #include "wallpaper/WallpaperManager.h"
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <utility>
 
 #include "graphics/TextureManager.h"
 #include "logging/Logger.h"
+#include "video/DecodedFrame.h"
 #include "wallpaper/WallpaperHost.h"
 
 namespace vw::wallpaper {
@@ -136,6 +138,10 @@ void WallpaperManager::shutdown() {
     teardownHosts();
     testTexture_.Reset();
     testTextureSrv_.Reset();
+    frameTexture_.Reset();
+    frameTextureSrv_.Reset();
+    frameWidth_ = 0;
+    frameHeight_ = 0;
     layer_ = {};
     log::Logger::instance().debug(L"wallpaper shut down");
 }
@@ -307,6 +313,73 @@ Result<void> WallpaperManager::renderAll() {
     }
     if (anyError) {
         return std::unexpected(L"one or more hosts failed to render");
+    }
+    return {};
+}
+
+Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
+    if (!running_) {
+        return {};
+    }
+    if (frame.endOfStream || frame.bytes.empty()) {
+        // EOS/empty sentinel: keep the last presented frame on screen (the
+        // player loops by reopening; nothing to upload here).
+        return {};
+    }
+    if (frame.width == 0 || frame.height == 0) {
+        return std::unexpected(L"setVideoFrame: invalid frame size");
+    }
+
+    // (Re)create the upload texture + SRV when the frame size changes (loop
+    // across different-resolution clips).
+    if (!frameTexture_ || frameWidth_ != frame.width || frameHeight_ != frame.height) {
+        auto texture = gfx::TextureManager::createTexture(
+            deviceManager_.device(), DXGI_FORMAT_B8G8R8A8_UNORM, frame.width, frame.height,
+            true /* dynamic */);
+        if (!texture) {
+            return std::unexpected(texture.error());
+        }
+        auto srv = gfx::TextureManager::createSrv(deviceManager_.device(), texture->Get());
+        if (!srv) {
+            return std::unexpected(srv.error());
+        }
+        frameTexture_ = std::move(*texture);
+        frameTextureSrv_ = std::move(*srv);
+        frameWidth_ = frame.width;
+        frameHeight_ = frame.height;
+        log::Logger::instance().debug(L"video upload texture (re)created: {}x{}", frame.width,
+                                      frame.height);
+    }
+
+    // Upload tightly-packed B8G8R8A8 (no row padding) into the dynamic texture.
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceManager_.context()->Map(frameTexture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
+                                             &mapped))) {
+        return std::unexpected(L"frame texture Map failed");
+    }
+    const auto* src = frame.bytes.data();
+    const size_t rowBytes = static_cast<size_t>(frame.width) * 4;
+    for (UINT y = 0; y < frame.height; ++y) {
+        auto* dst = static_cast<BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch;
+        std::memcpy(dst, src + static_cast<size_t>(y) * rowBytes, rowBytes);
+    }
+    deviceManager_.context()->Unmap(frameTexture_.Get(), 0);
+
+    return bindFrameTexture();
+}
+
+Result<void> WallpaperManager::bindFrameTexture() {
+    bool anyError = false;
+    for (auto& host : hosts_) {
+        auto result = host->setVideoTexture(frameTextureSrv_.Get());
+        if (!result) {
+            anyError = true;
+            log::Logger::instance().warn(L"bind video texture failed for {}: {}",
+                                         host->monitorId(), result.error());
+        }
+    }
+    if (anyError) {
+        return std::unexpected(L"one or more hosts failed to bind the video texture");
     }
     return {};
 }
