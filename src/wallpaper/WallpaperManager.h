@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 
 #include "graphics/D3D11DeviceManager.h"
+#include "graphics/D3D11Renderer.h"
 #include "monitors/MonitorManager.h"
 #include "util/Result.h"
 
@@ -82,11 +83,21 @@ public:
     const std::vector<monitors::MonitorInfo>& monitors() const { return monitors_; }
     const DesktopLayer& layer() const { return layer_; }
 
+    // The D3D device backing the wallpaper — handed to the player so the
+    // decoder produces GPU surfaces on the same device (M5).
+    ID3D11Device* device();
+
+    // Scaling mode for video frames (config.playback.scaling, Fill default).
+    void setScaling(gfx::D3D11Renderer::Scaling scaling) { scaling_ = scaling; }
+
 private:
     Result<void> discoverDesktop();
     Result<void> ensureTestTexture();
     Result<void> createHosts();
     Result<void> bindFrameTexture();
+    Result<void> bindGpuFrame(const video::DecodedFrame& frame);
+    Result<void> bindFramePlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
+                                 UINT videoWidth, UINT videoHeight);
     void teardownHosts();
     void addHostFor(const std::wstring& monitorId);
     void removeHostFor(const std::wstring& monitorId);
@@ -103,6 +114,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frameTextureSrv_;
     UINT frameWidth_ = 0;
     UINT frameHeight_ = 0;
+    gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;
     DesktopLayer layer_;
     bool running_ = false;
 };

@@ -14,6 +14,17 @@ namespace vw::app {
 
 namespace {
 const wchar_t* kSingleInstanceMutex = L"Local\\VideoWallpaper.SingleInstance";
+
+// config.playback.scaling -> renderer scaling (Fill default).
+gfx::D3D11Renderer::Scaling rendererScalingFrom(config::ScalingMode m) {
+    switch (m) {
+        case config::ScalingMode::Fit: return gfx::D3D11Renderer::Scaling::Fit;
+        case config::ScalingMode::Stretch: return gfx::D3D11Renderer::Scaling::Stretch;
+        case config::ScalingMode::Center: return gfx::D3D11Renderer::Scaling::Center;
+        case config::ScalingMode::Fill: return gfx::D3D11Renderer::Scaling::Fill;
+    }
+    return gfx::D3D11Renderer::Scaling::Fill;
+}
 } // namespace
 
 ApplicationController::ApplicationController() = default;
@@ -155,6 +166,12 @@ void ApplicationController::startPlayback() {
     }
     const std::wstring path = config_->config().videoPath;
     player_ = std::make_unique<video::VideoPlayer>();
+    // M5: hardware decode on the wallpaper's D3D device (same adapter);
+    // scaling per config.playback.scaling (Fill default).
+    if (wallpaper_) {
+        wallpaper_->setScaling(rendererScalingFrom(config_->config().scaling));
+        player_->setD3DDevice(wallpaper_->device());
+    }
     auto opened = player_->open(path);
     if (!opened) {
         log.warn(L"cannot open video '{}': {}", path, opened.error());

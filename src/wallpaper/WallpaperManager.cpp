@@ -33,6 +33,10 @@ size_t WallpaperManager::hostCount() const {
     return hosts_.size();
 }
 
+ID3D11Device* WallpaperManager::device() {
+    return deviceManager_.device();
+}
+
 Result<void> WallpaperManager::start(IDXGIAdapter1* adapter) {
     if (running_) {
         return {};
@@ -321,6 +325,11 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
     if (!running_) {
         return {};
     }
+    // Hardware path (M5): the frame IS a GPU surface — view its two planes
+    // (Y + interleaved UV) and rebind the hosts. No CPU upload.
+    if (frame.hardware) {
+        return bindGpuFrame(frame);
+    }
     if (frame.endOfStream || frame.bytes.empty()) {
         // EOS/empty sentinel: keep the last presented frame on screen (the
         // player loops by reopening; nothing to upload here).
@@ -380,6 +389,60 @@ Result<void> WallpaperManager::bindFrameTexture() {
     }
     if (anyError) {
         return std::unexpected(L"one or more hosts failed to bind the video texture");
+    }
+    return {};
+}
+
+Result<void> WallpaperManager::bindGpuFrame(const video::DecodedFrame& frame) {
+    if (!frame.texture) {
+        return std::unexpected(L"bindGpuFrame: no texture");
+    }
+    // Plane views for the decoder's planar surface (NV12 -> R8/R8G8,
+    // P010 -> R16/R16G16), per the documented two-views pattern.
+    D3D11_TEXTURE2D_DESC desc{};
+    frame.texture->GetDesc(&desc);
+    DXGI_FORMAT yFormat = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT uvFormat = DXGI_FORMAT_UNKNOWN;
+    switch (desc.Format) {
+        case DXGI_FORMAT_NV12:
+            yFormat = DXGI_FORMAT_R8_UNORM;
+            uvFormat = DXGI_FORMAT_R8G8_UNORM;
+            break;
+        case DXGI_FORMAT_P010:
+            yFormat = DXGI_FORMAT_R16_UNORM;
+            uvFormat = DXGI_FORMAT_R16G16_UNORM;
+            break;
+        default:
+            return std::unexpected(L"bindGpuFrame: unsupported surface format " +
+                                   std::to_wstring(static_cast<int>(desc.Format)));
+    }
+    auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                    yFormat);
+    if (!ySrv) {
+        return std::unexpected(ySrv.error());
+    }
+    auto uvSrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                     uvFormat);
+    if (!uvSrv) {
+        return std::unexpected(uvSrv.error());
+    }
+    return bindFramePlanes(ySrv->Get(), uvSrv->Get(), frame.width, frame.height);
+}
+
+Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,
+                                               ID3D11ShaderResourceView* uvSrv,
+                                               UINT videoWidth, UINT videoHeight) {
+    bool anyError = false;
+    for (auto& host : hosts_) {
+        auto result = host->setVideoPlanes(ySrv, uvSrv, videoWidth, videoHeight, scaling_);
+        if (!result) {
+            anyError = true;
+            log::Logger::instance().warn(L"bind video planes failed for {}: {}",
+                                         host->monitorId(), result.error());
+        }
+    }
+    if (anyError) {
+        return std::unexpected(L"one or more hosts failed to bind the video planes");
     }
     return {};
 }

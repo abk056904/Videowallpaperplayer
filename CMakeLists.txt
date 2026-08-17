@@ -45,17 +45,20 @@ set(_shader_outdir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(_vs_cso ${_shader_outdir}/VideoShader.vs.cso)
 set(_ps_cso ${_shader_outdir}/VideoShader.ps.cso)
 set(_ps_tex_cso ${_shader_outdir}/VideoShader.ps_tex.cso)
+set(_ps_yuv_cso ${_shader_outdir}/VideoShader.ps_yuv.cso)
 set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(_vs_hdr ${_gen_dir}/VideoShaderVsData.h)
 set(_ps_hdr ${_gen_dir}/VideoShaderPsData.h)
 set(_ps_tex_hdr ${_gen_dir}/VideoShaderPsTexData.h)
+set(_ps_yuv_hdr ${_gen_dir}/VideoShaderPsYuvData.h)
 
 add_custom_command(
-    OUTPUT ${_vs_cso} ${_ps_cso} ${_ps_tex_cso}
+    OUTPUT ${_vs_cso} ${_ps_cso} ${_ps_tex_cso} ${_ps_yuv_cso}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${_shader_outdir}
     COMMAND ${FXC_EXE} /nologo /T vs_5_0 /E VSMain /Fo ${_vs_cso} ${_shader_src}
     COMMAND ${FXC_EXE} /nologo /T ps_5_0 /E PSMain /Fo ${_ps_cso} ${_shader_src}
     COMMAND ${FXC_EXE} /nologo /T ps_5_0 /E PSMainTexture /Fo ${_ps_tex_cso} ${_shader_src}
+    COMMAND ${FXC_EXE} /nologo /T ps_5_0 /E PSMainYuv /Fo ${_ps_yuv_cso} ${_shader_src}
     DEPENDS ${_shader_src}
     COMMENT "Compiling VideoShader.hlsl with fxc"
     VERBATIM
@@ -84,7 +87,15 @@ add_custom_command(
     COMMENT "Embedding textured pixel shader"
     VERBATIM
 )
-set_source_files_properties(${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} PROPERTIES GENERATED TRUE)
+add_custom_command(
+    OUTPUT ${_ps_yuv_hdr}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${_ps_yuv_cso} -DOUTPUT=${_ps_yuv_hdr} -DNAME=kVideoShaderPsYuv
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
+    DEPENDS ${_ps_yuv_cso} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
+    COMMENT "Embedding YUV pixel shader"
+    VERBATIM
+)
+set_source_files_properties(${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr} PROPERTIES GENERATED TRUE)
 
 # Graphics module sources shared by the app and the harness.
 set(VW_GRAPHICS_SOURCES
@@ -101,8 +112,8 @@ set(VW_VIDEO_SOURCES
     src/video/VideoPlayer.cpp
 )
 
-# Media Foundation libraries (M4+).
-set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf)
+# Media Foundation libraries (M4+; evr provides MR_VIDEO_ACCELERATION_SERVICE).
+set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf evr)
 
 # ---- application ----
 add_executable(VideoWallpaper WIN32
@@ -118,7 +129,7 @@ add_executable(VideoWallpaper WIN32
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
     ${VW_VIDEO_SOURCES}
-    ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr}
+    ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr}
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 d3d11 dxgi ${VW_MF_LIBS})
@@ -154,6 +165,7 @@ add_executable(vw_tests
     src/util/json.cpp
     src/util/utf8.cpp
     src/graphics/D3D11DeviceManager.cpp
+    src/graphics/TextureManager.cpp
     ${VW_VIDEO_SOURCES}
 )
 target_include_directories(vw_tests PRIVATE src tests)
@@ -173,7 +185,7 @@ add_executable(vw_gfx_harness
     src/wallpaper/WallpaperManager.cpp
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
-    ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr}
+    ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr}
 )
 target_include_directories(vw_gfx_harness PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(vw_gfx_harness PRIVATE d3d11 dxgi user32 mfplat mfreadwrite mfuuid)

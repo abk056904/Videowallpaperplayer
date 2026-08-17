@@ -42,6 +42,12 @@ public:
     // texture swaps; null restores whatever init bound).
     Result<void> setVideoTexture(ID3D11ShaderResourceView* srv);
 
+    // Hardware path (M5): two plane SRVs over one NV12/P010 decoder texture,
+    // video dimensions, and the scaling mode (forwarded to the renderer).
+    Result<void> setVideoPlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
+                                UINT videoWidth, UINT videoHeight,
+                                gfx::D3D11Renderer::Scaling scaling);
+
     // Repositions/resizes the window + swap chain (monitor change).
     Result<void> setBounds(const RECT& bounds);
 

@@ -1,11 +1,13 @@
 #include "graphics/D3D11Renderer.h"
 
+#include <algorithm>
 #include <format>
 
 #include "graphics/D3D11DeviceManager.h"
 #include "graphics/TextureManager.h"
 #include "generated/VideoShaderPsData.h"
 #include "generated/VideoShaderPsTexData.h"
+#include "generated/VideoShaderPsYuvData.h"
 #include "generated/VideoShaderVsData.h"
 
 namespace vw::gfx {
@@ -34,9 +36,13 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
                                          &psTex_))) {
         return std::unexpected(L"CreatePixelShader (textured) failed");
     }
+    if (FAILED(device->CreatePixelShader(kVideoShaderPsYuv, kVideoShaderPsYuv_size, nullptr,
+                                         &psYuv_))) {
+        return std::unexpected(L"CreatePixelShader (YUV) failed");
+    }
 
     D3D11_BUFFER_DESC cb{};
-    cb.ByteWidth = sizeof(FrameParams); // two float4, 16-byte aligned
+    cb.ByteWidth = sizeof(FrameParams); // tint + scaleOffset, 16-byte aligned
     cb.Usage = D3D11_USAGE_DEFAULT;
     cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     if (FAILED(device->CreateBuffer(&cb, nullptr, &frameCb_))) {
@@ -64,6 +70,58 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
 Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv) {
     if (srv && !psTex_) return std::unexpected(L"renderer: textured shader not initialized");
     videoSrv_ = srv;
+    ySrv_.Reset();
+    uvSrv_.Reset();
+    return {};
+}
+
+Result<void> D3D11Renderer::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
+                                           ID3D11ShaderResourceView* uvSrv, UINT videoWidth,
+                                           UINT videoHeight, Scaling scaling) {
+    if (ySrv && !psYuv_) return std::unexpected(L"renderer: YUV shader not initialized");
+    ySrv_ = ySrv;
+    uvSrv_ = uvSrv;
+    if (!ySrv) {
+        videoSrv_.Reset();
+        return {};
+    }
+    // Map the fullscreen UV [0,1]^2 onto the texture UV per the scaling mode.
+    // aspect = window/video; the shader applies uv*scale + offset.
+    const float winAspect =
+        height_ > 0 ? static_cast<float>(width_) / static_cast<float>(height_) : 1.0f;
+    const float vidAspect =
+        videoHeight > 0 ? static_cast<float>(videoWidth) / static_cast<float>(videoHeight) : 1.0f;
+    float sx = 1.0f, sy = 1.0f, ox = 0.0f, oy = 0.0f;
+    switch (scaling) {
+        case Scaling::Stretch: // full frame, aspect ignored
+            break;
+        case Scaling::Fit: // contain: fit whole frame, letterbox the rest
+            if (winAspect > vidAspect) { // window wider: width-limited
+                sx = vidAspect / winAspect;
+            } else {
+                sy = winAspect / vidAspect;
+            }
+            break;
+        case Scaling::Center: // 1:1, centered
+            sx = std::min(1.0f, vidAspect / winAspect);
+            sy = std::min(1.0f, winAspect / vidAspect);
+            break;
+        case Scaling::Fill: // cover: fill frame, crop the overflow (default)
+        default:
+            if (winAspect > vidAspect) { // window wider: height-limited
+                sy = winAspect / vidAspect;
+            } else {
+                sx = vidAspect / winAspect;
+            }
+            break;
+    }
+    ox = (1.0f - sx) * 0.5f;
+    oy = (1.0f - sy) * 0.5f;
+    scaleOffset_[0] = sx;
+    scaleOffset_[1] = sy;
+    scaleOffset_[2] = ox;
+    scaleOffset_[3] = oy;
+    videoSrv_.Reset();
     return {};
 }
 
@@ -74,19 +132,38 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
     context->ClearRenderTargetView(rtv_.Get(), clear);
     context->OMSetRenderTargets(1, rtv_.GetAddressOf(), nullptr);
 
-    context->UpdateSubresource(frameCb_.Get(), 0, nullptr, &params, 0, 0);
+    // Per-frame params: tint + the scaling computed by setVideoPlanes.
+    FrameParams cbParams = params;
+    if (ySrv_) {
+        cbParams.scaleOffset[0] = scaleOffset_[0];
+        cbParams.scaleOffset[1] = scaleOffset_[1];
+        cbParams.scaleOffset[2] = scaleOffset_[2];
+        cbParams.scaleOffset[3] = scaleOffset_[3];
+    } else {
+        cbParams.scaleOffset[0] = 1.0f;
+        cbParams.scaleOffset[1] = 1.0f;
+        cbParams.scaleOffset[2] = 0.0f;
+        cbParams.scaleOffset[3] = 0.0f;
+    }
+    context->UpdateSubresource(frameCb_.Get(), 0, nullptr, &cbParams, 0, 0);
 
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->IASetInputLayout(nullptr); // vertex-less: SV_VertexID only
     context->VSSetShader(vs_.Get(), nullptr, 0);
-    if (videoSrv_) {
-        // M5 preview: bind the frame texture + textured PS.
+    ID3D11ShaderResourceView* const nullSrvs[2] = {nullptr, nullptr};
+    if (ySrv_) {
+        // Hardware path: NV12/P010 planes through the YUV shader.
+        ID3D11ShaderResourceView* const srvs[2] = {ySrv_.Get(), uvSrv_.Get()};
+        context->PSSetShader(psYuv_.Get(), nullptr, 0);
+        context->PSSetShaderResources(0, 2, srvs);
+    } else if (videoSrv_) {
+        // Software path: RGB32 frame through the textured shader.
         context->PSSetShader(psTex_.Get(), nullptr, 0);
         context->PSSetShaderResources(0, 1, videoSrv_.GetAddressOf());
+        context->PSSetShaderResources(1, 1, nullSrvs); // clear stale YUV binding
     } else {
         context->PSSetShader(ps_.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* const nullSrv[1] = {nullptr};
-        context->PSSetShaderResources(0, 1, nullSrv); // clear stale binding
+        context->PSSetShaderResources(0, 2, nullSrvs); // clear stale bindings
     }
     context->VSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());
     context->PSSetConstantBuffers(0, 1, frameCb_.GetAddressOf());

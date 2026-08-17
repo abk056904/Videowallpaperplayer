@@ -19,6 +19,12 @@ public:
     static Result<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> createSrv(
         ID3D11Device* device, ID3D11Texture2D* texture);
 
+    // SRV with an explicit format over a texture — used for planar video
+    // (NV12/P010) plane views: the same texture is viewed twice, once as
+    // R8/R16 (Y) and once as R8G8/R16G16 (UV), per the documented pattern.
+    static Result<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> createPlaneSrv(
+        ID3D11Device* device, ID3D11Texture2D* texture, DXGI_FORMAT format);
+
     // Sampler state with the given filter and clamp addressing.
     static Result<Microsoft::WRL::ComPtr<ID3D11SamplerState>> createSampler(
         ID3D11Device* device, D3D11_FILTER filter);

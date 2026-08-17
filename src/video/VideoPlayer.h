@@ -1,5 +1,6 @@
 #pragma once
 
+#include <d3d11.h>
 #include <memory>
 
 #include "util/Result.h"
@@ -24,6 +25,10 @@ public:
 
     VideoPlayer(const VideoPlayer&) = delete;
     VideoPlayer& operator=(const VideoPlayer&) = delete;
+
+    // Supplies the D3D device for the hardware decode path (M5; forwarded to
+    // the DecoderManager before open). nullptr = software-only.
+    void setD3DDevice(ID3D11Device* device) { decoder_.setD3DDevice(device); }
 
     // Opens + validates the file (real media metadata). Does not start
     // decoding. Idempotent re-open.
@@ -50,6 +55,8 @@ public:
     const VideoMetadata& metadata() const { return decoder_.metadata(); }
     LONGLONG position100ns() const { return position_; }
     bool isOpen() const { return opened_; }
+    bool hardwareDecoding() const { return decoder_.hardwareDecoding(); }
+    const std::wstring& decoderName() const { return decoder_.decoderName(); }
 
 private:
     void tearDown(); // join worker + close queue (idempotent)

@@ -17,8 +17,12 @@ namespace vw::gfx {
 // video-texture sampling; the constant buffer stays the per-frame interface.
 class D3D11Renderer {
 public:
+    // Texture-to-window mapping (config.playback.scaling, Fill default).
+    enum class Scaling { Fill, Fit, Stretch, Center };
+
     struct FrameParams {
-        float tint[4]; // per-frame color modulation
+        float tint[4];      // per-frame color modulation
+        float scaleOffset[4]; // xy = texture UV scale, zw = UV offset
     };
 
     D3D11Renderer() = default;
@@ -26,9 +30,15 @@ public:
     // Stores the swap chain, creates the pipeline, and builds the RTV.
     Result<void> init(ID3D11Device* device, IDXGISwapChain1* swapChain, UINT width, UINT height);
 
-    // M5-preview texture path: when set, render() samples this SRV through the
-    // textured pixel shader; null restores the gradient placeholder.
+    // Software path (M4/M5-preview): when set, render() samples this SRV through
+    // the textured pixel shader; null restores the gradient placeholder.
     Result<void> setVideoTexture(ID3D11ShaderResourceView* srv);
+
+    // Hardware path (M5): two plane SRVs over one NV12/P010 decoder texture
+    // (Y: R8/R16, UV: R8G8/R16G16) + the video dimensions so the YUV shader
+    // can scale per the configured mode. Null ySrv restores the placeholder.
+    Result<void> setVideoPlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
+                                UINT videoWidth, UINT videoHeight, Scaling scaling);
 
     // Clears, draws, and presents (vsync). Device loss propagates as an error
     // so the caller can run the M12 recreate path.
@@ -44,12 +54,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vs_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> ps_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> psTex_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> psYuv_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> videoSrv_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ySrv_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvSrv_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> frameCb_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_; // linear; used from M5 on
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv_;
     D3D11_VIEWPORT viewport_{};
+    float scaleOffset_[4] = {1.0f, 1.0f, 0.0f, 0.0f}; // set by setVideoPlanes
     UINT width_ = 0;
     UINT height_ = 0;
 };

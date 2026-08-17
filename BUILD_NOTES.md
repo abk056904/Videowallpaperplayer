@@ -289,3 +289,51 @@ Lesson: any object a worker holds a raw pointer to must outlive the worker — j
 ## Performance note (expected, not a defect)
 
 Software decode of 1440p60 H.264 → RGB32 (Video Processor MFT) runs at roughly **half real time** (~30 s of content in ~80 s wall). That's the M4 CPU path — M5's hardware MFT + GPU surfaces is the fix, and M6's scheduler will stop re-presenting the same frame while waiting.
+
+---
+
+# M5 — Hardware decoding + GPU color (2026-08-17)
+
+## The big finding: this machine has no working hardware decode path in Media Foundation
+
+Probed exhaustively (scratch probe `probe_mf_hw.cpp` mirrors the app's exact sequence — manager → deselect → NV12 negotiate → first sample):
+
+| Probe | Result |
+|---|---|
+| `MFTEnumEx(MFT_ENUM_FLAG_HARDWARE)` for H.264 | **0 hardware MFTs registered** |
+| DXVA capability (`CheckVideoDecoderFormat`, H264-VLD, NV12) | **1 on BOTH GPUs** (RTX 3050 + Radeon iGPU) |
+| Reader with DXGI manager + NV12 negotiation | succeeds (`S_OK`) |
+| First sample | **system memory** — `MFGetService(MR_VIDEO_ACCELERATION_SERVICE)` → `E_NOINTERFACE` |
+| Same on adapter 1 / Debug layer on / off | identical |
+
+The only H.264 decoder MFT is the **Microsoft software decoder**, and its internal DXVA handoff does not engage on this machine despite the GPUs advertising the mode. **This is a machine/MF-state limitation, not a code bug** — the hardware path is implemented to the documented pattern (two-SRV planar views, `DecodedFrame::texture`, YUV shader) and its machinery is unit-tested, but **end-to-end GPU decode cannot be verified on this box**.
+
+## M5 design response: runtime probe + clean rebuild fallback
+
+- `open()` tries hardware first. After NV12 negotiation it reads **one sample** and requires a DXGI buffer (`IMFGetService` on the media buffer — not the crashing `GetServiceForStream` route, see SDK gotchas).
+- System-memory sample → discard the NV12-committed reader entirely and rebuild via the proven M4 RGB32 path. Re-negotiating RGB32 on the same reader fails with **`MF_E_INVALIDTYPE`** (0xC00D36B4, probed), so a rebuild is required — a same-reader re-negotiation would have been a silent dead end.
+- On this machine the app logs `hardware decode unavailable (hardware probe: decoder produced system-memory samples (no hardware MFT active)); retrying with the software RGB32 path` and plays normally.
+
+## SDK 26100 gotchas (new this milestone)
+
+- `MR_VIDEO_ACCELERATION_SERVICE`: `DEFINE_GUID`'d in `evr.h`, exported by **no** SDK import lib → `initguid.h` before `evr.h` materializes it in the TU.
+- `MF_TRANSFORM_ATTRIBUTE_MFT_TRANSFORM_CLSID` is named `MFT_TRANSFORM_CLSID_Attribute` in this SDK.
+- `GetServiceForStream(MR_VIDEO_ACCELERATION_SERVICE)` **hard-crashes** inside mfreadwrite (both HW and SW paths probed) → use the documented `IMFGetService` route (QI the reader).
+- `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING` combined with the D3D manager attributes → reader creation fails `E_INVALIDARG` (probed). VP flag is software-path-only.
+
+## Fixes along the way
+
+- **`D3D11_CREATE_DEVICE_VIDEO_SUPPORT` missing from the device** → MF hardware open SIGSEGV'd inside mfreadwrite. Added to `D3D11DeviceManager` (and the test's device).
+- **`detectDecoder` used the member `reader_` (null during open)** → `QueryInterface` on null → SIGSEGV. Now takes the local reader.
+- **Order bug in the app**: `player_->setD3DDevice(...)` was called before `player_` was created → null deref. Fixed.
+
+## Verified live (this machine, Debug + Release)
+
+| Check | Result |
+|---|---|
+| Hardware probe | correctly detects system-memory samples → clean fallback, no crash |
+| Decoder honesty | `decoder: software (RGB32 output)` logged (never fabricated) |
+| Playback | video plays through the fallback path, texture uploads advancing |
+| Pause/resume/stop | pause 2983 ms → resume from **same** position → stop clean (registered messages) |
+| Tests | 62/62 cases, 2445 assertions, both configs, 0 warnings under /WX |
+| Debug layer | ON in Debug, OFF in Release (correct) |

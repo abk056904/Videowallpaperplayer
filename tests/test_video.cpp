@@ -1,4 +1,5 @@
 #include "doctest.h"
+#include <cstdio>
 
 #include <chrono>
 #include <filesystem>
@@ -6,10 +7,12 @@
 #include <string>
 #include <thread>
 
+#include <d3d11.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <wrl/client.h>
 
+#include "graphics/TextureManager.h"
 #include "video/DecoderManager.h"
 #include "video/FrameQueue.h"
 #include "video/VideoMetadata.h"
@@ -256,6 +259,88 @@ TEST_CASE("DecoderManager opens a real file and decodes a frame") {
         CHECK(frame.height == meta.height);
         CHECK(frame.bytes.size() ==
               static_cast<size_t>(meta.width) * static_cast<size_t>(meta.height) * 4);
+    }
+    dec.stop();
+}
+
+TEST_CASE("DecoderManager hardware path: GPU surfaces or clean fallback") {
+    MfScope mf;
+    if (!mf.ok) {
+        MESSAGE("MFStartup failed — skipping hardware test");
+        return;
+    }
+    const auto clip = findTestClip();
+    if (clip.empty()) {
+        MESSAGE("no test clips found — skipping hardware test");
+        return;
+    }
+
+    // A real D3D11 device on the default adapter (hardware decode target).
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL level{};
+    // VIDEO_SUPPORT is required for the MF hardware decode path (the app's
+    // D3D11DeviceManager includes it — mirror it here).
+    const HRESULT hr = ::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                           D3D11_CREATE_DEVICE_BGRA_SUPPORT |
+                                               D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                                           nullptr, 0, D3D11_SDK_VERSION, &device, &level,
+                                           &context);
+    if (FAILED(hr)) {
+        MESSAGE("no D3D11 hardware device available — skipping hardware test");
+        return;
+    }
+
+    vw::video::DecoderManager dec;
+    dec.setD3DDevice(device.Get());
+    auto opened = dec.open(clip.wstring());
+    if (!opened) {
+        std::fprintf(stderr, "[hw] open failed: %ls\n", opened.error().c_str());
+    }
+    REQUIRE(opened);
+
+    vw::video::FrameQueue q(2);
+    REQUIRE(dec.start(&q));
+    vw::video::DecodedFrame frame;
+    bool gotFrame = false;
+    for (int i = 0; i < 400 && !gotFrame; ++i) {
+        if (q.tryPop(frame)) {
+            if (frame.endOfStream) {
+                break;
+            }
+            gotFrame = true;
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    CHECK(gotFrame);
+    if (gotFrame) {
+        if (frame.hardware) {
+            // GPU surface path: the frame IS the decoder's planar texture.
+            REQUIRE(frame.texture);
+            D3D11_TEXTURE2D_DESC desc{};
+            frame.texture->GetDesc(&desc);
+            CHECK((desc.Format == DXGI_FORMAT_NV12 || desc.Format == DXGI_FORMAT_P010));
+            CHECK(desc.Width == frame.width);
+            CHECK(desc.Height == frame.height);
+            // The documented two-views pattern must produce legal SRVs.
+            const bool p010 = desc.Format == DXGI_FORMAT_P010;
+            auto y = vw::gfx::TextureManager::createPlaneSrv(
+                device.Get(), frame.texture.Get(),
+                p010 ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM);
+            CHECK(y);
+            auto uv = vw::gfx::TextureManager::createPlaneSrv(
+                device.Get(), frame.texture.Get(),
+                p010 ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R8G8_UNORM);
+            CHECK(uv);
+            // The decoder name is read from the registry for the active MFT's
+            // CLSID — must be present and never fabricated.
+            CHECK_FALSE(dec.decoderName().empty());
+        } else {
+            // Clean software fallback is acceptable on machines without HW.
+            CHECK_FALSE(frame.bytes.empty());
+            CHECK(frame.width > 0);
+        }
     }
     dec.stop();
 }

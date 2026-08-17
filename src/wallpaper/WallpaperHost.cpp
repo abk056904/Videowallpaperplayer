@@ -143,6 +143,15 @@ Result<void> WallpaperHost::setVideoTexture(ID3D11ShaderResourceView* srv) {
     return renderer_.setVideoTexture(srv);
 }
 
+Result<void> WallpaperHost::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
+                                           ID3D11ShaderResourceView* uvSrv, UINT videoWidth,
+                                           UINT videoHeight, gfx::D3D11Renderer::Scaling scaling) {
+    if (!deviceManager_ || !hwnd_) {
+        return std::unexpected(L"WallpaperHost::setVideoPlanes: not initialized");
+    }
+    return renderer_.setVideoPlanes(ySrv, uvSrv, videoWidth, videoHeight, scaling);
+}
+
 Result<void> WallpaperHost::setBounds(const RECT& bounds) {
     if (!deviceManager_ || !hwnd_) {
         return std::unexpected(L"WallpaperHost::setBounds: not initialized");

@@ -94,7 +94,10 @@ Result<std::vector<OutputInfo>> D3D11DeviceManager::enumerateOutputs(IDXGIAdapte
 
 Result<void> D3D11DeviceManager::createDevice(IDXGIAdapter1* adapter, bool wantDebugLayer) {
     static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    const UINT baseFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    // VIDEO_SUPPORT is required for Media Foundation hardware decode (the
+    // decoder MFT calls ID3D11VideoDevice on this device; without it the
+    // DXGI surface path crashes). BGRA for RGB32 uploads/render targets.
+    const UINT baseFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
 
     auto& log = log::Logger::instance();
 
