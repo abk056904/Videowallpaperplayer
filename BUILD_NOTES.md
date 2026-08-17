@@ -517,6 +517,22 @@ Fresh-eyes review of the M7 commit found four issues (all fixed + regression-tes
 
 ---
 
+## RENDER BUG FIX (2026-08-17, user report "the video is being cropped")
+
+The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1920×1080 screen at 125% DPI scaling. The screen showed only the top-left corner of the render: the video looked zoomed-in with the bottom/right cut off (the user's "video is cropped" report). The scaling MODE was never the problem (Fill = crop-to-aspect + scale to fill, no bars, no distortion — exactly the user's stated spec).
+
+**Root cause:** `WallpaperHost::scaleToParentDpi()` scaled the physical monitor bounds by `parentDpi/96`. That conversion is only correct when the parent lives in a DIFFERENT DPI context than the caller. Both the app (`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`) and Explorer's WorkerW are per-monitor DPI aware, so the child-window rect is already in **physical pixels** — the factor (120/96 = 1.25 at 125% scaling) inflated the window. Undetected since M3: the earlier "empirical" note was taken at 96 DPI where the factor is identity.
+
+**Why earlier probes missed it:** the first window-rect probes were DPI-UNAWARE PowerShell, which silently virtualizes coordinates (reported 1920×1080 for the 2400×1350 window). A probe that first calls `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` returns true physical rects. **Lesson: always measure window rects from a DPI-aware probe.**
+
+**The fix:** `scaleToParentDpi()` now returns the physical bounds unchanged (both sides of the parent are DPI-aware). Verified with a DPI-aware probe: host rect 2400×1350 → **1920×1080** = the physical screen. Pixel-sampled the rendered host window:
+- 16:9 clip (Eula): fills the whole screen, zero crop, no bars.
+- 21:9 ultrawide clip (Miyabi): crops evenly on both sides (sx=0.75) to 16:9, scales to fill 1920×1080 — no bars, no distortion.
+
+**113/113 tests, Debug + Release, 0 warnings** (one-line DPI mapping; scale math already unit-tested). Also cleaned up a leftover M7-test playlist.json that had pointed the app at an ultrawide clip.
+
+---
+
 ## Toolchain note (cost this investigation real time)
 
 Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.

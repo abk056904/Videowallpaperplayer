@@ -29,19 +29,16 @@ bool WallpaperHost::registerClass() {
     return ::RegisterClassExW(&wc) != 0 || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
-// A WS_CHILD window parented into another process's window (Explorer, system-
-// DPI-aware) is virtualized into the PARENT's DPI context: the requested
-// physical rect must be scaled by parentDpi/96 to land at the physical size
-// (verified empirically in M3 — physical = request x 96/parentDpi). Physical
-// monitor bounds (per-monitor-v2 units) -> parent-context window rect.
-RECT WallpaperHost::scaleToParentDpi(HWND parent, const RECT& physical) const {
-    const UINT parentDpi = ::GetDpiForWindow(parent);
-    RECT scaled{};
-    scaled.left = ::MulDiv(physical.left, static_cast<int>(parentDpi), 96);
-    scaled.top = ::MulDiv(physical.top, static_cast<int>(parentDpi), 96);
-    scaled.right = ::MulDiv(physical.right, static_cast<int>(parentDpi), 96);
-    scaled.bottom = ::MulDiv(physical.bottom, static_cast<int>(parentDpi), 96);
-    return scaled;
+// The wallpaper host is a WS_CHILD parented into Explorer's WorkerW. BOTH the
+// app (SetProcessDpiAwarenessContext PER_MONITOR_AWARE_V2) and Explorer are
+// per-monitor DPI aware, so child-window coordinates are already PHYSICAL
+// pixels — the monitor bounds (per-monitor-v2 units) map 1:1, no conversion.
+// (An earlier version scaled by parentDpi/96; that was only correct at 96 DPI
+// where the factor is identity. At 125% scaling it inflated the window to
+// 2400x1350 on a 1920x1080 screen — the visible top-left corner looked like
+// a zoomed/cropped video. Verified with a DPI-aware GetWindowRect probe.)
+RECT WallpaperHost::scaleToParentDpi(HWND, const RECT& physical) const {
+    return physical;
 }
 
 LRESULT CALLBACK WallpaperHost::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
