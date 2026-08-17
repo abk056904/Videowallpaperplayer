@@ -6,15 +6,13 @@ This folder contains the complete implementation plan for building a **native Wi
 
 ## Source documents
 
-The plan consolidates three overlapping task specifications found in the repository root:
+The plan consolidates three overlapping task specifications stored in `docs/sources/`:
 
 | Source file | Title / focus |
 |---|---|
-| `New Text Document.txt` | "Build a High-Performance Windows 11 Video Wallpaper Engine" — full feature spec, staged build order (14 stages), code-quality and security rules |
-| `New Text Document (2).txt` | "Build a Minimal-Resource Windows 11 Video Wallpaper Engine" — resource budgets, 100-item resource discipline, performance audits |
-| `New Text Document (3).txt` | "Project: Ultra-Low-Resource Windows 11 Video Wallpaper Engine" — architecture, resource governor, 16-phase development process, acceptance criteria |
-
-These three files will be relocated to `docs/sources/` during M1 housekeeping (see the execution contract).
+| `sources/New Text Document.txt` | "Build a High-Performance Windows 11 Video Wallpaper Engine" — full feature spec, staged build order (14 stages), code-quality and security rules |
+| `sources/New Text Document (2).txt` | "Build a Minimal-Resource Windows 11 Video Wallpaper Engine" — resource budgets, 100-item resource discipline, performance audits |
+| `sources/New Text Document (3).txt` | "Project: Ultra-Low-Resource Windows 11 Video Wallpaper Engine" — architecture, resource governor, 16-phase development process, acceptance criteria |
 
 Where the documents differ in wording they agree in substance; where they disagree, this plan takes the **most resource-conservative** interpretation.
 

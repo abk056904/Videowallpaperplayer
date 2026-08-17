@@ -107,8 +107,8 @@ src/app/ControlWindow.h/.cpp     # hidden window + notification hooks wiring
 
 - [ ] CMake: `x64` only, C++20, Debug + Release presets (`/O2`, LTCG in Release; debug layer/D3D-debug flags only in Debug; warnings as errors in CI-style builds).
 - [ ] `wWinMain`: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`, single-instance named mutex (`CreateMutexW`) — second instance signals the first (registered window message) and exits cleanly.
-- [ ] Hidden control window (class `WallpaperEngineControl`): no taskbar presence (`WS_EX_TOOLWINDOW`), message pump with `GetMessageW` (blocks when idle — no busy loop).
-- [ ] `Logger`: levels, rotating file sink in `%APPDATA%\WallpaperEngine\logs\` (≤10 MB), Release default INFO.
+- [ ] Hidden control window (class `VideoWallpaperControl`): no taskbar presence (`WS_EX_TOOLWINDOW`), message pump with `GetMessageW` (blocks when idle — no busy loop).
+- [ ] `Logger`: levels, rotating file sink in `%APPDATA%\VideoWallpaper\logs\` (≤10 MB), Release default INFO.
 - [ ] `ConfigurationManager`: load/validate/defaults/corrupt-backup; write-batching.
 - [ ] Clean shutdown path (see §3.17) even before all subsystems exist.
 

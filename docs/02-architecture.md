@@ -240,7 +240,7 @@ struct MonitorInfo {
 
 ## 2.9 Configuration
 
-- Location: `%APPDATA%\WallpaperEngine\config.json` (see D-06 for format decision; JSON example in spec §44).
+- Location: `%APPDATA%\VideoWallpaper\config.json` (see D-06 for format decision; JSON example in spec §44).
 - `ConfigurationManager` loads at startup, validates every field (clamp ranges, enum whitelists), writes defaults on first run, backs up + regenerates on corruption.
 - Writes are batched/debounced; persisted only on meaningful change, video transition, or shutdown — **not** every second.
 - Live mutation: UI/tray/hotkeys go through `ConfigurationManager` which notifies subscribers (e.g. thresholds → governor, mode → playback) without restart.
@@ -269,7 +269,7 @@ Schema (target, matching spec example):
 
 ## 2.10 Logging design
 
-- `Logger`: levels TRACE..FATAL; sink to rotating files in `%APPDATA%\WallpaperEngine\logs\` (`current.log`, `previous.log`, ≤5–10 MB total) + optional debug output.
+- `Logger`: levels TRACE..FATAL; sink to rotating files in `%APPDATA%\VideoWallpaper\logs\` (`current.log`, `previous.log`, ≤5–10 MB total) + optional debug output.
 - Release default INFO; DEBUG only when enabled; TRACE compiled out or gated in Release.
 - Policy: aggregate events only (playback started, decoder mode, adapter name, monitor added/removed, pause/resume with reason, dropped-frame summary per interval, device loss, recoveries). Never log per frame/GPU op/performance sample.
 - Thread-safe, low-contention: a small SPSC-style queue drained by the logger (or immediate write with a mutex — measure; logging is rare events only).

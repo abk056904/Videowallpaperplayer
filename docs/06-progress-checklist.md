@@ -9,7 +9,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | Milestone | Status | Completed | Notes |
 |---|---|---|---|
 | M0 — Environment & toolchain audit | ✅ | 2026-08-17 | MSVC 14.44.35207 + SDK 10.0.26100.0 + CMake 4.4.2 installed & verified (Debug+Release hello build). See `BUILD_NOTES.md` |
-| M1 — Build skeleton | ☐ | — | |
+| M1 — Build skeleton | ✅ | 2026-08-17 | CMake x64 C++23, Debug+Release green, 16/16 unit tests, control window + single instance + config/log verified. See notes below |
 | M2 — D3D11 renderer | ☐ | — | |
 | M3 — Wallpaper host | ☐ | — | |
 | M4 — MF playback (software first) | ☐ | — | |
@@ -24,7 +24,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M13 — Profiling, optimization & stability | ☐ | — | |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M1 — Build skeleton_
+**Current milestone:** _M2 — Direct3D 11 renderer_
 
 ---
 
@@ -50,21 +50,28 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** project compiles; hidden control window, logging, config, single instance, event loop work.
 
-- [ ] `git init` + initial commit of existing files (txt specs, `docs/`, `BUILD_NOTES.md`, `implement-docs-plan-spec.md`) — spec §8 step 0
-- [ ] Move txt specs to `docs/sources/`; update `docs/README.md` source table; write `LICENSE` (**Apache-2.0** — decided 2026-08-17, "full open source")
-- [ ] Rename AppData path references `WallpaperEngine` → `VideoWallpaper` in docs/02 §2.9/§2.10 and docs/03 M1 (spec §5; the checklist Logger task is already updated)
-- [ ] CMake: x64-only, **C++23** (smoke-test `/std:c++23` on MSVC 14.44; fallback `/std:c++latest`), Debug + Release presets (`/O2`, LTCG Release; debug layer Debug-only)
-- [ ] Test infra: vendor `doctest.h` into `tests/` (single fetch, then committed), add `tests/` CMake target + CTest wiring — enables the M1 config/logger unit tests
-- [ ] `wWinMain`: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` + single-instance named mutex (2nd instance signals 1st, exits)
-- [ ] Hidden control window (`WS_EX_TOOLWINDOW`) + `GetMessageW` pump (blocks when idle)
-- [ ] `Logger`: levels TRACE..FATAL, rotating file sink in `%APPDATA%\VideoWallpaper\logs\` (≤10 MB), Release default INFO — app name per spec §5 (was `WallpaperEngine` in the plan docs; update plan references during M1)
-- [ ] `ConfigurationManager`: load / validate / defaults / corrupt-backup / batched writes
-- [ ] Deterministic shutdown path (sequence in plan §3.17)
-- [ ] Files: `CMakeLists.txt`, `CMakePresets.json`, `.gitignore`, `README.md` (stub), `LICENSE`, `src/app/*`, `src/logging/*`, `src/config/*`, `src/util/*`, `tests/` (doctest + first unit tests)
+- [x] `git init` + initial commit of existing files (txt specs, `docs/`, `BUILD_NOTES.md`, `implement-docs-plan-spec.md`) — spec §8 step 0
+- [x] Move txt specs to `docs/sources/`; update `docs/README.md` source table; write `LICENSE` (**Apache-2.0** — decided 2026-08-17, "full open source")
+- [x] Rename AppData path references `WallpaperEngine` → `VideoWallpaper` in docs/02 §2.9/§2.10 and docs/03 M1 (spec §5; the checklist Logger task is already updated)
+- [x] CMake: x64-only, **C++23** (smoke-test `/std:c++23` on MSVC 14.44; fallback `/std:c++latest`), Debug + Release presets (`/O2`, LTCG Release; debug layer Debug-only)
+- [x] Test infra: vendor `doctest.h` into `tests/` (single fetch, then committed), add `tests/` CMake target + CTest wiring — enables the M1 config/logger unit tests
+- [x] `wWinMain`: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` + single-instance named mutex (2nd instance signals 1st, exits)
+- [x] Hidden control window (`WS_EX_TOOLWINDOW`) + `GetMessageW` pump (blocks when idle)
+- [x] `Logger`: levels TRACE..FATAL, rotating file sink in `%APPDATA%\VideoWallpaper\logs\` (≤10 MB total: 5 MB current + 5 MB previous), Release default INFO — app name per spec §5 (was `WallpaperEngine` in the plan docs; update plan references during M1)
+- [x] `ConfigurationManager`: load / validate / defaults / corrupt-backup / batched writes
+- [x] Deterministic shutdown path (sequence in plan §3.17)
+- [x] Files: `CMakeLists.txt`, `CMakePresets.json`, `.gitignore`, `README.md` (stub), `LICENSE`, `src/app/*`, `src/logging/*`, `src/config/*`, `src/util/*`, `tests/` (doctest + first unit tests)
 
-**Verify:** Debug+Release x64 build green; second launch exits cleanly; config created on first run; logs rotate; exit leaves no process. **Exit:** ☐
+**Verify:** Debug+Release x64 build green; second launch exits cleanly; config created on first run; logs rotate; exit leaves no process. **Exit:** ☑
 
 **Notes:**
+- Verified 2026-08-17: Debug + Release x64 build green (no warnings, `/std:c++23` — no fallback needed); 16/16 doctest cases pass in both configs (config 5, json 7, logger 4).
+- Runtime check: first run wrote `%APPDATA%\VideoWallpaper\config.json` + `logs\current.log`; second instance exited 0 and its focus message was received by the first instance's control window (logged "second instance requested focus").
+- Storage format discovery: MSVC `wfstream` converts wchar_t ↔ UTF-8 via the CRT codecvt, so config.json and logs are **UTF-8** (editable in any editor; round-trip covered by tests).
+- Toolchain: compiler is MSVC **19.44.35228.0** (cl.exe in VS 2022 Build Tools 17.14.37) with `/std:c++23` confirmed.
+- `doctest.h` vendored at **v2.4.11** (fetched once from GitHub, committed for offline builds).
+- Config is UTF-8 JSON with sections: `general` / `playback` / `performance` / `battery` / `detection`; corrupt file → `.bak` backup + defaults rewrite (covered by test).
+- Logger: 5 MB/file rotation (`current.log` → `previous.log`), aggregate events only, thread-safe via mutex.
 
 ---
 

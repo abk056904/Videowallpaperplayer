@@ -27,6 +27,7 @@ Findings recorded during the M0 toolchain/environment audit. Last updated: 2026-
 | Ninja / make / gcc / clang | not found (VS generator used instead) |
 | winget | available (`C:\Users\mbk43\AppData\Local\Microsoft\WindowsApps\winget.exe`) |
 | FFmpeg | not checked on PATH (informational only — not a dependency) |
+| doctest | ✅ vendored at `tests/doctest.h` **v2.4.11** (single fetch from GitHub, then committed — offline builds) |
 
 **Toolchain verification (M0 exit criteria):** ✅ trivial CMake x64 project configured with the `Visual Studio 17 2022` generator and **built + ran successfully in both Debug and Release** (`m0check.exe` → "M0 toolchain check OK"). Scratch folder removed after verification.
 
@@ -64,3 +65,26 @@ Decoder mode must be read from the actual Media Foundation transform at runtime 
 | HDR10 (`mdcv`/`clli`) / Dolby Vision (`dvhe`) | 0 | ❌ no HDR content — P010/10-bit path may be unverifiable without a synthetic clip |
 
 **Caveats:** the fourcc scan is a heuristic (bit depth not distinguishable from `hvc1` alone); M4's real MF metadata reader is authoritative. For full test coverage (doc 1 §55: H.264 1080p/1440p/4K, HEVC 4K, AV1 4K60, plus a 10-bit/HDR clip), AV1/VP9/HDR samples must be **sourced or synthesized** (e.g. via ffmpeg, not a runtime dependency) or reported `NOT MEASURED` at M13.
+
+---
+
+# M1 Build Notes (2026-08-17)
+
+M1 exit criteria met: Debug+Release x64 build green, 16/16 unit tests pass in both configs, runtime behavior verified.
+
+## Findings
+
+- **`/std:c++23` confirmed** — compiler is MSVC **19.44.35228.0**; no fallback to `/std:c++latest` needed. `std::expected` + `std::format` (wide) compile clean.
+- **Config & log storage are UTF-8** — MSVC's `wfstream` converts `wchar_t` ↔ UTF-8 through the CRT codecvt even in binary mode. Config (`%APPDATA%\VideoWallpaper\config.json`) and logs are therefore UTF-8, not UTF-16 as initially assumed. Round-trip verified by unit tests; friendly for manual editing.
+- **Config format** — JSON sections `general` / `playback` / `performance` / `battery` / `detection`; first run writes defaults; corrupt file → `config.json.bak` + defaults rewrite; atomic save (temp + rename).
+- **Single instance** — `Local\VideoWallpaper.SingleInstance` mutex; second instance finds the control window via class name, posts a registered focus message, exits 0 (verified live: first instance logged "second instance requested focus").
+- **Control window** — class `VideoWallpaperControl`, `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, no taskbar; `WM_APP` = shutdown request; message pump blocks when idle (`GetMessageW`).
+- **Logger** — 5 MB/file rotation (`current.log` → `previous.log`, ≤10 MB total), mutex-guarded, aggregate events only, Release default INFO, Debug default DEBUG.
+- **Gotchas fixed during M1** (worth remembering):
+  1. `std::filesystem::rename` over an open `ifstream/wifstream` fails on Windows (sharing violation) — close the stream before renaming (config corrupt-backup path).
+  2. `replace_extension(L"json.bak")` does not yield `config.json.bak` — plain `+= L".bak"` was used instead.
+  3. `const auto` on `std::filesystem::path` locals prevents `+=`/`replace_extension` (const-correctness trap) — plain `auto`.
+  4. `std::ofstream` cannot write `wchar_t*` — wide streams (`wofstream`/`wifstream`) required for wide strings.
+  5. `std::format` wide format string requires **wide** string literals for all args (`L"0.1.0"`, not `"0.1.0"`).
+  6. `ControlWindow` is non-copyable (owns an HWND) — deterministic shutdown via an idempotent `destroy()` method, not copy-assignment.
+  7. Template params that never appear in the parameter list are not deducible (`readStrings` had a stray `typename F`).
