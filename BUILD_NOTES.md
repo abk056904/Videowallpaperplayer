@@ -767,3 +767,14 @@ Goal: minimum resource use while keeping a decent UI (spec doc 1 §42 / doc 2 §
 - **Tests:** 171/171 both configs, 0 warnings (Debug 33,813 / Release 322,490 assertions).
 
 ---
+
+## M14 follow-up — desktop-click pause fix
+
+User report: "the video pauses every time I click on screen".
+
+- **Root cause (empirically confirmed, not guessed):** clicking the desktop foregrounds **Progman** (the desktop). Progman covers the whole monitor (measured: 1536×864 on this machine) with style `0x96000000` = `WS_POPUP|WS_VISIBLE|WS_CLIPSIBLINGS|WS_CLIPCHILDREN` — so `classifyWindowState` returned `Fullscreen` and `pauseOnFullscreen` paused the video on every desktop click. (Same for the WorkerW layers and SHELLDLL_DefView.)
+- **Fix:** `detection::isDesktopShellClass(className)` in `FullscreenDetector.h` — `Progman`/`WorkerW`/`SHELLDLL_DefView` never classify as fullscreen; `classifyForegroundFullscreen` returns `Windowed` for them before the rect/style geometry runs. Real fullscreen apps (games, media players — other classes) are unaffected.
+- **Verified live:** with `logLevel=debug`, `SetForegroundWindow(Progman)` → the app logs `foreground: pid <explorer.exe> ... | window: windowed` and no pause lines appear; video keeps playing. Unit test added: shell classes rejected, `nullptr` rejected, and the popup-covers-monitor geometry still classifies `Fullscreen` (feature intact). 172/172 both configs, 0 warnings.
+- **Script:** `build/release/desktop_click_verify.ps1` (foregrounds Progman and asserts the windowed classification).
+
+---

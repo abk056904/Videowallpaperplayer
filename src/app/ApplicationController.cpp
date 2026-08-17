@@ -798,6 +798,16 @@ detection::WindowState ApplicationController::classifyForegroundFullscreen(HWND 
     if (!hwnd || !::IsWindow(hwnd)) {
         return detection::WindowState::Windowed;
     }
+    // The desktop/shell layer (Progman, WorkerW, SHELLDLL_DefView) must never
+    // classify as fullscreen: clicking the desktop foregrounds Progman, which
+    // covers the monitor with WS_POPUP — without this exclusion every desktop
+    // click would pause the wallpaper. Real fullscreen apps have other classes.
+    {
+        wchar_t cls[64]{};
+        if (::GetClassNameW(hwnd, cls, 64) && detection::isDesktopShellClass(cls)) {
+            return detection::WindowState::Windowed;
+        }
+    }
     RECT winRect{};
     if (!::GetWindowRect(hwnd, &winRect)) {
         return detection::WindowState::Windowed;

@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cwchar>
+
 // Fullscreen detection (docs/02 §2.9 / docs/03 §3.11, M9): classifies the
 // FOREGROUND window as true fullscreen / borderless fullscreen / maximized /
 // windowed — maximized is deliberately NOT fullscreen unless configured.
@@ -60,6 +62,18 @@ inline WindowState classifyWindowState(const RECT& windowRect, const RECT& monit
 
 inline bool isFullscreenState(WindowState s) {
     return s == WindowState::Fullscreen || s == WindowState::BorderlessFullscreen;
+}
+
+// Desktop/shell layer windows (Progman, its WorkerW layers, SHELLDLL_DefView)
+// must NEVER classify as fullscreen: they cover the monitor with WS_POPUP
+// style, and clicking the desktop makes one of them the foreground window — a
+// naive classification would pause the wallpaper on every desktop click.
+// Pure predicate on the class name (unit-testable; the app feeds it the
+// foreground window's class from classifyForegroundFullscreen).
+inline bool isDesktopShellClass(const wchar_t* className) {
+    return className && (std::wcscmp(className, L"Progman") == 0 ||
+                         std::wcscmp(className, L"WorkerW") == 0 ||
+                         std::wcscmp(className, L"SHELLDLL_DefView") == 0);
 }
 
 } // namespace vw::detection

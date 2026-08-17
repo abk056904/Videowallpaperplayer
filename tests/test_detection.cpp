@@ -174,6 +174,23 @@ TEST_CASE("fullscreen: a window that does not cover the monitor is windowed") {
     CHECK(classifyWindowState(small, kMonitor, kPopup, 0) == WindowState::Windowed);
 }
 
+TEST_CASE("fullscreen: desktop shell layers never classify as fullscreen") {
+    // Progman covers the monitor with WS_POPUP (like an exclusive fullscreen
+    // app) — without the shell exclusion, clicking the desktop would classify
+    // it as fullscreen and pause the wallpaper. The predicate must reject all
+    // desktop layer classes (and accept a non-shell class).
+    CHECK(vw::detection::isDesktopShellClass(L"Progman"));
+    CHECK(vw::detection::isDesktopShellClass(L"WorkerW"));
+    CHECK(vw::detection::isDesktopShellClass(L"SHELLDLL_DefView"));
+    CHECK_FALSE(vw::detection::isDesktopShellClass(L"notepad"));
+    CHECK_FALSE(vw::detection::isDesktopShellClass(nullptr));
+    // The underlying geometry is unchanged — a real popup fullscreen app
+    // (a non-shell class) still classifies as fullscreen.
+    const auto state = classifyWindowState(covers(kPopup), kMonitor, kPopup, 0);
+    CHECK(state == WindowState::Fullscreen);
+    CHECK(vw::detection::isFullscreenState(state));
+}
+
 // ---- GameDetector (list matching + caching) --------------------------------
 
 TEST_CASE("game: allow list marks the exe as a game") {
