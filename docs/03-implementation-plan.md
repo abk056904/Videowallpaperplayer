@@ -109,7 +109,7 @@ src/app/ControlWindow.h/.cpp     # hidden window + notification hooks wiring
 - [ ] `wWinMain`: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`, single-instance named mutex (`CreateMutexW`) — second instance signals the first (registered window message) and exits cleanly.
 - [ ] Hidden control window (class `VideoWallpaperControl`): no taskbar presence (`WS_EX_TOOLWINDOW`), message pump with `GetMessageW` (blocks when idle — no busy loop).
 - [ ] `Logger`: levels, rotating file sink in `%APPDATA%\VideoWallpaper\logs\` (≤10 MB), Release default INFO.
-- [ ] `ConfigurationManager`: load/validate/defaults/corrupt-backup; write-batching.
+- [ ] `ConfigurationManager`: load/validate/defaults/corrupt-backup; atomic save (temp+rename). Debounced write-batching lands in M11 (§3.13).
 - [ ] Clean shutdown path (see §3.17) even before all subsystems exist.
 
 **APIs:** `CreateMutexW`, `RegisterClassExW`, `CreateWindowExW`, `GetMessageW`/`DispatchMessageW`, `GetModuleFileNameW`, `SHGetFolderPathW(CSIDL_APPDATA)`, `QueryPerformanceCounter/Frequency`, `CreateWaitableTimerW`.
@@ -352,6 +352,8 @@ src/governor/PausePolicy.h/.cpp           # config-driven policy (pure logic, un
 - [ ] Battery policy: Continue / Reduce quality / Pause (default Pause) — configurable.
 - [ ] Long-pause release: PAUSED lasting > `longPauseReleaseSeconds` (default 5 s) ⇒ SUSPENDED: release decoder, next-video prep, temporary GPU resources; keep playlist position/path/config.
 - [ ] Resume: recreate decoder, seek to saved position, restart scheduler, render; device-loss path routes through M12.
+- [ ] Threshold-pair cross-validation (spec §9): pause ≥ resume for cpu/gpu/memory at load and on every `CONFIG_SET`; violations clamped (resume pulled toward pause) + logged.
+- [ ] Config revision counter (spec §9): bumped on every accepted config change; governor reacts to live threshold/delay/mode changes without polling `ConfigurationManager`.
 - [ ] Home panel reports state and active reasons (M11 UI).
 
 **Verify:** unit tests per doc 3 §95 transition table (pure `PausePolicy` logic): ACTIVE+game→PAUSED; high GPU persists→remain paused until hysteresis clears; PAUSED long→SUSPENDED; SUSPENDED+desktop→ACTIVE; LOCKED/DISPLAY_OFF→SUSPENDED. Manual: lock screen ⇒ CPU/GPU ~0 and decoder released (check handle count); unlock ⇒ resumes.
@@ -381,6 +383,7 @@ src/library/LibraryManager.h/.cpp  # incremental scan, ReadDirectoryChangesW, me
 - [ ] Settings: start with Windows (HKCU Run key — no admin), minimize to tray, battery mode, logging level.
 - [ ] Tray: Resume/Pause/Next/Previous/Current wallpaper/Open app/Settings/Exit; left-click toggles UI; tray must not keep the UI alive (UI destroyed on close, engine continues).
 - [ ] UI must not decode/render/poll; all engine interactions via `ApplicationController` commands.
+- [ ] Config write-batching (spec §9): debounced dirty-flag save (~1–2 s after last `CONFIG_SET`, plus save on shutdown) — no per-click writes; UI edits survive a crash.
 - [ ] Win32 UI constructed lazily; destroyed on close (release controls + library memory).
 
 **Verify:** all panels functional; opening/closing UI repeatedly shows no RAM growth; tray works when UI closed; library handles 10k-file folder without repeated rescans (incremental); no UI-initiated decode/render work.

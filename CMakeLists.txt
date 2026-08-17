@@ -17,6 +17,71 @@ endif()
 # Common defines for all targets (native Win32, wide strings).
 set(VW_PUBLIC_DEFS NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 
+# ---- build-time shader compilation (fxc) + embedding ----
+# shaders/VideoShader.hlsl is compiled to .cso at build time and embedded as
+# C++ byte arrays so the exe ships shaders with no runtime file lookups
+# (M14 package = exe + system DLLs only).
+set(FXC_EXE "")
+if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+    set(_fxc_candidate "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64/fxc.exe")
+    if(EXISTS "${_fxc_candidate}")
+        set(FXC_EXE "${_fxc_candidate}")
+    endif()
+endif()
+if(NOT FXC_EXE)
+    file(GLOB _fxc_glob "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/fxc.exe")
+    list(LENGTH _fxc_glob _fxc_count)
+    if(_fxc_count GREATER 0)
+        list(GET _fxc_glob 0 FXC_EXE)
+    endif()
+endif()
+if(NOT FXC_EXE)
+    message(FATAL_ERROR "fxc.exe not found in the Windows SDK — build-time shader compilation (M2) cannot proceed")
+endif()
+message(STATUS "fxc: ${FXC_EXE}")
+
+set(_shader_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/VideoShader.hlsl)
+set(_shader_outdir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+set(_vs_cso ${_shader_outdir}/VideoShader.vs.cso)
+set(_ps_cso ${_shader_outdir}/VideoShader.ps.cso)
+set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(_vs_hdr ${_gen_dir}/VideoShaderVsData.h)
+set(_ps_hdr ${_gen_dir}/VideoShaderPsData.h)
+
+add_custom_command(
+    OUTPUT ${_vs_cso} ${_ps_cso}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_shader_outdir}
+    COMMAND ${FXC_EXE} /nologo /T vs_5_0 /E VSMain /Fo ${_vs_cso} ${_shader_src}
+    COMMAND ${FXC_EXE} /nologo /T ps_5_0 /E PSMain /Fo ${_ps_cso} ${_shader_src}
+    DEPENDS ${_shader_src}
+    COMMENT "Compiling VideoShader.hlsl with fxc"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT ${_vs_hdr}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${_vs_cso} -DOUTPUT=${_vs_hdr} -DNAME=kVideoShaderVs
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
+    DEPENDS ${_vs_cso}
+    COMMENT "Embedding vertex shader"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT ${_ps_hdr}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${_ps_cso} -DOUTPUT=${_ps_hdr} -DNAME=kVideoShaderPs
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_shader.cmake
+    DEPENDS ${_ps_cso}
+    COMMENT "Embedding pixel shader"
+    VERBATIM
+)
+set_source_files_properties(${_vs_hdr} ${_ps_hdr} PROPERTIES GENERATED TRUE)
+
+# Graphics module sources shared by the app and the harness.
+set(VW_GRAPHICS_SOURCES
+    src/graphics/D3D11DeviceManager.cpp
+    src/graphics/D3D11Renderer.cpp
+    src/graphics/TextureManager.cpp
+)
+
 # ---- application ----
 add_executable(VideoWallpaper WIN32
     src/app/main.cpp
@@ -26,9 +91,11 @@ add_executable(VideoWallpaper WIN32
     src/config/ConfigurationManager.cpp
     src/util/json.cpp
     src/util/utf8.cpp
+    ${VW_GRAPHICS_SOURCES}
+    ${_vs_hdr} ${_ps_hdr}
 )
-target_include_directories(VideoWallpaper PRIVATE src)
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32)
+target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 d3d11 dxgi)
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug
@@ -52,13 +119,15 @@ add_executable(vw_tests
     tests/test_config.cpp
     tests/test_logger.cpp
     tests/test_utf8.cpp
+    tests/test_graphics.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
     src/util/json.cpp
     src/util/utf8.cpp
+    src/graphics/D3D11DeviceManager.cpp
 )
 target_include_directories(vw_tests PRIVATE src tests)
-target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32)
+target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 d3d11 dxgi)
 target_compile_definitions(vw_tests PRIVATE ${VW_PUBLIC_DEFS})
 add_test(NAME vw_tests COMMAND vw_tests)
 
@@ -68,8 +137,13 @@ add_test(NAME vw_tests COMMAND vw_tests)
 # adapter/output enumeration, flip swap chain + vsync present, gradient render.
 add_executable(vw_gfx_harness
     harness/gfx_harness.cpp
+    src/logging/Logger.cpp
+    src/util/utf8.cpp
+    ${VW_GRAPHICS_SOURCES}
+    ${_vs_hdr} ${_ps_hdr}
 )
-target_link_libraries(vw_gfx_harness PRIVATE d3d11 dxgi d3dcompiler user32)
+target_include_directories(vw_gfx_harness PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(vw_gfx_harness PRIVATE d3d11 dxgi user32)
 target_compile_definitions(vw_gfx_harness PRIVATE ${VW_PUBLIC_DEFS})
 if(MSVC)
     target_compile_options(vw_gfx_harness PRIVATE /WX

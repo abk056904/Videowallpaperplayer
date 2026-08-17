@@ -10,6 +10,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 |---|---|---|---|
 | M0 — Environment & toolchain audit | ✅ | 2026-08-17 | MSVC 14.44.35207 + SDK 10.0.26100.0 + CMake 4.4.2 installed & verified (Debug+Release hello build). See `BUILD_NOTES.md` |
 | M1 — Build skeleton | ✅ | 2026-08-17 | CMake x64 C++23, Debug+Release green, 16/16 unit tests, control window + single instance + config/log verified. See notes below |
+| M2 — Direct3D 11 renderer | ✅ | 2026-08-17 | DeviceManager + Renderer + TextureManager, build-time fxc with embedded shaders, verified on both GPUs at ~147 FPS (vsync), feature level 11_1, 51/51 tests. See notes below |
 | M2 — D3D11 renderer | ☐ | — | |
 | M3 — Wallpaper host | ☐ | — | |
 | M4 — MF playback (software first) | ☐ | — | |
@@ -24,7 +25,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M13 — Profiling, optimization & stability | ☐ | — | |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M2 — Direct3D 11 renderer_
+**Current milestone:** _M3 — Wallpaper host_
 
 ---
 
@@ -58,7 +59,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - [x] `wWinMain`: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` + single-instance named mutex (2nd instance signals 1st, exits)
 - [x] Hidden control window (`WS_EX_TOOLWINDOW`) + `GetMessageW` pump (blocks when idle)
 - [x] `Logger`: levels TRACE..FATAL, rotating file sink in `%APPDATA%\VideoWallpaper\logs\` (≤10 MB total: 5 MB current + 5 MB previous), Release default INFO — app name per spec §5 (was `WallpaperEngine` in the plan docs; update plan references during M1)
-- [x] `ConfigurationManager`: load / validate / defaults / corrupt-backup / batched writes
+- [x] `ConfigurationManager`: load / validate / defaults / corrupt-backup / atomic save (debounced write-batching deferred to M11)
 - [x] Deterministic shutdown path (sequence in plan §3.17)
 - [x] Files: `CMakeLists.txt`, `CMakePresets.json`, `.gitignore`, `README.md` (stub), `LICENSE`, `src/app/*`, `src/logging/*`, `src/config/*`, `src/util/*`, `tests/` (doctest + first unit tests)
 
@@ -84,20 +85,23 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** device + DXGI adapter/output detection + fullscreen-triangle renderer.
 
-- [ ] `D3D11CreateDevice` feature levels {11_1, 11_0}, BGRA support; debug layer only under `_DEBUG`
-- [ ] DXGI factory: adapters + outputs; record `DXGI_ADAPTER_DESC` (vendor/device), output refresh rates
-- [ ] Vertex-less fullscreen triangle (SV_VertexID), 1 draw call; sampler + rasterizer state
-- [ ] Swap-chain helper (`CreateSwapChainForHwnd`)
-- [ ] Device-loss plumbing stub (`DXGI_ERROR_DEVICE_*` → log + schedule recreate; fully wired in M12)
-- [ ] Shader compiled at build time (CMake `fxc` custom command)
-- [ ] Files: `src/graphics/D3D11DeviceManager*`, `D3D11Renderer*`, `TextureManager*`, `shaders/VideoShader.hlsl`
+- [x] `D3D11CreateDevice` feature levels {11_1, 11_0}, BGRA support; debug layer only under `_DEBUG`
+- [x] DXGI factory: adapters + outputs; record `DXGI_ADAPTER_DESC` (vendor/device), output refresh rates
+- [x] Vertex-less fullscreen triangle (SV_VertexID), 1 draw call; sampler + rasterizer state
+- [x] Swap-chain helper (`CreateSwapChainForHwnd`)
+- [x] Device-loss plumbing stub (`DXGI_ERROR_DEVICE_*` → log + schedule recreate; fully wired in M12)
+- [x] Shader compiled at build time (CMake `fxc` custom command)
+- [x] Files: `src/graphics/D3D11DeviceManager*`, `D3D11Renderer*`, `TextureManager*`, `shaders/VideoShader.hlsl`
 
-**Verify:** solid color + UV gradient renders to test window at 60 FPS (Debug); Release has no debug layer; adapter/output log matches reality. **Exit:** ☐
+**Verify:** solid color + UV gradient renders to test window at 60 FPS (Debug); Release has no debug layer; adapter/output log matches reality. **Exit:** ☑
 
 **Notes:**
 - Pre-verification done via `harness/gfx_harness.cpp` (target `vw_gfx_harness`, dev-only): device creation + UV-gradient render verified on **both GPUs** at ~144 FPS (vsync), feature level 11_1, clean `--frames N` exit; enumeration logs 3 adapters (AMD iGPU default, NVIDIA dGPU, Basic Render). See `BUILD_NOTES.md` "M2 pre-verification" for details.
 - **Debug layer NOT installed on this machine** (hr=0x887A002D) — device creation falls back gracefully; enabling requires the optional *Graphics Tools* Windows feature (elevated; not installed, documented in BUILD_NOTES).
 - **Display corrected: 1920×1080 @ 144 Hz physical** (1536×864 was the 125%-scaled value).
+- **M2 implementation verified 2026-08-17**: harness now drives the **real modules** (`D3D11DeviceManager` + `D3D11Renderer`); both GPUs render the UV-gradient at **~147 FPS** (vsync-locked to the 144 Hz display), feature level **0xB100 (11_1)**; Release has no debug layer; enumeration logs match reality. 51/51 tests incl. 4 graphics tests (enumeration sanity, getAdapter bounds, device-loss classification, recreate-stub round-trip).
+- **Shaders are build-time compiled + embedded**: `fxc` → `.cso` → generated byte-array headers (`build/<cfg>/generated/VideoShader{Vs,Ps}Data.h`); no runtime file lookups, so the M14 package stays exe + system DLLs only.
+- **Gotchas**: flip-model `ResizeBuffers` with the same size before first Present returns `DXGI_ERROR_INVALID_CALL` — renderer tracks its size and skips the call (init builds the RTV directly). `D3D11_FILTER_LINEAR` does not exist in D3D11 (it's a D3D9 name) — the correct value is `D3D11_FILTER_MIN_MAG_MIP_LINEAR`.
 
 ---
 
@@ -242,6 +246,8 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - [ ] Battery policy: Continue / Reduce quality / Pause (default Pause), configurable
 - [ ] Long pause > `longPauseReleaseSeconds` (default 5 s) ⇒ SUSPENDED: release decoder + next-video prep + temp GPU resources; keep position/path/config
 - [ ] Resume: recreate decoder, seek to saved position, restart scheduler; device-loss routes through M12
+- [ ] **Threshold-pair cross-validation** (spec §9): pause ≥ resume for cpu/gpu/memory at load and on every `CONFIG_SET`; violations clamped (resume pulled toward pause) + logged
+- [ ] **Config revision counter** (spec §9): bumped on every accepted config change so the governor reacts to live threshold/delay/mode changes without polling `ConfigurationManager`
 - [ ] Files: `src/governor/ResourceGovernor*`, `PausePolicy*`, `src/system/SystemStateMonitor*`
 
 **Verify:** governor unit tests per doc 3 §95 transition table; lock screen ⇒ ~0 CPU/GPU + decoder released (handle count); unlock ⇒ resumes. **Exit:** ☐
@@ -259,6 +265,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - [ ] Library (minimal): add file/folder, remove, list with metadata columns, preview; incremental scan + `ReadDirectoryChangesW`; lazy metadata
 - [ ] Tray: Resume/Pause/Next/Previous/Current wallpaper/Open app/Settings/Exit; left-click toggles UI; UI resources released on close, engine continues
 - [ ] UI never decodes/renders/polls; engine interaction only via `ApplicationController` commands
+- [ ] **Config write-batching** (spec §9): debounced dirty-flag save (~1–2 s after last `CONFIG_SET`, plus save on shutdown) — no per-click writes, UI edits survive a crash
 - [ ] Files: `src/ui/Win32UI*`, `src/ui/panels/*`, `src/ui/TrayController*`, `src/library/LibraryManager*`
 
 **Verify:** all panels functional; repeated UI open/close shows no RAM growth; tray works with UI closed; 10k-file folder handled without repeated rescans. **Exit:** ☐

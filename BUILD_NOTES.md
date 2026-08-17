@@ -100,6 +100,25 @@ M1 exit criteria met: Debug+Release x64 build green, 16/16 unit tests pass in bo
 
 ---
 
+# M2 Build Notes (2026-08-17)
+
+M2 exit criteria met: DeviceManager + Renderer + TextureManager shipped, build-time fxc with embedded shaders, verified on both GPUs.
+
+## Findings
+
+- **Build-time fxc pipeline**: `shaders/VideoShader.hlsl` → `.cso` (fxc from the Windows SDK, auto-located via `CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION` with a glob fallback) → **embedded as byte arrays** via `cmake/embed_shader.cmake` into `build/<cfg>/generated/VideoShader{Vs,Ps}Data.h`. No runtime file lookups — keeps the M14 package to exe + system DLLs only. Sizes: VS 736 B, PS 836 B.
+- **Verified on both GPUs (Debug + Release)**: feature level **0xB100 (11_1)**, ~147 FPS vsync-locked to the 144 Hz display, clean `--frames N` exit. Release: no debug layer (correct).
+- **Harness now drives the real modules** — it no longer duplicates device/swapchain/pipeline code; `--list`/`--frames`/`--adapter`/`--no-debug` flags unchanged.
+- **Debug layer still NOT installed** (hr=0x887A002D) — DeviceManager falls back gracefully and logs `warn`.
+
+## Gotchas (new)
+
+1. **Flip-model `ResizeBuffers` with the same size before the first Present returns `DXGI_ERROR_INVALID_CALL`** — the renderer tracks its current size and skips `ResizeBuffers` when unchanged; `init()` builds the RTV directly since the swap chain was just created at that size.
+2. **`D3D11_FILTER_LINEAR` does not exist in D3D11** (it's a D3D9-era name) — use `D3D11_FILTER_MIN_MAG_MIP_LINEAR`.
+3. Graphics modules log via the `Logger` singleton; the harness doesn't initialize a file sink, so the DeviceManager's log lines are invisible there — the harness prints feature level / debug status itself (the app will get the log lines when it integrates the modules at M3+).
+
+---
+
 # M2 pre-verification — D3D11 harness findings (2026-08-17)
 
 `harness/gfx_harness.cpp` (dev-only target `vw_gfx_harness`) verified the M2 renderer prerequisites on this machine.
