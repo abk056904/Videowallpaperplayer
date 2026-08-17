@@ -53,6 +53,10 @@ public:
     // size is unchanged (avoids the flip-model same-size ResizeBuffers error).
     Result<void> resize(ID3D11Device* device, UINT width, UINT height);
 
+    // True when the LAST render() failure was a device-lost/reset Present
+    // error (M12: the host uses this to schedule the recreate).
+    bool deviceLost() const { return deviceLost_; }
+
 private:
     Result<void> rebuildRtv(ID3D11Device* device, UINT width, UINT height);
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
@@ -71,6 +75,7 @@ private:
     D3D11_VIEWPORT viewport_{};
     float scaleOffset_[4] = {1.0f, 1.0f, 0.0f, 0.0f}; // set by setVideoTexture/setVideoPlanes
     bool needsBorder_ = false; // Fit/Center: out-of-range UVs must be black bars
+    bool deviceLost_ = false;  // M12: last render failed with a device-lost code
     UINT width_ = 0;
     UINT height_ = 0;
 };

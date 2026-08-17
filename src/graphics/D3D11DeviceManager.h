@@ -63,18 +63,32 @@ public:
     Result<Microsoft::WRL::ComPtr<IDXGISwapChain1>> createSwapChain(
         HWND hwnd, UINT width, UINT height) const;
 
-    // ---- device-loss plumbing stub (docs/03 M2; fully wired in M12) ----
+    // ---- device-loss plumbing (docs/03 M2 stub; full sequence M12) ----
     // True when a present/render HRESULT indicates the device was lost/reset.
     static bool isDeviceLost(HRESULT hr);
     // Human-readable reason for logging.
     static const wchar_t* deviceLostReason(HRESULT hr);
-    // Stub: logs + records that a recreate is pending. M12 implements the
-    // full teardown/recreate sequence with controlled retry/backoff.
+    // Records that a recreate is pending (called when a present fails with a
+    // device-lost code; the WallpaperManager's 1 Hz tick consumes it and runs
+    // the teardown/recreate/rebuild sequence — M12).
     void scheduleRecreate();
     // Consumes the recreate request (returns true if one was pending).
     bool consumeRecreateRequest();
+    // True while a recreate is requested but not yet consumed (the app uses
+    // this to suppress per-frame render-failure log spam during the gap).
+    bool recreatePending() const { return recreatePending_; }
+    // M12: releases the (lost) device and recreates it on the SAME adapter
+    // with the same debug-layer request as createDevice. The caller must have
+    // already released every device-dependent resource (swap chains, RTVs,
+    // textures) — this manager owns only the device/context.
+    Result<void> recreate();
+    // Diagnostic: the lost device's GetDeviceRemovedReason(), formatted.
+    // Valid until the device is recreated (call before recreate()).
+    std::wstring deviceRemovedReasonString() const;
 
 private:
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter_; // recreated on the same adapter
+    bool wantDebugLayer_ = false;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     D3D_FEATURE_LEVEL featureLevel_ = D3D_FEATURE_LEVEL_11_0;

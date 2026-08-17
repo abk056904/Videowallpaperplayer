@@ -38,6 +38,10 @@ public:
     // Draws the bound texture + presents (vsync). No-op-safe only while valid.
     Result<void> render();
 
+    // M12: true when the LAST render() failed because the device was lost
+    // (the caller uses it to schedule the recreate — see render()).
+    bool lastRenderDeviceLost() const { return renderer_.deviceLost(); }
+
     // Rebinds the texture rendered on the next render() (M4: per-frame video
     // texture swaps; null restores whatever init bound).
     // Binds the software-path frame (RGB32 SRV) with its display aspect

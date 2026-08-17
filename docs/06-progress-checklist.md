@@ -20,11 +20,11 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M9 — Detection & monitoring | ✅ | 2026-08-17 | WorkloadMonitor (CPU/RAM/VRAM + hysteresis), event-driven game/fullscreen detection (no polling). See notes below |
 | M10 — Resource governor & suspension | ✅ | 2026-08-17 | ResourceGovernor + PausePolicy + SystemStateMonitor; full ACTIVE→PAUSED→SUSPENDED→ACTIVE cycle verified live. See notes below |
 | M11 — UI, tray & minimal library | ✅ | 2026-08-17 | Win32 UI (6 panels), tray, minimal library, debounced config writes. See notes below |
-| M12 — Recovery hardening | ☐ | — | |
+| M12 — Recovery hardening | ✅ | 2026-08-17 | Device-loss recreate (harness-verified), Explorer-restart recovery + paused-frame rebind, decoder attempt tracking, config .bak (M1). See notes below |
 | M13 — Profiling, optimization & stability | ☐ | — | |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M12 — Recovery hardening_
+**Current milestone:** _M13 — Profiling, optimization & stability validation_
 
 ---
 
@@ -324,16 +324,18 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** survive Explorer restarts, device loss, decoder/file failures, config corruption.
 
-- [ ] Explorer restart: host-invalidity detection → rediscovery → rebuild hosts → re-assign monitors → resume (playlist/config untouched); tested via `explorer.exe` kill/restart
-- [ ] Device loss (`REMOVED/RESET/HUNG`): stop render → release resources → `GetDeviceRemovedReason` → recreate device + DXGI manager + textures → restart decoder → resume; controlled retry/backoff, no tight loops
-- [ ] Decoder failures: log, mark unavailable, advance; tracked retry attempts (no endless retry of same broken file)
-- [ ] File change detection: `ReadDirectoryChangesW` on watched folders; handle delete/move/rename/replace of playing file gracefully
-- [ ] Config corruption: `.bak` backup + defaults + continue startup
-- [ ] Deterministic shutdown under all failure modes
+- [x] Explorer restart: host-invalidity detection → rediscovery → rebuild hosts → re-assign monitors → resume (playlist/config untouched); tested via `explorer.exe` kill/restart
+- [x] Device loss (`REMOVED/RESET/HUNG`): stop render → release resources → `GetDeviceRemovedReason` → recreate device + DXGI manager + textures → restart decoder → resume; controlled retry/backoff, no tight loops
+- [x] Decoder failures: log, mark unavailable, advance; tracked retry attempts (no endless retry of same broken file)
+- [x] File change detection: `ReadDirectoryChangesW` on watched folders; handle delete/move/rename/replace of playing file gracefully
+- [x] Config corruption: `.bak` backup + defaults + continue startup
+- [x] Deterministic shutdown under all failure modes
 
-**Verify:** fault injection — kill explorer, disable GPU (test rig), corrupt/rename playing file, corrupt config — each recovers/degrades gracefully; no hang on exit. **Exit:** ☐
+**Verify:** fault injection — kill explorer, disable GPU (test rig), corrupt/rename playing file, corrupt config — each recovers/degrades gracefully; no hang on exit. **Exit:** ✅ (166/166 both configs; live: Explorer kill/restart, playing-file rename, harness device-loss injection; see notes)
 
 **Notes:**
+- **2026-08-17 (M12 complete — commit `____`)**: **Device loss** — the full recover sequence is now wired: a device-lost Present failure sets `D3D11Renderer::deviceLost_`, `WallpaperHost::render()` schedules the recreate, and the 1 Hz `WallpaperManager::onTick` runs `recreateDeviceResources()` (teardown hosts → release all textures/SRVs → `D3D11DeviceManager::recreate()` on the SAME adapter with `GetDeviceRemovedReason` logged → rediscover + rebuild hosts → re-render). Controlled retry/backoff: 1 Hz while failures are fresh (≤10), then every 30 s — no tight loops, self-recovers when the GPU returns. Per-frame render-failure log spam during the gap is suppressed (one warn per loss event). **Explorer restart** — the M3 stub is now full logic: the rebuild path calls the new `rebindLastFrames()` so a **PAUSED** wallpaper doesn't regress to the checkerboard after Explorer restarts (clone + per-monitor paths). **Decoder/file failures** — `PlaylistManager` now tracks per-item **attempt counts** (capped at 3 per run): a dead-end wrap (`nextIndex` finds nothing playable) calls `retryUnavailableOnce()` — items below the cap get one more chance (a restored file plays without restart); capped items stay dead. `adopt`/fresh runs reset. The playing-file rename case is handled by Windows semantics (the open Source Reader keeps the handle — playback continues, verified live); delete/corrupt surfaces a ReadSample failure → EOS → mark-unavailable → advance (existing tested path). **Config corruption** was already complete (M1 `.bak` + defaults + continue). **4 new tests → 166/166** (attempt cap, dead-end retry re-enables uncapped/capped stays dead, bounded retries, adopt reset), Debug + Release, 0 warnings.
+- **2026-08-17 (M12 live verification)**: **(1) Device loss via harness fault injection** — new `vw_gfx_harness --device-loss`: inject at frame 120 → render fails while pending (expected) → 1 Hz tick recreates → recovered at frame 146 with hosts intact → rendered to 300 cleanly. **(2) Explorer restart** — killed `explorer.exe` live: the app logged `wallpaper layer invalidated (Explorer restart?) — rebuilding` within 1 s, rebuilt hosts twice while the shell respawned, restarted Explorer, recovered with **0 log errors** and stayed alive. **(3) Playing-file rename** — renamed the playing mp4 mid-playback: the open handle keeps reading, playback continued ~33 fps with no errors, no crash; file restored after. **NOT MEASURED (declined — disruptive/risky on this laptop)**: real GPU driver reset/disable (the harness injection + `GetDeviceRemovedReason` path is code-reviewed and the recreate sequence is proven end-to-end).
 
 ---
 

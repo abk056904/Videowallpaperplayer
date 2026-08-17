@@ -31,6 +31,7 @@ std::vector<size_t> shuffledPermutation(std::mt19937& rng, size_t n, size_t avoi
 
 PlaylistManager::PlaylistManager(PlaylistData data) : data_(std::move(data)) {
     unavailable_.assign(data_.items.size(), false);
+    attempts_.assign(data_.items.size(), 0); // M12
     repairState();
 }
 
@@ -43,6 +44,7 @@ size_t PlaylistManager::add(const std::wstring& path) {
 size_t PlaylistManager::add(const PlaylistItem& item) {
     data_.items.push_back(item);
     unavailable_.push_back(false);
+    attempts_.push_back(0); // M12
     rebuildOrder();
     return data_.items.size() - 1;
 }
@@ -53,6 +55,7 @@ bool PlaylistManager::remove(size_t index) {
     }
     data_.items.erase(data_.items.begin() + static_cast<ptrdiff_t>(index));
     unavailable_.erase(unavailable_.begin() + static_cast<ptrdiff_t>(index));
+    attempts_.erase(attempts_.begin() + static_cast<ptrdiff_t>(index)); // M12
     if (data_.current == index) {
         data_.current = kNoIndex; // caller re-selects
     } else if (data_.current > index) {
@@ -68,10 +71,13 @@ bool PlaylistManager::move(size_t from, size_t to) {
     }
     const PlaylistItem item = data_.items[from];
     const bool wasUnavailable = unavailable_[from];
+    const unsigned wasAttempts = attempts_[from]; // M12
     data_.items.erase(data_.items.begin() + static_cast<ptrdiff_t>(from));
     unavailable_.erase(unavailable_.begin() + static_cast<ptrdiff_t>(from));
+    attempts_.erase(attempts_.begin() + static_cast<ptrdiff_t>(from));
     data_.items.insert(data_.items.begin() + static_cast<ptrdiff_t>(to), item);
     unavailable_.insert(unavailable_.begin() + static_cast<ptrdiff_t>(to), wasUnavailable);
+    attempts_.insert(attempts_.begin() + static_cast<ptrdiff_t>(to), wasAttempts);
     // Track the moved index through the shift.
     if (data_.current == from) {
         data_.current = to;
@@ -101,6 +107,7 @@ bool PlaylistManager::replace(size_t index, const PlaylistItem& item) {
 void PlaylistManager::clear() {
     data_.items.clear();
     unavailable_.clear();
+    attempts_.clear(); // M12
     data_.current = kNoIndex;
     data_.shuffleOrder.clear();
 }
@@ -147,7 +154,16 @@ size_t PlaylistManager::nextIndex() {
         case Mode::Sequential:
         case Mode::Loop: {
             const bool wrap = data_.loop || data_.mode == Mode::Loop;
-            return advanceFrom(data_.current, wrap);
+            size_t next = advanceFrom(data_.current, wrap);
+            if (next == kNoIndex) {
+                // M12 dead-end recovery: every remaining item is unavailable —
+                // re-enable the retryable ones (attempts below the cap) once
+                // so a RESTORED file can play without an app restart; capped
+                // items stay dead. Bounded: each retry consumes an attempt.
+                retryUnavailableOnce();
+                next = advanceFrom(data_.current, wrap);
+            }
+            return next;
         }
         case Mode::Shuffle: {
             // Position of the current item in the shuffled order.
@@ -225,8 +241,14 @@ void PlaylistManager::shuffle() {
 }
 
 void PlaylistManager::markUnavailable(size_t index) {
-    if (inRange(index)) {
-        unavailable_[index] = true;
+    if (!inRange(index)) {
+        return;
+    }
+    unavailable_[index] = true;
+    // M12: bounded per-run attempt tracking (capped at kMaxAttempts — no
+    // endless retry of the same broken file within a run).
+    if (attempts_[index] < kMaxAttempts) {
+        ++attempts_[index];
     }
 }
 
@@ -234,9 +256,27 @@ bool PlaylistManager::isUnavailable(size_t index) const {
     return inRange(index) && unavailable_[index];
 }
 
+unsigned PlaylistManager::attemptCount(size_t index) const {
+    return inRange(index) ? attempts_[index] : 0;
+}
+
+size_t PlaylistManager::retryUnavailableOnce() {
+    size_t reEnabled = 0;
+    for (size_t i = 0; i < data_.items.size(); ++i) {
+        // Items below the cap get ONE more chance per dead-end wrap; capped
+        // items stay unavailable for the rest of the run.
+        if (unavailable_[i] && attempts_[i] < kMaxAttempts) {
+            unavailable_[i] = false;
+            ++reEnabled;
+        }
+    }
+    return reEnabled;
+}
+
 void PlaylistManager::adopt(PlaylistData data) {
     data_ = std::move(data);
     unavailable_.assign(data_.items.size(), false);
+    attempts_.assign(data_.items.size(), 0); // M12: fresh run, fresh attempts
     repairState();
 }
 

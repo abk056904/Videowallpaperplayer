@@ -666,3 +666,25 @@ Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.
 3. **Test-authoring bugs**: `itemById(0)` is always null (ids start at 1) — replaced with path/iteration-based lookup in the two library tests.
 
 ---
+
+## M12 — Recovery hardening
+
+**Committed as ``** — per docs/03 §3.14 / docs/02 §2.6 + the M12 fault-injection matrix.
+
+## What shipped
+
+- **Device loss (full sequence, was the M2 stub)**: a device-lost Present failure sets `D3D11Renderer::deviceLost_` → `WallpaperHost::render()` calls `deviceManager_->scheduleRecreate()` → the 1 Hz `WallpaperManager::onTick` consumes the request and runs `recreateDeviceResources()`: teardown hosts (swap chains + renderers) → release every texture/SRV (test/frame/per-monitor) → `D3D11DeviceManager::recreate()` (releases the lost device, logs `GetDeviceRemovedReason()`, recreates on the SAME stored adapter with the same debug request) → rediscover + rebuild hosts → re-render. **Controlled retry/backoff**: 1 Hz while failures are fresh (≤10 consecutive), then every 30 s — no tight loops, self-recovers when the GPU returns. Per-frame render-failure log spam during the gap is suppressed (one warn per loss event, both in `WallpaperManager::renderAll` and the app's `onFrameWake`). Playback resumes on the next scheduled frame (software decode never binds the device). Documented limitation: a device recreate destroys the last frame textures — a PAUSED wallpaper shows the test texture until playback resumes.
+- **Explorer restart (hardened)**: the rebuild path now calls `rebindLastFrames()` (clone frame texture on every host + per-monitor frames on their hosts) so a PAUSED wallpaper doesn't regress to the checkerboard after Explorer restarts. Playlist/config untouched.
+- **Decoder failure attempt tracking**: `PlaylistManager` keeps a per-item runtime `attempts_` vector (parallel to items, kept in sync through add/remove/move/clear/adopt). `markUnavailable` increments (capped at `kMaxAttempts` = 3 per run). A dead-end wrap — `nextIndex()` finding nothing playable — calls `retryUnavailableOnce()`: items below the cap are re-enabled for one more chance (a RESTORED file can play without an app restart); capped items stay dead. Each retry consumes an attempt, so the retry loop is bounded. `adopt` resets both.
+- **Playing-file rename/delete**: covered by Windows semantics + the existing error path — an open Source Reader keeps reading through a rename (playback continues, verified live); delete/corrupt surfaces a `ReadSample` failure → EOS marker → `handleEndOfStream` → mark-unavailable → advance (existing M7-tested path).
+- **Config corruption**: already complete since M1 (`.bak` backup + defaults + continue startup — unit-tested).
+
+## Verified
+
+- **4 new unit tests** (attempt cap at kMaxAttempts; dead-end wrap retries uncapped items while capped stay dead; bounded retries — each consumes an attempt; adopt resets) + one M12 semantic update to an old test (a single failure per item is now RETRYABLE on the dead-end wrap — only all-items-at-cap returns `kNoIndex`) → **166/166 tests**, Debug + Release, 0 warnings under /WX.
+- **Live — device loss (harness fault injection)**: new `vw_gfx_harness --wallpaper --device-loss --frames 300`: inject at frame 120 → `device loss injected` → renders fail while pending (expected) → the 1 Hz tick recreates → `device recreated + wallpaper recovered (146 frames so far, 1 host(s))` → rendered to 300 cleanly, exit 0. The recreate sequence (teardown → device recreate → rebuild → render) is proven end-to-end without a real GPU reset.
+- **Live — Explorer restart**: `taskkill /f /im explorer.exe` while the app played → `wallpaper layer invalidated (Explorer restart?) — rebuilding` within 1 s → rebuilt hosts (twice, as the shell respawned) → `explorer` restarted → **0 log errors**, app alive, hosts recreated. (The M12 change re-verified the M3 scenario with the new frame-rebind.)
+- **Live — playing-file rename**: renamed the playing mp4 mid-playback → the open reader kept decoding at ~33 fps, **no errors, no crash**; file restored after.
+- **NOT MEASURED (recorded for M14)**: a real GPU driver reset / adapter disable (declined — risky on this laptop; the injection + `GetDeviceRemovedReason` path is code-reviewed and the recreate is proven).
+
+---

@@ -94,6 +94,10 @@ Result<std::vector<OutputInfo>> D3D11DeviceManager::enumerateOutputs(IDXGIAdapte
 }
 
 Result<void> D3D11DeviceManager::createDevice(IDXGIAdapter1* adapter, bool wantDebugLayer) {
+    // Remember the adapter + debug request so recreate() (M12 device-loss
+    // recovery) rebuilds an equivalent device without re-deriving them.
+    adapter_ = adapter;
+    wantDebugLayer_ = wantDebugLayer;
     static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     // VIDEO_SUPPORT is required for Media Foundation hardware decode (the
     // decoder MFT calls ID3D11VideoDevice on this device; without it the
@@ -186,13 +190,45 @@ const wchar_t* D3D11DeviceManager::deviceLostReason(HRESULT hr) {
 
 void D3D11DeviceManager::scheduleRecreate() {
     recreatePending_ = true;
-    log::Logger::instance().warn(L"device lost — recreate scheduled (full logic in M12)");
 }
 
 bool D3D11DeviceManager::consumeRecreateRequest() {
     const bool pending = recreatePending_;
     recreatePending_ = false;
     return pending;
+}
+
+Result<void> D3D11DeviceManager::recreate() {
+    // GetDeviceRemovedReason on the lost device for the log BEFORE release.
+    const std::wstring removed = deviceRemovedReasonString();
+    device_.Reset();
+    context_.Reset();
+    featureLevel_ = D3D_FEATURE_LEVEL_11_0;
+    debugLayer_ = false;
+    auto result = createDevice(adapter_.Get(), wantDebugLayer_);
+    if (!result) {
+        return std::unexpected(L"device recreate failed" + (removed.empty() ? std::wstring{}
+                                                                           : L" (old device: " +
+                                                                                 removed + L")"));
+    }
+    log::Logger::instance().info(L"D3D11 device recreated (old: {})",
+                                 removed.empty() ? L"reason unknown" : removed);
+    return {};
+}
+
+std::wstring D3D11DeviceManager::deviceRemovedReasonString() const {
+    if (!device_) {
+        return {};
+    }
+    const HRESULT reason = device_->GetDeviceRemovedReason();
+    if (SUCCEEDED(reason)) {
+        return {};
+    }
+    if (reason == DXGI_ERROR_DEVICE_REMOVED) return L"DXGI_ERROR_DEVICE_REMOVED";
+    if (reason == DXGI_ERROR_DEVICE_RESET) return L"DXGI_ERROR_DEVICE_RESET";
+    if (reason == DXGI_ERROR_DEVICE_HUNG) return L"DXGI_ERROR_DEVICE_HUNG";
+    if (reason == DXGI_ERROR_DRIVER_INTERNAL_ERROR) return L"DXGI_ERROR_DRIVER_INTERNAL_ERROR";
+    return formatHr(reason);
 }
 
 } // namespace vw::gfx

@@ -110,13 +110,30 @@ void WallpaperManager::onDisplayChange() {
     }
 }
 
+namespace {
+// M12 device-recreate backoff: retry every tick (1 Hz) while failures are
+// fresh, then every 30 ticks (30 s) so a long GPU outage doesn't spin.
+constexpr unsigned kMaxFreshRecreateFailures = 10;
+constexpr unsigned kSlowRecreateRetryTicks = 30;
+} // namespace
+
 void WallpaperManager::onTick() {
     if (!running_) {
         return;
     }
 
-    // Explorer-restart stub (docs/02 §2.6, full logic M12): ~1 Hz check that
-    // the wallpaper layer and every host window still exist.
+    // M12 device-loss recovery: a pending recreate request (or a retry due
+    // after a previous failure) runs FIRST, before the Explorer check — a
+    // lost device invalidates every host anyway.
+    if (deviceManager_.consumeRecreateRequest() || recreateRetryDue()) {
+        recreateDeviceResources();
+        return;
+    }
+
+    // Explorer-restart check (docs/02 §2.6): ~1 Hz validity check that the
+    // wallpaper layer and every host window still exist; on invalidation,
+    // rediscover + rebuild hosts + re-apply the last frames + re-render
+    // (playlist/config untouched).
     const bool layerInvalid = !layer_.wallpaperLayer || !::IsWindow(layer_.wallpaperLayer);
 
     bool anyDead = false;
@@ -138,11 +155,116 @@ void WallpaperManager::onTick() {
         teardownHosts();
         layer_ = {};
         if (discoverDesktop() && ensureTestTexture() && createHosts()) {
+            // M12: restore the last video frames (a PAUSED wallpaper must not
+            // regress to the checkerboard), then render.
+            if (auto bound = rebindLastFrames(); !bound) {
+                log::Logger::instance().warn(L"rebuild frame rebind incomplete: {}",
+                                             bound.error());
+            }
             if (auto rendered = renderAll(); !rendered) {
                 log::Logger::instance().warn(L"rebuild render incomplete: {}", rendered.error());
             }
         }
     }
+}
+
+bool WallpaperManager::recreateRetryDue() {
+    if (recreateFailures_ == 0) {
+        return false;
+    }
+    if (recreateFailures_ <= kMaxFreshRecreateFailures) {
+        return true; // 1 Hz while the failure is fresh
+    }
+    if (++ticksSinceRecreate_ < kSlowRecreateRetryTicks) {
+        return false;
+    }
+    ticksSinceRecreate_ = 0;
+    return true; // then every 30 s — no tight loop, recovers when the GPU returns
+}
+
+void WallpaperManager::recreateDeviceResources() {
+    auto& log = log::Logger::instance();
+    log.warn(L"device lost — recreating D3D device + wallpaper resources");
+
+    // 1) Stop rendering: hosts (swap chains + renderers) are device-bound.
+    teardownHosts();
+    // 2) Release every device-dependent resource (textures/SRVs/dims).
+    testTexture_.Reset();
+    testTextureSrv_.Reset();
+    frameTexture_.Reset();
+    frameTextureSrv_.Reset();
+    frameWidth_ = 0;
+    frameHeight_ = 0;
+    frameDisplayAspect_ = 0.0f;
+    perMonitorFrames_.clear();
+
+    // 3) Recreate the device on the same adapter (GetDeviceRemovedReason
+    //    logged inside).
+    if (auto ok = deviceManager_.recreate(); !ok) {
+        ++recreateFailures_;
+        ticksSinceRecreate_ = 0;
+        deviceLostLogged_ = false;
+        log.error(L"device recreate failed ({} consecutive): {}", recreateFailures_,
+                  ok.error());
+        // Backoff applies on the next onTick (recreateRetryDue).
+        return;
+    }
+
+    // 4) Rebuild the wallpaper layer + hosts + re-render. A DEVICE recreate
+    //    destroys the last frame textures (the CPU-side frame is gone too —
+    //    playback re-uploads on the next frame; a paused wallpaper shows the
+    //    test texture until playback resumes — documented limitation).
+    layer_ = {};
+    if (discoverDesktop() && ensureTestTexture() && createHosts()) {
+        if (auto rendered = renderAll(); !rendered) {
+            log.warn(L"post-recreate render incomplete: {}", rendered.error());
+        }
+    }
+    recreateFailures_ = 0;
+    ticksSinceRecreate_ = 0;
+    deviceLostLogged_ = false;
+    log.info(L"device recreate complete — wallpaper resumed");
+}
+
+Result<void> WallpaperManager::rebindLastFrames() {
+    if (hosts_.empty()) {
+        return {};
+    }
+    bool anyError = false;
+    // Clone path: one shared frame texture on every host.
+    if (frameTextureSrv_) {
+        for (auto& host : hosts_) {
+            auto result =
+                host->setVideoTexture(frameTextureSrv_.Get(), frameDisplayAspect_, scaling_);
+            if (!result) {
+                anyError = true;
+                log::Logger::instance().warn(L"rebind video texture failed for {}: {}",
+                                             host->monitorId(), result.error());
+            }
+        }
+    }
+    // Independent path: per-monitor textures on their own hosts.
+    for (auto& [monitorId, slot] : perMonitorFrames_) {
+        if (!slot.srv) {
+            continue;
+        }
+        auto hostIt = std::find_if(hosts_.begin(), hosts_.end(),
+                                   [&](const auto& h) { return h->monitorId() == monitorId; });
+        if (hostIt == hosts_.end()) {
+            continue; // monitor gone — its host is recreated from monitors_
+        }
+        auto result =
+            (*hostIt)->setVideoTexture(slot.srv.Get(), frameDisplayAspect_, scaling_);
+        if (!result) {
+            anyError = true;
+            log::Logger::instance().warn(L"rebind per-monitor texture failed for {}: {}",
+                                         monitorId, result.error());
+        }
+    }
+    if (anyError) {
+        return std::unexpected(L"one or more hosts failed to re-bind the video frame");
+    }
+    return {};
 }
 
 void WallpaperManager::shutdown() {
@@ -375,8 +497,19 @@ Result<void> WallpaperManager::renderAll() {
         auto result = host->render();
         if (!result) {
             anyError = true;
-            log::Logger::instance().warn(L"render failed for {}: {}", host->monitorId(),
-                                         result.error());
+            // M12: a device-lost failure is reported ONCE per loss event (the
+            // recreate logs the sequence); per-frame spam while the 1 Hz tick
+            // hasn't recovered the device yet is suppressed.
+            if (host->lastRenderDeviceLost()) {
+                if (!deviceLostLogged_) {
+                    deviceLostLogged_ = true;
+                    log::Logger::instance().warn(L"render failed for {}: {}", host->monitorId(),
+                                                 result.error());
+                }
+            } else {
+                log::Logger::instance().warn(L"render failed for {}: {}", host->monitorId(),
+                                             result.error());
+            }
         }
     }
     if (anyError) {

@@ -162,14 +162,19 @@ TEST_CASE("playlist: previous walks backward with wrap") {
     CHECK(pm.previousIndex() == 2);
 }
 
-TEST_CASE("playlist: all items unavailable -> next is kNoIndex") {
+TEST_CASE("playlist: all items at the attempt cap -> next is kNoIndex") {
+    // M12: a single failure each is RETRYABLE — the dead-end wrap re-enables
+    // items below the attempt cap (a restored file can play). Only items at
+    // the cap stay dead, so with ALL items capped the dead end is final.
     PlaylistManager pm = threeItemPlaylist();
     pm.setMode(vw::playlist::Mode::Sequential);
     pm.setLoop(true);
     pm.setCurrent(0);
-    pm.markUnavailable(0);
-    pm.markUnavailable(1);
-    pm.markUnavailable(2);
+    for (size_t i = 0; i < 3; ++i) {
+        for (unsigned k = 0; k < PlaylistManager::kMaxAttempts; ++k) {
+            pm.markUnavailable(i);
+        }
+    }
     CHECK(pm.nextIndex() == PlaylistManager::kNoIndex);
 }
 
@@ -419,4 +424,90 @@ TEST_CASE("playlist: 200-item playlist ops stay correct and cheap") {
     CHECK(steps == 199); // visited every other item, then wrapped to 0
     CHECK(next == 0);
     CHECK(pm.itemAt(199)->path == L"clip199.mp4");
+}
+
+// ---- M12: decoder-failure attempt tracking (docs/03 §3.14) -----------------
+
+TEST_CASE("playlist: markUnavailable counts attempts, capped at kMaxAttempts") {
+    PlaylistManager pm;
+    pm.add(L"broken.mp4");
+    CHECK(pm.attemptCount(0) == 0);
+    for (unsigned i = 1; i <= PlaylistManager::kMaxAttempts + 2; ++i) {
+        pm.markUnavailable(0);
+        CHECK(pm.attemptCount(0) == std::min(i, PlaylistManager::kMaxAttempts));
+        CHECK(pm.isUnavailable(0));
+    }
+}
+
+TEST_CASE("playlist: dead-end wrap retries uncapped items, capped stay dead") {
+    PlaylistManager pm;
+    pm.add(L"a.mp4");
+    pm.add(L"b.mp4");
+    pm.add(L"c.mp4");
+    pm.setMode(vw::playlist::Mode::Sequential);
+    pm.setLoop(true);
+    pm.setCurrent(0);
+
+    // a fails once, b fails once, c fails repeatedly (capped).
+    pm.markUnavailable(0);
+    pm.markUnavailable(1);
+    for (unsigned i = 0; i < PlaylistManager::kMaxAttempts; ++i) {
+        pm.markUnavailable(2);
+    }
+    CHECK(pm.attemptCount(0) == 1);
+    CHECK(pm.attemptCount(2) == PlaylistManager::kMaxAttempts);
+
+    // Walk the cycle: 0 is unavailable -> skip to 1 (unavailable) -> skip to
+    // 2 (unavailable) -> dead end -> retry re-enables 0 and 1 (capped 2 stays
+    // dead) -> the next advance (strictly after current=0) lands on 1.
+    size_t next = pm.nextIndex();
+    REQUIRE(next == 1);
+    CHECK_FALSE(pm.isUnavailable(0));
+    CHECK_FALSE(pm.isUnavailable(1));
+    CHECK(pm.isUnavailable(2)); // capped — no more retries this run
+    CHECK(pm.attemptCount(0) == 1); // retry did not consume a new attempt
+}
+
+TEST_CASE("playlist: dead-end retry is bounded — each retry consumes an attempt") {
+    PlaylistManager pm;
+    pm.add(L"a.mp4");
+    pm.add(L"b.mp4");
+    pm.setMode(vw::playlist::Mode::Sequential);
+    pm.setLoop(true);
+    pm.setCurrent(0);
+
+    // Both items fail: a has 1 attempt, b has 2. First dead end re-enables
+    // both (below cap).
+    pm.markUnavailable(0);
+    pm.markUnavailable(1);
+    pm.markUnavailable(1);
+    CHECK(pm.retryUnavailableOnce() == 2);
+    CHECK_FALSE(pm.isUnavailable(0));
+    CHECK_FALSE(pm.isUnavailable(1));
+
+    // They fail again (same counts) and the cap is now reached for b.
+    pm.markUnavailable(0); // 2
+    pm.markUnavailable(1); // 3 = cap
+    pm.markUnavailable(1); // stays capped
+    CHECK(pm.retryUnavailableOnce() == 1); // only a retries now
+    CHECK_FALSE(pm.isUnavailable(0));
+    CHECK(pm.isUnavailable(1));
+
+    // a fails a third time -> capped too; no more retries this run.
+    pm.markUnavailable(0); // 3 = cap
+    CHECK(pm.retryUnavailableOnce() == 0);
+    CHECK(pm.isUnavailable(0));
+    CHECK(pm.isUnavailable(1));
+}
+
+TEST_CASE("playlist: adopt resets attempts and unavailable state") {
+    PlaylistManager pm;
+    pm.add(L"a.mp4");
+    pm.markUnavailable(0);
+    pm.markUnavailable(0);
+    CHECK(pm.attemptCount(0) == 2);
+    PlaylistData data = pm.data();
+    pm.adopt(std::move(data)); // e.g. a library refresh / new store load
+    CHECK_FALSE(pm.isUnavailable(0));
+    CHECK(pm.attemptCount(0) == 0);
 }

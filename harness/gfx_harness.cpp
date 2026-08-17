@@ -278,6 +278,7 @@ int wmain(int argc, wchar_t** argv) {
 #endif
     bool listOnly = false;
     bool wallpaperMode = false;
+    bool deviceLossTest = false; // M12: inject a device-loss recreate mid-run
     UINT adapterIndex = 0;
     uint64_t maxFrames = 0;
     std::wstring videoPath;
@@ -286,6 +287,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring a = argv[i];
         if (a == L"--list") listOnly = true;
         else if (a == L"--wallpaper") wallpaperMode = true;
+        else if (a == L"--device-loss") deviceLossTest = true;
         else if (a == L"--no-debug") wantDebug = false;
         else if (a == L"--adapter" && i + 1 < argc) adapterIndex = static_cast<UINT>(std::wcstoul(argv[++i], nullptr, 10));
         else if (a == L"--frames" && i + 1 < argc) maxFrames = std::wcstoull(argv[++i], nullptr, 10);
@@ -357,6 +359,9 @@ int wmain(int argc, wchar_t** argv) {
         const auto tStart = std::chrono::steady_clock::now();
         auto lastTick = tStart;
         bool running = true;
+        bool lossInjected = false;
+        bool lossVerified = false;
+        bool lossGapReported = false;
         MSG msg{};
         while (running) {
             // Host windows are on this thread: pump their messages.
@@ -367,19 +372,50 @@ int wmain(int argc, wchar_t** argv) {
             }
             if (!running) break;
 
+            // M12 fault injection: simulate a lost device mid-run (after 120
+            // frames) — the next 1 Hz onTick must tear down, recreate the
+            // device, rebuild hosts, and rendering must continue.
+            if (deviceLossTest && !lossInjected && frames == 120) {
+                wallpaper.requestDeviceRecreate();
+                lossInjected = true;
+                std::printf("gfx_harness: device loss injected (recreate requested)\n");
+            }
+
             auto rendered = wallpaper.renderAll();
             if (!rendered) {
-                std::fwprintf(stderr, L"gfx_harness: wallpaper render failed: %s\n",
-                              rendered.error().c_str());
-                break;
+                // Device-lost gap: render keeps failing until the tick
+                // recovers. The recreate must not crash; keep pumping.
+                if (lossInjected && wallpaper.isDeviceLost()) {
+                    if (!lossGapReported) {
+                        lossGapReported = true;
+                        std::printf("gfx_harness: render failing while device-loss pending "
+                                    "(expected) — waiting for the recreate tick\n");
+                    }
+                } else {
+                    std::fwprintf(stderr, L"gfx_harness: wallpaper render failed: %s\n",
+                                  rendered.error().c_str());
+                    break;
+                }
+            } else {
+                ++frames;
             }
-            ++frames;
 
-            // Same 1 Hz Explorer-restart validity check the app runs.
+            // Same 1 Hz Explorer-restart validity check the app runs (also
+            // processes the device-loss recreate request).
             const auto now = std::chrono::steady_clock::now();
             if (now - lastTick >= std::chrono::seconds(1)) {
                 wallpaper.onTick();
                 lastTick = now;
+            }
+
+            if (lossInjected && !lossVerified && !wallpaper.isDeviceLost() && frames > 120) {
+                std::printf("gfx_harness: device recreated + wallpaper recovered "
+                            "(%llu frames so far, %zu host(s))\n",
+                            static_cast<unsigned long long>(frames), wallpaper.hostCount());
+                if (wallpaper.hostCount() == 0) {
+                    fail(L"device recreate left no hosts");
+                }
+                lossVerified = true; // recovery verified once
             }
 
             if (maxFrames > 0 && frames >= maxFrames) {
@@ -390,6 +426,9 @@ int wmain(int argc, wchar_t** argv) {
         }
 
         wallpaper.shutdown();
+        if (deviceLossTest && !lossVerified) {
+            fail(L"device-loss test: recreate never completed");
+        }
         std::printf("gfx_harness: wallpaper done (%llu frames)\n",
                     static_cast<unsigned long long>(frames));
         return 0;

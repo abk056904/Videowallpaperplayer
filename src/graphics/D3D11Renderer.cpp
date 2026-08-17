@@ -118,6 +118,7 @@ Result<void> D3D11Renderer::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
 }
 
 Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FrameParams& params) {
+    deviceLost_ = false; // per-call: only the CURRENT failure reports device loss
     if (!context || !rtv_) return std::unexpected(L"renderer: not initialized");
 
     const float clear[4] = {0.04f, 0.05f, 0.09f, 1.0f}; // solid base color
@@ -171,6 +172,7 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
     // Present with vsync; device loss propagates for the M12 recreate path.
     const HRESULT hr = swapChain_->Present(1, 0);
     if (D3D11DeviceManager::isDeviceLost(hr)) {
+        deviceLost_ = true;
         return std::unexpected(std::wstring(L"present failed: ") +
                                D3D11DeviceManager::deviceLostReason(hr));
     }

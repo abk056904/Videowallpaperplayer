@@ -134,6 +134,11 @@ Result<void> WallpaperHost::render() {
     gfx::D3D11Renderer::FrameParams params{};
     params.tint[0] = params.tint[1] = params.tint[2] = params.tint[3] = 1.0f;
     auto result = renderer_.render(deviceManager_->context(), params);
+    if (!result && renderer_.deviceLost()) {
+        // M12: the device is gone — record the recreate request; the
+        // WallpaperManager's 1 Hz tick runs the teardown/recreate/rebuild.
+        deviceManager_->scheduleRecreate();
+    }
     if (result && !shown_) {
         // First successful present: make the window visible (created hidden to
         // avoid a black flash before the swap chain has content).

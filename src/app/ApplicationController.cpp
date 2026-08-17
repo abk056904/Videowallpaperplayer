@@ -673,7 +673,11 @@ void ApplicationController::onFrameWake() {
     }
     const LONGLONG renderStart = util::Clock::instance().now100ns();
     if (auto rendered = wallpaper_->renderAll(); !rendered) {
-        log.warn(L"frame render failed: {}", rendered.error());
+        // M12: while a device-loss recreate is pending/retrying, render fails
+        // on EVERY frame — log once (the recreate logs its own sequence).
+        if (!wallpaper_->isDeviceLost()) {
+            log.warn(L"frame render failed: {}", rendered.error());
+        }
     }
     playback_->noteRenderTime(
         static_cast<double>(util::Clock::instance().now100ns() - renderStart) / 10000.0);

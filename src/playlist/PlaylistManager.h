@@ -88,8 +88,20 @@ public:
 
     // Runtime broken-item marking (docs/03 §3.9: log, mark unavailable,
     // advance). NOT persisted — the next run retries the item (recovery).
+    // M12: each mark increments the item's per-run attempt counter (bounded at
+    // kMaxAttempts — no endless retry of the same broken file).
     void markUnavailable(size_t index);
     bool isUnavailable(size_t index) const;
+    // M12: per-run decode-attempt count for an item (0 = never failed).
+    unsigned attemptCount(size_t index) const;
+    // M12: when navigation hits a dead end (every remaining item unavailable),
+    // re-enable the items whose attempts are below the cap so a RESTORED file
+    // can play without an app restart — bounded by kMaxAttempts per run.
+    // Returns the number of items re-enabled.
+    size_t retryUnavailableOnce();
+    // Max decode attempts per item per run before it is skipped for good
+    // (until the next run / adopt).
+    static constexpr unsigned kMaxAttempts = 3;
 
     // ---- state ----
     size_t size() const { return data_.items.size(); }
@@ -122,8 +134,9 @@ private:
     void repairState();        // clamp current + sanitize order_ (load/struct change)
 
     PlaylistData data_;
-    std::vector<bool> unavailable_; // runtime only, parallel to items
-    uint64_t shuffleGeneration_ = 0; // bumped by regenerateShuffle()
+    std::vector<bool> unavailable_;   // runtime only, parallel to items
+    std::vector<unsigned> attempts_;  // M12: per-run decode attempts, parallel
+    uint64_t shuffleGeneration_ = 0;  // bumped by regenerateShuffle()
     std::mt19937 rng_{std::random_device{}()};
 };
 

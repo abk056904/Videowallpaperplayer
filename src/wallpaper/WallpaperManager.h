@@ -78,9 +78,22 @@ public:
     void onDisplayChange();
 
     // Low-frequency validity check (~1 Hz, only while running — docs/02
-    // §2.8): rebuilds hosts when the wallpaper layer or any host died
-    // (Explorer restart). Full logic in M12.
+    // §2.8): processes a pending device-loss recreate, then rebuilds hosts
+    // when the wallpaper layer or any host died (Explorer restart).
     void onTick();
+
+    // M12 device-loss recovery. `requestDeviceRecreate` is the fault-injection
+    // entry point (the harness uses it to simulate a lost device); the 1 Hz
+    // onTick consumes the request and runs the full teardown -> device
+    // recreate -> rebuild -> re-render sequence with controlled retry/backoff
+    // (1 Hz while fresh, every 30 s after consecutive failures) — no tight
+    // loops, self-recovers when the GPU returns. True while the recreate is
+    // pending or retrying (the app uses it to silence per-frame render-failure
+    // log spam during the gap).
+    void requestDeviceRecreate() { deviceManager_.scheduleRecreate(); }
+    bool isDeviceLost() const {
+        return deviceManager_.recreatePending() || recreateFailures_ > 0;
+    }
 
     // Tears down hosts (windows + swap chains) — deterministic shutdown.
     void shutdown();
@@ -117,6 +130,15 @@ private:
     Result<void> discoverDesktop();
     Result<void> ensureTestTexture();
     Result<void> createHosts();
+    // M12: the device-loss recovery sequence (teardown -> device recreate ->
+    // rebuild -> re-render), with consecutive-failure backoff.
+    void recreateDeviceResources();
+    // M12: backoff pacing for recreate retries (see recreateDeviceResources).
+    bool recreateRetryDue();
+    // M12: re-applies the last video frames (clone texture / per-monitor
+    // textures) to freshly rebuilt hosts so a PAUSED wallpaper doesn't regress
+    // to the checkerboard after Explorer restart or device recreate.
+    Result<void> rebindLastFrames();
     Result<void> bindFrameTexture();
     Result<void> bindGpuFrame(const video::DecodedFrame& frame);
     // M8: hardware-frame bind on ONE host (Independent mode).
@@ -153,6 +175,10 @@ private:
     gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;
     DesktopLayer layer_;
     bool running_ = false;
+    // M12: consecutive device-recreate failures (drives the retry backoff).
+    unsigned recreateFailures_ = 0;
+    unsigned ticksSinceRecreate_ = 0;
+    bool deviceLostLogged_ = false; // one warn per loss event (no per-frame spam)
 };
 
 } // namespace vw::wallpaper
