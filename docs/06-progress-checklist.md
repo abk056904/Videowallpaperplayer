@@ -22,9 +22,9 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M11 — UI, tray & minimal library | ✅ | 2026-08-17 | Win32 UI (6 panels), tray, minimal library, debounced config writes. See notes below |
 | M12 — Recovery hardening | ✅ | 2026-08-17 | Device-loss recreate (harness-verified), Explorer-restart recovery + paused-frame rebind, decoder attempt tracking, config .bak (M1). See notes below |
 | M13 — Profiling, optimization & stability | ☐ | — | Code-search audit clean; baseline + hot-path measured; frame-buffer pool (resize+zero 4.5→0.00 ms/f); leak-cycle stress green; 4 h soak in progress |
-| M14 — Packaging, README, final report | ☐ | — | |
+| M14 — Packaging, README, final report | ☐ | — | Package builds (1.0 MB zip); version resource fixed (winres.h — string-named vs ID-1); full README + final report + resource audit written |
 
-**Current milestone:** _M13 — Profiling, optimization & stability validation_ (soak running)
+**Current milestone:** _M14 — Packaging, README, final report_ (soak still running for M13's gate)
 
 ---
 
@@ -375,15 +375,21 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 ## M14 — Packaging, README, final report
 
-- [ ] Portable ZIP via CMake/CPack or script (exe + required DLLs + defaults only; no samples/debug/symbols/test assets)
-- [ ] Start-with-Windows optional (HKCU Run); no service, no admin
-- [ ] `README.md` per spec §64 (overview, architecture, requirements, build/run, codecs, HW accel, multi-monitor, performance behavior, game detection, config, troubleshooting, limitations, development, testing + how low idle usage is achieved)
-- [ ] Final report per spec §65 + doc 3 §101 (22-point list) with **measured** numbers or explicit `NOT MEASURED — reason`
-- [ ] Resource-efficiency audit answering doc 2 §102's 20 questions
+- [x] Portable ZIP via script (`package.ps1`): exe + 3 MSVC runtime DLLs + LICENSE + README only (1,047,290 bytes); no samples/debug/symbols/test assets; verified from a clean extraction (second instance loaded the CRT, focused the primary, exited 0)
+- [x] Start-with-Windows optional (HKCU Run — implemented M11; verified absent by default, no admin, no service)
+- [x] `README.md` per spec §64 — full README written (overview, architecture, requirements, build/run, codecs, HW accel, multi-monitor, performance behavior, game detection, config, troubleshooting, limitations, development, testing + how low idle usage is achieved)
+- [x] Final report per spec §65 + doc 3 §101 (22-point list) — `docs/07-final-report.md`, measured numbers or explicit `NOT MEASURED — reason`
+- [x] Resource-efficiency audit answering doc 2 §102's 20 questions — `docs/08-resource-audit.md`
+- [x] **Version resource** added (Explorer Properties → Details): `VS_VERSION_INFO` was a **string-named** resource because `winres.h` (which defines it as numeric ID 1) was never included — Windows version APIs look up RT_VERSION by ID 1, so FileVersion read empty. Fixed with `#include <winres.h>`; verified `FileVersion 1.0.0.0` + resource tree `named=0 id=1` (matches cmd.exe)
 
-**Exit criteria:** package builds from clean checkout; README complete; report + audit complete with no invented numbers. ☐
+**Exit criteria:** package builds from clean checkout; README complete; report + audit complete with no invented numbers. ☐ (soak pending for M13's gate)
 
 **Notes:**
+
+- **Package (2026-08-17)**: `dist/VideoWallpaper-<commit>.zip`, 6 files: exe 1,602,048 B + msvcp140/vcruntime140/vcruntime140_1 (716 KB total) + README + LICENSE. DLL-import dump: all imports are system DLLs except the MSVC runtime (those 3 ship). Shaders embedded in the exe (no runtime lookups). Second-instance clean-extraction test: packaged exe ran, found the primary, requested focus, exited 0.
+- **README/report/audit** (2026-08-17): `README.md` (full §64), `docs/07-final-report.md` (22-point list), `docs/08-resource-audit.md` (20 questions). Every performance number cross-checked against the M13 baseline/stress/measurement records; unmeasurable items explicitly `NOT MEASURED — reason`.
+- **Version resource fix** (2026-08-17): `src/app/app.rc` gained a `VERSIONINFO` block, but FileVersion stayed empty — the PE resource directory showed RT_VERSION as a **named** entry (string "VS_VERSION_INFO") instead of **numeric ID 1**; Windows version APIs (`GetFileVersionInfo`) look up by ID 1. Root cause: `VS_VERSION_INFO` is a macro (`= 1`) defined in `winres.h`, which the .rc didn't include. Added `#include <winres.h>`; verified `FileVersion 1.0.0.0` / Product 1.0.0.0 / description / company via .NET `FileVersionInfo` and a direct PE resource-directory walk (tree: `named=0 id=1`, matching cmd.exe). Package rebuilt with the fixed exe.
+- **Soak note**: the 4 h soak was restarted on the fixed binary after the version-resource rebuild (the earlier run was interrupted by the rebuild's `Stop-Process`); CSV at `build/release/soak_m13.csv`, result read at completion and recorded below before M13 closes.
 
 ---
 

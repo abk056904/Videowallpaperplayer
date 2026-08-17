@@ -1,5 +1,45 @@
 // Application resources. The icon is embedded as the exe's application icon
-// (Explorer, taskbar, Alt-Tab, and any shown window use it).
+// (Explorer, taskbar, Alt-Tab, and any shown window use it). The version
+// block gives the exe a proper file version (Explorer Properties > Details).
 #include "resource.h"
+// winres.h defines VS_VERSION_INFO as 1, which is the numeric resource ID the
+// version APIs (GetFileVersionInfo, Explorer Properties) look up. Without it,
+// rc.exe emits a string-named resource that those APIs cannot find.
+#include <winres.h>
 
 IDI_APP_ICON ICON "..\\..\\video_wallpaper_engine_compact_rgb.ico"
+
+// clang-format off
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION     1,0,0,0
+ PRODUCTVERSION  1,0,0,0
+ FILEFLAGSMASK   0x3fL
+#ifdef _DEBUG
+ FILEFLAGS       0x1L
+#else
+ FILEFLAGS       0x0L
+#endif
+ FILEOS          0x40004L
+ FILETYPE        0x1L
+ FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Video Wallpaper"
+            VALUE "FileDescription", "Video Wallpaper - native Windows 11 video wallpaper engine"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "VideoWallpaper"
+            VALUE "LegalCopyright", "Apache-2.0"
+            VALUE "OriginalFilename", "VideoWallpaper.exe"
+            VALUE "ProductName", "Video Wallpaper"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+// clang-format on

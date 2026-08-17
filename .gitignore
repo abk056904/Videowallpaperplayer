@@ -19,3 +19,6 @@ config.json.bak
 # Scratch / temp (e.g. ffmpeg-synthesized test clips)
 scratch/
 tmp/
+
+# Packaging output (regenerable via package.ps1)
+dist/

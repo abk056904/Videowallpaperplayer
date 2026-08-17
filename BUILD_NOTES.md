@@ -727,3 +727,28 @@ M13 Part A (profiling + optimization) complete; Part B soak running. Per the int
 **NOT MEASURED (recorded for M14):** VRAM (no hardware decode on this machine; textures are one dynamic upload + hosts), 4K/AV1/HDR stress rows (no HW MFT), power/hot-plug scenarios (declined — disruptive, single display), and the soak result itself (completion ~22:50; CSV at `build/release/soak_m13.csv`).
 
 ---
+
+## M14 — Packaging, README, final report
+
+## Package
+
+- **`package.ps1`** (repo root): builds `dist/VideoWallpaper-<commit>.zip` — exe + the 3 MSVC runtime DLLs (`msvcp140`, `vcruntime140`, `vcruntime140_1`, copied from the VC redist) + `LICENSE` + `README.md`; nothing else (no debug binaries, symbols, samples, test assets, docs copies). Shaders are embedded in the exe (M2), so the package is fully self-contained apart from the runtime.
+- **Measured:** zip **1,047,290 B**, exe **1,602,048 B**, 6 files; DLL-import dump shows all imports are system DLLs except the MSVC runtime (those 3 ship). Verified from a clean extraction: the packaged exe runs, finds the primary instance, requests focus, exits 0.
+- **Gotcha (PowerShell + UTF-8):** `package.ps1` originally used em-dashes in its output strings; `write_file` writes UTF-8 without BOM and Windows PowerShell 5.1 parses .ps1 as ANSI, so the em-dash bytes broke parsing (cascading errors at unrelated lines). All output strings are now ASCII.
+
+## Version resource
+
+- `src/app/app.rc` gained a `VERSIONINFO` block (1.0.0.0, description, company, copyright, translation 0409/1200). **First attempt failed silently**: `GetVersionInfo`/`FileVersionInfo` returned empty even though the block compiled into the .res and the strings were in the exe.
+- **Root cause (PE forensics, not guessing):** the resource directory showed RT_VERSION with a **named** entry (offset to a string) instead of **numeric ID 1** — `VS_VERSION_INFO` in the .rc is a macro (`= 1`) defined in `winres.h`, which the .rc never included, so rc.exe emitted a string-named resource. Windows version APIs (`GetFileVersionInfo` → `FindResource(MAKEINTRESOURCE(1), RT_VERSION)`) look up by **ID 1**, hence empty. Verified against `cmd.exe` (RT_VERSION subdir `named=0 id=1`).
+- **Fix:** `#include <winres.h>` in `app.rc`. Verified: `FileVersion 1.0.0.0`, `ProductVersion 1.0.0.0`, description/company present; resource tree now `named=0 id=1` (matches cmd.exe). Package rebuilt with the fixed exe.
+- **Tooling lessons:** (1) `dumpbin /RESOURCES` is unrecognized in this SDK's dumpbin (use `/ALL` + grep or a direct PE walk); (2) a correct PE resource-directory walk must read the data directory at `optStart+112` for PE32+ and section headers at 40-byte stride with `NumberOfSections` at `peOff+6` (I burned several iterations on off-by-header errors); (3) Git-bash mangles `/RESOURCES`-style flags — use a `.bat` wrapper or double slash; (4) the version data block itself was valid all along (wLength 812, key `VS_VERSION_INFO`, VS_FIXEDFILEINFO sig 0xFEEF04BD, fileVersion 1.0.0.0) — the problem was purely the resource *name*.
+- **Soak note:** the running 4 h soak held the exe, so the version-resource rebuild required stopping it; the soak was restarted on the fixed binary (minute 1: 423.9 MB / 1368 handles / 37 threads — flat).
+
+## Docs
+
+- **`README.md`** replaced the M1 stub with the full §64 README: overview, architecture (diagram + module table), requirements, build/run, codecs/containers, hardware acceleration (honest probe + fallback), multi-monitor, measured performance table, game/fullscreen detection, config reference, troubleshooting, limitations, development, testing, and an explicit "how low idle usage is achieved" section.
+- **`docs/07-final-report.md`** — doc 1 §65 report + doc 3 §101 22-point list, every number measured (baselines, hot path, stress, package sizes) or `NOT MEASURED — reason`; includes the reduced-soak, single-display, no-HW-MFT, and declined-disruptive-tests statements the spec requires.
+- **`docs/08-resource-audit.md`** — doc 2 §102's 20 questions answered with measured data or explicit `NOT MEASURED`; ends with the doc 2 §101 acceptance verdict.
+- **`docs/README.md`** document map + `docs/06-progress-checklist.md` M14 section updated to link both.
+
+---

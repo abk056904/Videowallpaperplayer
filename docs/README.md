@@ -26,6 +26,8 @@ Where the documents differ in wording they agree in substance; where they disagr
 | [`04-testing-profiling.md`](04-testing-profiling.md) | Unit/integration test plan, performance test matrix, profiling methodology, resource budget targets, full acceptance checklist |
 | [`05-decisions-risks.md`](05-decisions-risks.md) | Key technology decisions, risk register with mitigations, open questions to confirm before/during implementation |
 | [`06-progress-checklist.md`](06-progress-checklist.md) | Live milestone-by-milestone checklist (M0–M14): tasks, exit criteria, and a status table to tick off as implementation proceeds |
+| [`07-final-report.md`](07-final-report.md) | **M14 final report** (doc 1 §65 + doc 3 §101, 22-point list): implemented features, build/test results, measured performance per state, known limitations, NOT MEASURED items |
+| [`08-resource-audit.md`](08-resource-audit.md) | **M14 resource-efficiency audit** (doc 2 §102): the 20 audit questions answered with measured numbers or explicit NOT MEASURED |
 | [`../implement-docs-plan-spec.md`](../implement-docs-plan-spec.md) | **Execution contract**: interview decisions, environment constraints, engineering standards, delivery workflow, per-milestone acceptance mapping (§9.1), UI panel specs (§10), definition of done |
 
 ## One-paragraph summary of the plan
