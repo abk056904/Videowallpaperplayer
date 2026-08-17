@@ -428,3 +428,38 @@ Post-M6 review of the playback/pacing diff with fresh eyes. Three fixes:
 Verified: **81/81 tests, 2653 assertions, Debug + Release, 0 warnings under /WX**; live smoke — app opens the 1440p60 clip and plays cleanly with the review build.
 
 ---
+
+# Video was rendered UPSIDE DOWN — root cause + fix (2026-08-17)
+
+User report: "the video it plays is not fit screen and upside down". Investigation with a pixel-level readback probe (renders a real decoded frame through the actual renderer, reads the back buffer back, compares against the CPU frame under both orientation hypotheses) found the video was **vertically flipped** on screen.
+
+## Root cause: the vertex-less triangle's UV convention vs D3D11 texture convention
+
+`VSMain` maps the fullscreen triangle such that **screen-top ↔ i.uv.y = 1** (the D3D viewport transform maps NDC +y to the top of the render target). D3D11 textures, unlike OpenGL, have **v = 0 at the TOP row** — so sampling `v = uv.y*sy + oy` directly puts the video's **bottom row at the top of the screen**. Every path shared the bug; it went unnoticed because the placeholder gradient is ambiguous and the M3 checkerboard is **even-cell-symmetric** (a vertical flip is visually identical). The first real video exposed it.
+
+## The fix (shader, both paths)
+
+`PSMainTexture` and `PSMainYuv` now flip v when mapping window UV → texture UV:
+
+```hlsl
+float2 texUv = float2(i.uv.x * scaleOffset.x + scaleOffset.z,
+                      1.0 - i.uv.y * scaleOffset.y - scaleOffset.w);
+```
+
+Identity (Fill + matching aspect): screen top → v = 0 (video top). Cropped Fill / Center / Fit: the centered band still shows, top-to-bottom (the flip composes with the scale/offset offsets correctly). `ScaleMath.h` is unchanged — it computes the window→texture mapping in the unflipped convention; the v-flip is the D3D11 texture-convention step, documented in the shader.
+
+## Verified (readback probe, pixel-exact)
+
+| Case | MAE upright | MAE flipped | Verdict |
+|---|---|---|---|
+| Identity Fill (800×450, 16:9) | **14.4** | 172.3 | UPRIGHT (was flipped: 12.6/172.3) |
+| Fill crop (800×600, 4:3) | **14.6** | 166.9 | UPRIGHT |
+| Center 1:1 (16:9, letterbox offsets) | **15.6** | 142.1 | UPRIGHT |
+
+(MAE ≈ 14 is bilinear filtering vs the probe's nearest-neighbor expectation — the match is exact to sampling; the 172-vs-14 gap is decisive.) The probe ALSO verified the scaling math end-to-end: Fill crops the correct axis (`sx=0.75, ox=0.125` on a 4:3 window), so the video fills the window edge-to-edge — the user's "not fit" impression was the flip's visible artifact (wrong half of the frame on screen), not a scaling bug. Live desktop sample after the fix: varied video content at all screen edges, no bars, no clear-color background, video playing via the expected software fallback. **81/81 tests, Debug + Release, 0 warnings.**
+
+## Toolchain note (cost this investigation real time)
+
+Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.
+
+---

@@ -39,10 +39,19 @@ float4 PSMain(PSInput i) : SV_Target {
 }
 
 // Software path: sample a decoded B8G8R8A8 frame. Applies the same scaling
-// mapping as the hardware path (texUv = uv*scale + offset; Fit/Center margins
-// come back black via the BORDER sampler).
+// mapping as the hardware path (Fit/Center margins come back black via the
+// BORDER sampler).
+//
+// VERTICAL ORIENTATION (M6 review fix, probe-verified): D3D11 textures have
+// v=0 at the TOP row, but this vertex-less triangle maps screen-top to
+// i.uv.y=1 — sampling v = uv.y*sy + oy directly would put the video's BOTTOM
+// at the top of the screen (upside down; the checkerboard's even-cell
+// symmetry hid it). v is therefore flipped: v' = 1 - (uv.y*sy + oy).
+// Identity (sy=1, oy=0): screen top -> v=0 (video top), bottom -> v=1.
+// Cropped Fill: the centered band [oy, oy+sy] still shows, top-to-bottom.
 float4 PSMainTexture(PSInput i) : SV_Target {
-    float2 texUv = i.uv * scaleOffset.xy + scaleOffset.zw;
+    float2 texUv = float2(i.uv.x * scaleOffset.x + scaleOffset.z,
+                          1.0 - i.uv.y * scaleOffset.y - scaleOffset.w);
     return videoTexture.Sample(linearSampler, texUv) * tint;
 }
 
@@ -60,7 +69,10 @@ float4 PSMainTexture(PSInput i) : SV_Target {
 // Fill = cover/crop, Fit = contain/letterbox, Stretch = full frame, Center =
 // 1:1) and the shader maps the fullscreen UV onto the texture UV.
 float4 PSMainYuv(PSInput i) : SV_Target {
-    float2 texUv = i.uv * scaleOffset.xy + scaleOffset.zw;
+    // Same v-flip as PSMainTexture (D3D11 v=0 = texture top; screen top is
+    // i.uv.y=1 — without the flip the video renders upside down).
+    float2 texUv = float2(i.uv.x * scaleOffset.x + scaleOffset.z,
+                          1.0 - i.uv.y * scaleOffset.y - scaleOffset.w);
     float y = yPlane.Sample(linearSampler, texUv).r;
     float2 uv = uvPlane.Sample(linearSampler, texUv).rg;
 
