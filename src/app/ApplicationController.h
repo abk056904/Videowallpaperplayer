@@ -6,6 +6,7 @@
 #include "app/ControlWindow.h"
 #include "config/ConfigurationManager.h"
 #include "performance/StatsCollector.h"
+#include "playlist/PlaylistManager.h"
 #include "wallpaper/WallpaperManager.h"
 
 namespace vw::playback {
@@ -33,7 +34,12 @@ private:
     bool acquireSingleInstance();
     void notifyExistingInstance() const;
     void initPaths();
+    void loadPlaylist(); // M7: load from AppData; seed from config on first run
     void startPlayback();
+    // M7: plays playlist item `index` (open + start + metadata cache). Marks
+    // the item unavailable and returns false when it cannot be played.
+    bool startPlaylistItem(size_t index);
+    void handleEndOfStream(); // M7: advance per playlist mode (loop/next/stop)
     void onFrameWake(); // M6: deadline or new-frame event -> schedule + present
     void shutdown();
 
@@ -45,6 +51,9 @@ private:
     std::unique_ptr<wallpaper::WallpaperManager> wallpaper_;
     std::unique_ptr<playback::PlaybackController> playback_;
     std::unique_ptr<performance::StatsCollector> statsCollector_; // M6→M9 telemetry
+    std::unique_ptr<playlist::PlaylistManager> playlist_; // M7
+    std::filesystem::path playlistPath_;                 // M7: AppData/playlist.json
+    std::wstring lastPlayedPath_;                        // M7: same-item loop detection
     bool mfStarted_ = false;
     ControlWindow control_;
 };

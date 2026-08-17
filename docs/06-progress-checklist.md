@@ -15,7 +15,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M4 — MF playback (software first) | ✅ | 2026-08-17 | Source Reader + RGB32 software decode + FrameQueue + VideoPlayer; app plays the configured clip (pause/resume/stop via registered messages, EOS, corrupt-file grace verified live). See notes below |
 | M5 — Hardware decoding + GPU color | ✅ | 2026-08-17 | DXGI manager + NV12 GPU path + YUV shader + honest decoder detection + **runtime probe with clean software fallback** (this machine's MF stack has no hardware MFT — see notes). Verified live. See notes below |
 | M6 — Frame timing & queue | ✅ | 2026-08-17 | FrameScheduler + PlaybackController + finalized FrameQueue: source-FPS pacing (presentedFps ≈ decodedFps, not monitor Hz), 0 drops, pause → 0.00 CPU-s/8 s, position preserved across pause (4716 → 4716 ms), message loop waits on {waitable timer, new-frame event} — zero busy-wait. 80/80 tests. See notes below |
-| M7 — Playlist engine | ☐ | — | |
+| M7 — Playlist engine | ✅ | 2026-08-17 | `PlaylistManager`/`PlaylistStore`, replay-loop, broken-item skip |
 | M8 — Multi-monitor & multi-GPU | ☐ | — | |
 | M9 — Detection & monitoring | ☐ | — | |
 | M10 — Resource governor & suspension | ☐ | — | |
@@ -210,17 +210,21 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** playlists with loop/shuffle/next/prev + persistence + transition preparation.
 
-- [ ] `PlaylistItem` (path, optional start/end, enabled) + ops (add/remove/move/replace/clear/next/prev/shuffle/setCurrent)
-- [ ] Modes: Single / Sequential / Loop playlist / Shuffle (no immediate repeat when >1 item; order persisted)
-- [ ] Persistence in AppData; saved on transition/shutdown/meaningful change only (never every second)
-- [ ] Next-video preparation: lightweight metadata + source-reader open near end (no full decode, no 2nd full pipeline)
-- [ ] Loop same video: reuse decoder/GPU resources; reset position only
-- [ ] Broken item → log, mark unavailable, advance; recovery later (M12 hardens)
-- [ ] Files: `src/playlist/PlaylistManager*`, `PlaylistStore*`
+- [x] `PlaylistItem` (path, optional start/end, enabled) + ops (add/remove/move/replace/clear/next/prev/shuffle/setCurrent)
+- [x] Modes: Single / Sequential / Loop playlist / Shuffle (no immediate repeat when >1 item; order persisted)
+- [x] Persistence in AppData; saved on transition/shutdown/meaningful change only (never every second)
+- [x] Next-video preparation: lightweight metadata + source-reader open near end (no full decode, no 2nd full pipeline)
+- [x] Loop same video: reuse decoder/GPU resources; reset position only
+- [x] Broken item → log, mark unavailable, advance; recovery later (M12 hardens)
+- [x] Files: `src/playlist/PlaylistManager*`, `PlaylistStore*`
 
-**Verify:** loop/shuffle/sequential behave per spec §18; 100+ item playlist starts instantly; seamless transitions (measure gap); RAM flat vs playlist size. **Exit:** ☐
+**Verify:** loop/shuffle/sequential behave per spec §18; 100+ item playlist starts instantly; seamless transitions (measure gap); RAM flat vs playlist size. **Exit:** ✅
 
 **Notes:**
+
+- **2026-08-17 (M7 complete)**: `src/playlist/PlaylistManager.{h,cpp}` + `PlaylistStore.{h,cpp}`; `VideoPlayer::replay()` + `PlaybackController::replay()` (same-item loop reuses reader/decoder/GPU — no reopen, no hardware re-probe); `DecoderManager::start()` always seeks (initial 0 / resume position / replay 0). **26 new tests** (ops, modes, shuffle permutation + no-immediate-repeat + regenerate-on-wrap + no-loop stop, persistence round-trip, corrupt recovery) → **109/109 tests** (33141 Debug / 341611 Release assertions), both configs, 0 warnings.
+- **Live-verified**: multi-item loop cycle 0→1→2→wrap (transitions ~80–150 ms open/start, ~50–60 ms session gap); metadata cache persisted to `playlist.json` (instant start on later runs); same-item loop cycles continuously via the replay path; broken item skipped permanently (marked unavailable).
+- **Real bug caught live**: `VideoPlayer::replay()` hung at EOS — it reset the `FrameQueue` BEFORE `decoder_.stop()`, and `DecoderManager::stop()` closes that same (now-destroyed) queue → use-after-free hang on the app thread. Fixed by stopping the decoder first (same order as `pause()`). The multi-item path never exercised replay, which is why only the live same-item loop exposed it.
 
 ---
 

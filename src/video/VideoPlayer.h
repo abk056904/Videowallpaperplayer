@@ -38,6 +38,12 @@ public:
     // (capacity set via setQueueCapacity, default 3) is created per start.
     Result<void> start();
 
+    // M7 loop same video (docs §34): reuses the open reader + decoder + GPU
+    // resources — resets playback position only (start() seeks the reader
+    // back to 0). Call at EOS to replay the current file without a reopen
+    // (no hardware re-probe, no metadata re-read).
+    Result<void> replay();
+
     // M6: queue capacity (config.playback.frameQueue). Applied on the next
     // start(); clamped to >= 1.
     void setQueueCapacity(size_t capacity) { queueCapacity_ = capacity == 0 ? 1 : capacity; }

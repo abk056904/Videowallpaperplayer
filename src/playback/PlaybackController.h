@@ -68,6 +68,11 @@ public:
     // Stops playback entirely and logs the session stats summary.
     void stop();
 
+    // M7 loop same video (docs §34): replays the currently open file reusing
+    // the reader/decoder + GPU resources — resets the timeline + position
+    // only (no reopen, no hardware re-probe). Valid after EOS.
+    Result<void> replay();
+
     State state() const { return state_; }
     bool isOpen() const { return player_ != nullptr; }
     const video::VideoMetadata& metadata() const;

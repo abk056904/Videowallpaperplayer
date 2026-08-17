@@ -117,6 +117,29 @@ void PlaybackController::stop() {
     state_ = State::Stopped;
 }
 
+Result<void> PlaybackController::replay() {
+    if (!player_ || !player_->isOpen()) {
+        return std::unexpected(L"PlaybackController::replay: no open file");
+    }
+    // Loop same video: reuse the reader/decoder + GPU resources; reset the
+    // timeline to media time 0 and the per-session stats (fresh loop cycle).
+    cancelTimer();
+    scheduler_.reset(util::Clock::instance().now100ns(), 0);
+    anchorPending_ = true;
+    stats_ = {};
+    auto result = player_->replay();
+    if (!result) {
+        return result;
+    }
+    state_ = State::Playing;
+    statsWindowStart_ = util::Clock::instance().now100ns();
+    decodedAtWindowStart_ = player_->decodedFrames();
+    presentedAtWindowStart_ = stats_.presentedFrames;
+    armTimer();
+    log::Logger::instance().info(L"playback looping (position reset)");
+    return {};
+}
+
 const video::VideoMetadata& PlaybackController::metadata() const {
     static const video::VideoMetadata empty;
     return player_ ? player_->metadata() : empty;

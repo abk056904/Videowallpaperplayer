@@ -44,6 +44,26 @@ Result<void> VideoPlayer::start() {
     return {};
 }
 
+Result<void> VideoPlayer::replay() {
+    if (!opened_) {
+        return std::unexpected(L"VideoPlayer::replay: no file opened");
+    }
+    // The worker has already exited at EOS — join it and drop the old queue,
+    // but KEEP the reader (decoder_.stop(), not close()): the loop reuses the
+    // decoder/reader and only resets the playback position (start() seeks the
+    // reader to 0 via DecoderManager). stop() FIRST: DecoderManager holds a
+    // raw pointer to this queue and closes it inside stop() — resetting the
+    // queue first would leave stop() closing a destroyed FrameQueue
+    // (use-after-free hang, seen live at EOS in M7).
+    decoder_.stop();
+    if (queue_) {
+        queue_.reset();
+    }
+    position_ = 0;
+    state_ = State::Stopped;
+    return start();
+}
+
 void VideoPlayer::pause() {
     if (state_ != State::Playing) {
         return;

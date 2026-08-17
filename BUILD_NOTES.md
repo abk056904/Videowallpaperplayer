@@ -479,6 +479,31 @@ The M6-collected playback stats now flow into a `StatsCollector` telemetry snaps
 
 ---
 
+## M7 — Playlist engine
+
+**Committed as `???????`** — playlist items/modes/persistence + loop-replay + broken-item skip.
+
+## What shipped
+
+- **`src/playlist/PlaylistManager`** — pure playlist policy (docs/03 §3.9): items + ops (add/remove/move/replace/clear), modes `Single | Sequential | Loop | Shuffle`, per-item `enabled`/start/end, `markUnavailable` (runtime-only; recovery later — M12), metadata cache (`updateCachedMetadata`), and `nextIndex()`/`previousIndex()` navigation. Shuffle = Fisher–Yates permutation persisted as `shuffleOrder`; **no immediate repeat** of the item just played (`shuffledPermutation` avoids `current` at position 0 when n>1); the order is **regenerated per cycle** on looped wrap (docs/03 §3.9) — the earlier "reuse forever" behavior was caught by the unit tests and fixed.
+- **`src/playlist/PlaylistStore`** — JSON persistence (D-06, the project's strict parser, no third-party dep): `{version, mode, loop, current, shuffleOrder, items[path, start/end100ns, enabled, duration100ns, width, height, codec]}`. Saved ONLY on transition/shutdown/meaningful change (never every second). Unknown keys ignored, wrong-typed values fall back to defaults; a file with a NEWER version is treated as corrupt (never guess) → caller seeds defaults. Atomic save (temp + rename); corrupt/invalid-UTF8 load → nullopt.
+- **Loop same video (docs §34): `VideoPlayer::replay()` + `PlaybackController::replay()`** — at EOS for the SAME item (Single self-loop / 1-item loop), the reader + decoder + GPU resources are REUSED: no reopen, no hardware re-probe, no source-reader churn. `DecoderManager::start()` now **always seeks** the reader (initial 0, resume position, and replay 0 after the reader was left at EOS — skipping the seek would make a replay immediately hit EOS again).
+- **App wiring** — `ApplicationController` owns the playlist: loads from AppData (seeds from `config.playback` mode/loop + `videoPath` on first run/corrupt), advances on EOS per mode, marks broken items unavailable and advances (bounded loop: every non-returning iteration marks one item unavailable), caches real metadata at each transition, saves at shutdown.
+
+## Verified live (this machine, Debug + Release)
+
+- **Multi-item loop cycle**: 3-item playlist, EOS → next item in **~80–150 ms open/start** (gap between session end and next present ~50–60 ms); full cycle 0→1→2→**wrap to 0**; transitions logged with open cost (`transition to playlist item N ... in X ms`).
+- **Metadata cache persisted**: after one pass, `playlist.json` holds real duration/width/height/codec for all items (loaded instantly on later runs, no decode).
+- **Same-item loop (replay path)**: 1-item playlist loops continuously — `decode end of stream → playback looping (position reset)` with the reader reused; steady-state cycles every ~16 s (decode-limited software path) with no reopen and no re-probe.
+- **Broken-item skip**: nonexistent file marked unavailable (`MFCreateSourceReaderFromURL failed: 0x80070002`), the loop advanced to the next playable item in ~40 ms, and the broken item was skipped on every subsequent cycle (0→2→0→2…).
+- **109/109 tests, 0 warnings under /WX, both configs** (26 playlist tests: ops, modes, shuffle permutation/no-immediate-repeat/regenerate-on-wrap/no-loop-stop, persistence round-trip, corrupt recovery, adoption).
+
+## Real bug caught live (and why the unit tests didn't)
+
+**`VideoPlayer::replay()` hung at EOS — use-after-free on the frame queue.** The original order was `queue_->close(); queue_.reset(); decoder_.stop();` — but `DecoderManager` holds a raw pointer to that same `FrameQueue` and calls `queue_->close()` inside `stop()`. Resetting the queue first left `stop()` closing a **destroyed** queue (freed mutex/condvar) → the app thread hung silently right after `decode end of stream` (no crash, no log). The multi-item path never hit it (transitions go through `open()`, which tears down cleanly); only the same-item loop exercised replay. Instrumented with probe logs → bisected to the replay chain → fixed by stopping the decoder BEFORE dropping the queue (matching `pause()`'s order). **All live-verified paths (multi-item, same-item loop, broken-skip) now confirmed end-to-end.**
+
+---
+
 ## Toolchain note (cost this investigation real time)
 
 Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.

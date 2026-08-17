@@ -361,7 +361,11 @@ Result<void> DecoderManager::start(FrameQueue* queue, LONGLONG position100ns) {
     }
     queue_ = queue;
 
-    if (position100ns > 0) {
+    // Always reposition the reader: initial start (0), resume (saved
+    // position), and M7 loop replay (0, after the reader was left at EOS by a
+    // completed stream). Seeking a fresh reader to 0 is harmless; skipping the
+    // seek would make a replay immediately hit EOS again.
+    {
         PROPVARIANT var{};
         var.vt = VT_I8;
         var.hVal.QuadPart = position100ns;

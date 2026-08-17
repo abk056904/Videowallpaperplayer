@@ -8,6 +8,7 @@
 
 #include "logging/Logger.h"
 #include "playback/PlaybackController.h"
+#include "playlist/PlaylistStore.h"
 #include "util/clock.h"
 #include "video/DecodedFrame.h"
 
@@ -25,6 +26,17 @@ gfx::D3D11Renderer::Scaling rendererScalingFrom(config::ScalingMode m) {
         case config::ScalingMode::Fill: return gfx::D3D11Renderer::Scaling::Fill;
     }
     return gfx::D3D11Renderer::Scaling::Fill;
+}
+
+// config.playback.mode -> playlist mode (M7).
+playlist::Mode playlistModeFrom(config::PlaybackMode m) {
+    switch (m) {
+        case config::PlaybackMode::Single: return playlist::Mode::Single;
+        case config::PlaybackMode::Sequential: return playlist::Mode::Sequential;
+        case config::PlaybackMode::Loop: return playlist::Mode::Loop;
+        case config::PlaybackMode::Shuffle: return playlist::Mode::Shuffle;
+    }
+    return playlist::Mode::Loop;
 }
 } // namespace
 
@@ -88,6 +100,10 @@ int ApplicationController::run() {
     // Telemetry aggregator (spec §10.12): holds the latest snapshot; the
     // playback session feeds it ~1 Hz; WorkloadMonitor completes it at M9.
     statsCollector_ = std::make_unique<performance::StatsCollector>();
+
+    // M7: playlist (items/modes/persistence). Loaded from AppData; seeded
+    // from config.playback on first run.
+    loadPlaylist();
 
     control_.setHandler([this](UINT msg, WPARAM wParam, LPARAM) {
         auto& log = log::Logger::instance();
@@ -187,12 +203,13 @@ int ApplicationController::run() {
 
 void ApplicationController::startPlayback() {
     auto& log = log::Logger::instance();
-    if (!config_ || config_->config().videoPath.empty()) {
-        log.info(L"no playback.videoPath configured — wallpaper shows the test texture");
+    if (!playlist_ || playlist_->empty()) {
+        log.info(L"playlist is empty — wallpaper shows the test texture");
         return;
     }
-    const std::wstring path = config_->config().videoPath;
-    playback_ = std::make_unique<playback::PlaybackController>();
+    if (!playback_) {
+        playback_ = std::make_unique<playback::PlaybackController>();
+    }
     if (statsCollector_) {
         statsCollector_->reset(); // fresh session: no stale telemetry
         // Telemetry stream (spec §10.12): each per-second stats recompute is
@@ -217,22 +234,130 @@ void ApplicationController::startPlayback() {
     if (wallpaper_) {
         wallpaper_->setScaling(rendererScalingFrom(config_->config().scaling));
     }
-    auto opened =
-        playback_->open(path, wallpaper_ ? wallpaper_->device() : nullptr,
-                        static_cast<size_t>(config_->config().frameQueue));
-    if (!opened) {
-        log.warn(L"cannot open video '{}': {}", path, opened.error());
-        playback_.reset();
-        return;
+    if (playlist_->currentIndex() == playlist::PlaylistManager::kNoIndex) {
+        playlist_->setCurrent(0);
     }
-    // PlaybackController logs the full open + start diagnostics.
-    if (auto started = playback_->start(); !started) {
-        log.warn(L"playback start failed: {}", started.error());
-        playback_.reset();
-        return;
+    if (!startPlaylistItem(playlist_->currentIndex())) {
+        log.warn(L"initial playlist item could not be played — wallpaper shows the test texture");
     }
     // M6: no frame timer — the message loop waits on the controller's
     // waitable timer + new-frame event (source-FPS pacing, zero busy-wait).
+}
+
+void ApplicationController::loadPlaylist() {
+    auto& log = log::Logger::instance();
+    playlistPath_ = appDataDir_ / L"playlist.json";
+    auto loaded = playlist::PlaylistStore::load(playlistPath_);
+    if (loaded) {
+        playlist_ = std::make_unique<playlist::PlaylistManager>(std::move(*loaded));
+        log.info(L"playlist: {} item(s) loaded, current={}, mode={}, loop={}",
+                 playlist_->size(), playlist_->currentIndex(),
+                 playlist::PlaylistStore::modeName(playlist_->mode()),
+                 playlist_->loop() ? L"on" : L"off");
+        return;
+    }
+    // First run (or corrupt store — recovery = defaults): seed from config
+    // (docs/03 §3.9). mode/loop come from config.playback on first run and
+    // are persisted from then on.
+    playlist::PlaylistData base;
+    base.mode = playlistModeFrom(config_->config().mode);
+    base.loop = config_->config().loop;
+    playlist_ = std::make_unique<playlist::PlaylistManager>(std::move(base));
+    const std::wstring& path = config_->config().videoPath;
+    if (!path.empty()) {
+        playlist_->add(path);
+        playlist_->setCurrent(0);
+    }
+    if (auto saved = playlist::PlaylistStore::save(playlistPath_, playlist_->data()); !saved) {
+        log.warn(L"playlist seed save failed: {}", saved.error());
+    }
+    log.info(L"playlist: initialized from config (videoPath={}), mode={}, loop={}",
+             path.empty() ? L"(none)" : path,
+             playlist::PlaylistStore::modeName(playlist_->mode()),
+             playlist_->loop() ? L"on" : L"off");
+}
+
+bool ApplicationController::startPlaylistItem(size_t index) {
+    auto& log = log::Logger::instance();
+    const playlist::PlaylistItem* item = playlist_->itemAt(index);
+    if (!item || playlist_->isUnavailable(index)) {
+        return false;
+    }
+    if (wallpaper_) {
+        wallpaper_->setScaling(rendererScalingFrom(config_->config().scaling));
+    }
+    const LONGLONG t0 = util::Clock::instance().now100ns();
+    auto opened =
+        playback_->open(item->path, wallpaper_ ? wallpaper_->device() : nullptr,
+                        static_cast<size_t>(config_->config().frameQueue));
+    if (!opened) {
+        log.warn(L"playlist item {} '{}' cannot be opened: {} — marking unavailable", index,
+                 item->path, opened.error());
+        playlist_->markUnavailable(index);
+        return false;
+    }
+    // Cache real metadata back into the item (lightweight prep, docs/03
+    // §3.9: persisted so a large playlist starts instantly on later runs;
+    // never decoded frames). Transition = meaningful change — save now.
+    const auto& m = playback_->metadata();
+    playlist_->updateCachedMetadata(index, m.duration100ns, m.width, m.height, m.codec);
+    if (auto saved = playlist::PlaylistStore::save(playlistPath_, playlist_->data()); !saved) {
+        log.warn(L"playlist save failed: {}", saved.error());
+    }
+    if (auto started = playback_->start(); !started) {
+        log.warn(L"playback start failed for '{}': {} — marking unavailable", item->path,
+                 started.error());
+        playlist_->markUnavailable(index);
+        return false;
+    }
+    const double openMs = static_cast<double>(util::Clock::instance().now100ns() - t0) / 10000.0;
+    lastPlayedPath_ = item->path;
+    log.info(L"transition to playlist item {} ('{}') in {:.1f} ms", index, item->path, openMs);
+    return true;
+}
+
+void ApplicationController::handleEndOfStream() {
+    auto& log = log::Logger::instance();
+    if (!playlist_ || !playback_) {
+        return;
+    }
+    // A session that presented zero frames is broken (opens but decodes
+    // nothing) — mark it unavailable (M7; M12 hardens with attempt tracking).
+    if (playback_->stats().presentedFrames == 0) {
+        if (const auto* item = playlist_->currentItem()) {
+            log.warn(L"playlist item produced no frames — marking unavailable: {}", item->path);
+        }
+        playlist_->markUnavailable(playlist_->currentIndex());
+    }
+    const size_t prev = playlist_->currentIndex();
+    size_t next = playlist_->nextIndex();
+    // Bounded: every non-returning iteration marks one item unavailable, so
+    // this can never loop forever on a playlist of broken files.
+    for (size_t tries = 0; tries <= playlist_->size(); ++tries) {
+        if (next == playlist::PlaylistManager::kNoIndex) {
+            log.info(L"playlist ended — holding the last frame");
+            playback_->stop();
+            return;
+        }
+        const playlist::PlaylistItem* nextItem = playlist_->itemAt(next);
+        if (next == prev && nextItem && nextItem->path == lastPlayedPath_ &&
+            playback_->isOpen()) {
+            // Same item (Single self-loop / 1-item loop): reuse the open
+            // reader + decoder — no reopen, no hardware re-probe (docs §34).
+            if (auto replayed = playback_->replay(); replayed) {
+                return;
+            }
+            log.warn(L"loop replay failed — marking item unavailable: {}", nextItem->path);
+            playlist_->markUnavailable(next);
+        }
+        playlist_->setCurrent(next);
+        if (startPlaylistItem(next)) {
+            return;
+        }
+        next = playlist_->nextIndex(); // failed open marked it unavailable — advance
+    }
+    log.warn(L"no playable playlist items — holding the last frame");
+    playback_->stop();
 }
 
 void ApplicationController::onFrameWake() {
@@ -247,8 +372,7 @@ void ApplicationController::onFrameWake() {
         return;
     }
     if (frame->endOfStream) {
-        log.info(L"video stream ended — stopping playback");
-        playback_->stop(); // last frame stays on screen (loop/next is M7)
+        handleEndOfStream(); // M7: loop / next / stop per the playlist mode
         return;
     }
     if (auto set = wallpaper_->setVideoFrame(*frame); !set) {
@@ -277,6 +401,12 @@ void ApplicationController::shutdown() {
     if (mfStarted_) {
         ::MFShutdown();
         mfStarted_ = false;
+    }
+    if (playlist_) {
+        if (auto saved = playlist::PlaylistStore::save(playlistPath_, playlist_->data());
+            !saved) {
+            log::Logger::instance().warn(L"playlist save failed at shutdown: {}", saved.error());
+        }
     }
     if (config_) config_->save();
     control_.destroy(); // destroys the window
