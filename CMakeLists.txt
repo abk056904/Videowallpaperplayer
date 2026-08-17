@@ -118,6 +118,11 @@ set(VW_PLAYBACK_SOURCES
     src/playback/PlaybackController.cpp
 )
 
+# Performance module sources (M6→M9: telemetry aggregation for the UI).
+set(VW_PERFORMANCE_SOURCES
+    src/performance/StatsCollector.cpp
+)
+
 # Media Foundation libraries (M4+; evr provides MR_VIDEO_ACCELERATION_SERVICE).
 set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf evr)
 
@@ -137,6 +142,7 @@ add_executable(VideoWallpaper WIN32
     ${VW_GRAPHICS_SOURCES}
     ${VW_VIDEO_SOURCES}
     ${VW_PLAYBACK_SOURCES}
+    ${VW_PERFORMANCE_SOURCES}
     ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr}
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
@@ -168,6 +174,7 @@ add_executable(vw_tests
     tests/test_monitors.cpp
     tests/test_playback.cpp
     tests/test_scale.cpp
+    tests/test_stats.cpp
     tests/test_video.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
@@ -178,6 +185,7 @@ add_executable(vw_tests
     src/graphics/TextureManager.cpp
     ${VW_VIDEO_SOURCES}
     ${VW_PLAYBACK_SOURCES}
+    ${VW_PERFORMANCE_SOURCES}
 )
 target_include_directories(vw_tests PRIVATE src tests)
 target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 d3d11 dxgi ${VW_MF_LIBS})

@@ -229,6 +229,13 @@ void PlaybackController::updateStats(LONGLONG now, LONGLONG frameDecodeTime100ns
     decodedAtWindowStart_ = decoded;
     presentedAtWindowStart_ = stats_.presentedFrames;
 
+    // Feed the telemetry stream (StatsCollector via the app, spec §10.12):
+    // ~1 Hz while playing. The observer must not block (it only copies stats
+    // into the collector's snapshot).
+    if (statsObserver_) {
+        statsObserver_(stats_);
+    }
+
     // Aggregate DEBUG stats ~ every 5 s (never spams the INFO log).
     if (now - lastStatsLog_ >= 5 * k100nsPerSecond) {
         lastStatsLog_ = now;

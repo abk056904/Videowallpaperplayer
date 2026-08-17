@@ -5,6 +5,7 @@
 
 #include "app/ControlWindow.h"
 #include "config/ConfigurationManager.h"
+#include "performance/StatsCollector.h"
 #include "wallpaper/WallpaperManager.h"
 
 namespace vw::playback {
@@ -43,6 +44,7 @@ private:
     std::unique_ptr<config::ConfigurationManager> config_;
     std::unique_ptr<wallpaper::WallpaperManager> wallpaper_;
     std::unique_ptr<playback::PlaybackController> playback_;
+    std::unique_ptr<performance::StatsCollector> statsCollector_; // M6→M9 telemetry
     bool mfStarted_ = false;
     ControlWindow control_;
 };

@@ -85,6 +85,10 @@ int ApplicationController::run() {
         log.warn(L"config: {}", config_->lastError());
     }
 
+    // Telemetry aggregator (spec §10.12): holds the latest snapshot; the
+    // playback session feeds it ~1 Hz; WorkloadMonitor completes it at M9.
+    statsCollector_ = std::make_unique<performance::StatsCollector>();
+
     control_.setHandler([this](UINT msg, WPARAM wParam, LPARAM) {
         auto& log = log::Logger::instance();
         if (msg == ControlWindow::focusMessage()) {
@@ -189,6 +193,25 @@ void ApplicationController::startPlayback() {
     }
     const std::wstring path = config_->config().videoPath;
     playback_ = std::make_unique<playback::PlaybackController>();
+    if (statsCollector_) {
+        statsCollector_->reset(); // fresh session: no stale telemetry
+        // Telemetry stream (spec §10.12): each per-second stats recompute is
+        // aggregated into the collector's snapshot; the wallpaper's monitor
+        // feeds the per-monitor detail. Never blocks (copy-only observer).
+        playback_->setStatsObserver([this](const playback::PlaybackStats& s) {
+            if (!statsCollector_ || !wallpaper_) {
+                return;
+            }
+            statsCollector_->updatePlayback(s.decodedFps, s.presentedFps, s.droppedFrames,
+                                            s.decodeLatencyMs, s.renderTimeMs,
+                                            playback_->hardwareDecoding());
+            const auto& monitors = wallpaper_->monitors();
+            if (!monitors.empty()) {
+                statsCollector_->updatePerMonitor(monitors.front().id, s.presentedFps,
+                                                  s.droppedFrames);
+            }
+        });
+    }
     // M5: hardware decode on the wallpaper's D3D device (same adapter);
     // scaling per config.playback.scaling (Fill default).
     if (wallpaper_) {

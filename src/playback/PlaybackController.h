@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -92,6 +93,13 @@ public:
 
     const PlaybackStats& stats() const { return stats_; }
 
+    // Observer invoked after each per-second stats recompute (~1 Hz while
+    // Playing; NOT invoked while paused/stopped — values freeze). The app
+    // wires this to StatsCollector (spec §10.12 telemetry stream).
+    void setStatsObserver(std::function<void(const PlaybackStats&)> observer) {
+        statsObserver_ = std::move(observer);
+    }
+
 private:
     void armTimer();
     void cancelTimer();
@@ -111,6 +119,7 @@ private:
     double latencySumMs_ = 0.0;
     uint64_t latencyCount_ = 0;
     LONGLONG lastStatsLog_ = 0; // wall 100 ns of the last DEBUG stats line
+    std::function<void(const PlaybackStats&)> statsObserver_;
 };
 
 } // namespace vw::playback

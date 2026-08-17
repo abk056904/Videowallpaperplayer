@@ -458,6 +458,27 @@ Identity (Fill + matching aspect): screen top → v = 0 (video top). Cropped Fil
 
 (MAE ≈ 14 is bilinear filtering vs the probe's nearest-neighbor expectation — the match is exact to sampling; the 172-vs-14 gap is decisive.) The probe ALSO verified the scaling math end-to-end: Fill crops the correct axis (`sx=0.75, ox=0.125` on a 4:3 window), so the video fills the window edge-to-edge — the user's "not fit" impression was the flip's visible artifact (wrong half of the frame on screen), not a scaling bug. Live desktop sample after the fix: varied video content at all screen edges, no bars, no clear-color background, video playing via the expected software fallback. **81/81 tests, Debug + Release, 0 warnings.**
 
+---
+
+# StatsCollector wiring (2026-08-17, pulled forward from M9)
+
+The M6-collected playback stats now flow into a `StatsCollector` telemetry snapshot instead of waiting for M9.
+
+## What shipped
+
+- **`src/app/UiContract.h`** (namespace `vw::ui`) — the shared UI contract header per spec §10.12/§10.13, currently defining `TelemetrySnapshot` exactly as specced (workload fields `cpuUsage/gpuUsage/gpuMemory*/systemMemoryUsed` + playback fields `decodedFps/presentedFps/droppedFrames/decodeLatencyMs/renderTimeMs/hardwareDecode` + `perMonitor` vector). Windows-free by design; the rest of the contract (commands, sink, notifications, `UiSnapshot`) lands with M11.
+- **`src/performance/StatsCollector`** — thread-safe aggregator holding the latest `TelemetrySnapshot`; `updatePlayback(...)` fills the playback fields, `updatePerMonitor(...)` replace-or-appends per monitor, `snapshot()` returns a consistent copy, `reset()` clears. DEBUG-logged `telemetry:` line at ~1 Hz (the exact stream the M11 UI will render).
+- **`PlaybackController::setStatsObserver`** — invoked after each per-second stats recompute (~1 Hz while Playing; not while paused/stopped — values freeze). Copy-only, never blocks.
+- **App wiring** — `ApplicationController` owns a `StatsCollector`, resets it per playback session, and feeds it from the observer (playback fields + the wallpaper monitor's per-monitor detail).
+
+## Verified
+
+- **7 new unit tests** (defaults, field mapping, overwrite, per-monitor append/replace-by-id, snapshot copy independence, reset, concurrent updates/reads) → **88/88 tests** (28720 Debug / 344983 Release assertions), both configs, 0 warnings under /WX.
+- **Live (Debug build)**: `telemetry: decoded 36.0 fps, presented 36.0 fps, 0 dropped, decodeLatency 0.1 ms, render 0.6 ms, hardwareDecode=no` at ~1 Hz, matching `PlaybackController`'s `stats:` line — end-to-end flow confirmed.
+- **Workload fields remain 0** until M9's `WorkloadMonitor` fills them (documented in the header); per-monitor detail is single-monitor for now (M8 adds real per-monitor sessions).
+
+---
+
 ## Toolchain note (cost this investigation real time)
 
 Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.
