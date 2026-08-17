@@ -669,7 +669,7 @@ Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.
 
 ## M12 — Recovery hardening
 
-**Committed as ``** — per docs/03 §3.14 / docs/02 §2.6 + the M12 fault-injection matrix.
+**Committed as `da97111`** — per docs/03 §3.14 / docs/02 §2.6 + the M12 fault-injection matrix.
 
 ## What shipped
 
