@@ -71,9 +71,14 @@ int ApplicationController::run() {
         log.warn(L"config: {}", config_->lastError());
     }
 
-    control_.setHandler([&log](UINT msg, WPARAM, LPARAM) {
+    control_.setHandler([this](UINT msg, WPARAM, LPARAM) {
+        auto& log = log::Logger::instance();
         if (msg == ControlWindow::focusMessage()) {
             log.info(L"second instance requested focus (UI arrives in M11)");
+        } else if (msg == WM_TIMER && wallpaper_) {
+            wallpaper_->onTick(); // Explorer-restart validity stub (~1 Hz)
+        } else if ((msg == WM_DISPLAYCHANGE || msg == WM_DEVICECHANGE) && wallpaper_) {
+            wallpaper_->onDisplayChange();
         }
     });
 
@@ -82,6 +87,15 @@ int ApplicationController::run() {
         shutdown();
         return 1;
     }
+
+    // M3: wallpaper behind desktop icons.
+    wallpaper_ = std::make_unique<wallpaper::WallpaperManager>();
+    const auto wallpaperResult = wallpaper_->start();
+    if (!wallpaperResult) {
+        log.error(L"wallpaper start failed: {}", wallpaperResult.error());
+    }
+    // 1 Hz validity check — only while the wallpaper exists (docs/02 §2.8).
+    ::SetTimer(control_.handle(), kWallpaperTimerId, 1000, nullptr);
 
     log.info(L"Video Wallpaper v{} starting", L"0.1.0");
     log.info(L"appdata dir: {}", appDataDir_.wstring());
@@ -104,6 +118,11 @@ void ApplicationController::shutdown() {
     // docs/03 §3.17 (M1 subset): stop accepting commands -> save state -> close
     // window -> flush logs -> release handles -> exit.
     if (config_) config_->save();
+    if (wallpaper_) {
+        ::KillTimer(control_.handle(), kWallpaperTimerId);
+        wallpaper_->shutdown(); // tear down hosts BEFORE the pump dies
+        wallpaper_.reset();
+    }
     control_.destroy(); // destroys the window
     log::Logger::instance().flush();
     if (mutex_) {

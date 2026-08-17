@@ -76,6 +76,10 @@ void Logger::log(Level l, std::wstring msg) {
         if (file_) {
             file_.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
             bytes_ += approxBytes;
+            // Flush every line: a wallpaper app runs for days; buffered writes
+            // would be invisible to tailing and lost on crash/kill (observed
+            // during M3 verification). Volume is tiny (<1 Hz steady state).
+            file_.flush();
         }
     }
 }

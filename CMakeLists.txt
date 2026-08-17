@@ -100,6 +100,9 @@ add_executable(VideoWallpaper WIN32
     src/app/ControlWindow.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
+    src/monitors/MonitorManager.cpp
+    src/wallpaper/WallpaperHost.cpp
+    src/wallpaper/WallpaperManager.cpp
     src/util/json.cpp
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
@@ -131,8 +134,10 @@ add_executable(vw_tests
     tests/test_logger.cpp
     tests/test_utf8.cpp
     tests/test_graphics.cpp
+    tests/test_monitors.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
+    src/monitors/MonitorManager.cpp
     src/util/json.cpp
     src/util/utf8.cpp
     src/graphics/D3D11DeviceManager.cpp

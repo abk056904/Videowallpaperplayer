@@ -165,3 +165,57 @@ Pre-M5 de-risking: `vw_gfx_harness --video <path>` decodes ONE frame via the pro
   2. Set **`MF_MT_DEFAULT_STRIDE`** on the requested RGB32 type (via `MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, w, &stride)`).
 - Side effect of the probe: the harness now prints the **native video subtype** GUID (`{34363248-...}` = H264, `{43564548-...}` = HEVC) — useful for M5 decoder-mode diagnostics.
 - Note for M5: the Source Reader + `SetCurrentMediaType` on the NV12/P010 GPU path must also set `MF_MT_DEFAULT_STRIDE` and the D3D manager attributes — same negotiation class of bugs.
+
+---
+
+# M3 Build Notes — Wallpaper host (2026-08-17)
+
+M3 exit criteria met: checkerboard renders **behind desktop icons** full-screen, host is click-through, survives a live `explorer.exe` kill/restart with hosts rebuilt automatically. Verified on this machine in Debug + Release.
+
+## Desktop arrangement on this machine (the big finding)
+
+**Windows 11 24H2+ (build 26200) uses a DIFFERENT wallpaper-layer arrangement than the canonical one:**
+
+```text
+Progman (top-level)
+├── SHELLDLL_DefView → SysListView32   # icons — stay INSIDE Progman
+└── WorkerW (spawned by 0x052C)        # CHILD of Progman, bottom of its z-order = the wallpaper layer
+```
+
+- The canonical code (find a top-level `WorkerW` containing `SHELLDLL_DefView`, then take the next WorkerW) finds **no DefView in any top-level WorkerW** here. Naively falling back to Progman puts the host ABOVE the icons (bad).
+- The working discovery: after 0x052C, if no top-level DefView WorkerW exists, take the **first WorkerW child of Progman** (this build spawns exactly one, at the bottom of Progman's child z-order → behind icons).
+- `WallpaperManager::discoverDesktop()` handles arrangement A (classic), arrangement B (this machine), and the no-WorkerW fallback; the actual arrangement is logged at startup.
+- Note: many orphaned top-level WorkerWs accumulate across Explorer restarts on this build (12 found) — the discovery ignores them.
+
+## Child-window DPI virtualization (gotcha #11)
+
+- A `WS_CHILD` window parented into another process's window (Explorer is system-DPI-aware at **120 DPI / 125%** here) is **DPI-virtualized into the parent's context regardless of the creating thread's DPI awareness**: physical rect = requested × 96/parentDpi. Requesting 1920×1080 yielded a 1536×864 window (then 1229×691 after an attempted divide fix).
+- Fix: request `physical × parentDpi/96` via `GetDpiForWindow(parent)`; the swap chain keeps the **physical** size so the back buffer stays crisp. Verified: host rect exactly (0,0)-(1920,1080).
+
+## Click-through (no WS_EX_TRANSPARENT needed)
+
+- **Grid scan (45 points): the host window is NEVER the `WindowFromPoint` hit-test target** (0/45). The entire desktop (background + icons) is routed through the shell's XAML input system on this build — classic HWND hit-testing doesn't even reach the desktop's own ListView (no SysListView32 hits either). Structurally the host is also below the icon layer.
+- Caveat recorded: SendInput-driven context-menu testing does NOT work in this environment (no menu appears even over Chrome) — the click-through conclusion rests on the hit-test scan + z-order structure; a manual right-click spot-check is still worthwhile.
+
+## Explorer-restart recovery (stub, verified live)
+
+- `taskkill /f /im explorer.exe` → the app's 1 Hz tick logged `wallpaper layer invalidated (Explorer restart?) — rebuilding` within 1 s, retried while the shell was dead, and on Explorer's return **auto-rediscovered the new Progman/WorkerW and recreated the host** (new handles, 1920×1080, behind icons) — no app restart, verified via window enumeration.
+
+## Bug found by M3 integration: `D3D11DeviceManager::createDevice(nullptr)` → E_INVALIDARG
+
+- `D3D11CreateDevice` with a **null adapter requires `D3D_DRIVER_TYPE_HARDWARE`** (the `UNKNOWN` driver type only pairs with an explicit adapter). The harness always passed an adapter (`getAdapter(index)`), so M2 never hit it; the app passes null → 0x80070057. Fixed with a driver-type switch on the adapter pointer.
+
+## Logger change (M3-adjacent)
+
+- **`Logger` now flushes every line.** The old buffered writes were invisible to `tail` during long runs and were lost entirely on force-kill (observed: a 2-minute run's log was 0 bytes after `taskkill /F`). Volume is tiny (<1 Hz steady state) so per-line flush is free.
+
+## Verified on this machine
+
+| Check | Result |
+|---|---|
+| Host placement | parent=Progman-child WorkerW, rect (0,0)-(1920,1080), below `SHELLDLL_DefView` in z-order |
+| Visibility | shown after first present (created hidden to avoid black flash) |
+| Debug layer | ON in Debug (feature 11_1), OFF in Release (correct) |
+| Click-through | host never hit-tested (0/45 grid points) |
+| Explorer kill/restart | detected in ≤1 s, hosts rebuilt automatically |
+| Tests | 54/54 (3 new monitor tests), 2316 assertions, both configs, 0 warnings under /WX |

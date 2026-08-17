@@ -98,8 +98,14 @@ Result<void> D3D11DeviceManager::createDevice(IDXGIAdapter1* adapter, bool wantD
 
     auto& log = log::Logger::instance();
 
+    // D3D11CreateDevice contract: UNKNOWN driver type requires a non-null
+    // adapter (default adapter selection only works with HARDWARE). The
+    // harness always passes an adapter; the app may pass nullptr.
+    const D3D_DRIVER_TYPE driverType =
+        (adapter != nullptr) ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+
     if (wantDebugLayer) {
-        HRESULT hr = ::D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+        HRESULT hr = ::D3D11CreateDevice(adapter, driverType, nullptr,
                                          baseFlags | D3D11_CREATE_DEVICE_DEBUG, levels, 2,
                                          D3D11_SDK_VERSION, &device_, &featureLevel_, &context_);
         if (SUCCEEDED(hr)) {
@@ -111,9 +117,8 @@ Result<void> D3D11DeviceManager::createDevice(IDXGIAdapter1* adapter, bool wantD
         }
     }
     if (!device_) {
-        HRESULT hr = ::D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, baseFlags,
-                                         levels, 2, D3D11_SDK_VERSION, &device_, &featureLevel_,
-                                         &context_);
+        HRESULT hr = ::D3D11CreateDevice(adapter, driverType, nullptr, baseFlags, levels, 2,
+                                         D3D11_SDK_VERSION, &device_, &featureLevel_, &context_);
         if (FAILED(hr)) {
             return std::unexpected(L"D3D11CreateDevice failed: " + formatHr(hr));
         }

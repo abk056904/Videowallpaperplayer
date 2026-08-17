@@ -11,8 +11,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M0 — Environment & toolchain audit | ✅ | 2026-08-17 | MSVC 14.44.35207 + SDK 10.0.26100.0 + CMake 4.4.2 installed & verified (Debug+Release hello build). See `BUILD_NOTES.md` |
 | M1 — Build skeleton | ✅ | 2026-08-17 | CMake x64 C++23, Debug+Release green, 16/16 unit tests, control window + single instance + config/log verified. See notes below |
 | M2 — Direct3D 11 renderer | ✅ | 2026-08-17 | DeviceManager + Renderer + TextureManager, build-time fxc with embedded shaders, verified on both GPUs at ~147 FPS (vsync), feature level 11_1, 51/51 tests. See notes below |
-| M2 — D3D11 renderer | ☐ | — | |
-| M3 — Wallpaper host | ☐ | — | |
+| M3 — Wallpaper host | ✅ | 2026-08-17 | Checkerboard behind desktop icons, per-monitor hosts, Explorer-restart recovery verified live (kill/restart). See notes below |
 | M4 — MF playback (software first) | ☐ | — | |
 | M5 — Hardware decoding + GPU color | ☐ | — | |
 | M6 — Frame timing & queue | ☐ | — | |
@@ -25,7 +24,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M13 — Profiling, optimization & stability | ☐ | — | |
 | M14 — Packaging, README, final report | ☐ | — | |
 
-**Current milestone:** _M3 — Wallpaper host_
+**Current milestone:** _M4 — Media Foundation playback (software first)_
 
 ---
 
@@ -116,9 +115,15 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - [ ] Explorer-restart detection stub (low-frequency validity check → rebuild hook; full logic in M12)
 - [ ] Files: `src/wallpaper/WallpaperHost*`, `WallpaperManager*`, `src/monitors/MonitorManager*`
 
-**Verify:** wallpaper behind icons; survives manual `explorer.exe` kill/restart with hosts rebuilt; multi-monitor positioning correct. **Exit:** ☐
+**Verify:** wallpaper behind icons; survives manual `explorer.exe` kill/restart with hosts rebuilt; multi-monitor positioning correct. **Exit:** ☑
 
 **Notes:**
+- **Arrangement B (this machine, Win11 24H2+ 26200)**: `SHELLDLL_DefView` stays INSIDE Progman and 0x052C spawns a WorkerW as a **child of Progman** at the bottom of its z-order — that child is the wallpaper layer. The classic "top-level WorkerW with DefView" arrangement does not exist here. Discovery handles both; the actual hierarchy is logged (`arrangement A` vs `arrangement B` vs `no WorkerW`).
+- **Child-window DPI virtualization**: a WS_CHILD window parented to another process's window (Explorer, system-DPI-aware at 120 DPI here) is virtualized into the parent's DPI context — the physical rect = requested × 96/parentDpi, regardless of the creating thread's context. Fix: request `physical × parentDpi/96`; the swap chain keeps the physical size (crisp back buffer). Verified: host rect = (0,0)-(1920,1080) exactly.
+- **Click-through**: host is **never the WindowFromPoint hit-test target** (grid scan: 0/45 points; the desktop is routed through the shell's XAML input system on this build) + structurally below the icon layer → no `WS_EX_TRANSPARENT` needed. Note: SendInput-driven context-menu testing is impossible in this environment (no menu appears even over Chrome) — flagged for a manual spot-check.
+- **Explorer-restart stub verified end-to-end**: kill explorer → detected within 1 s (log), retried while shell dead, automatic rediscovery + host rebuild (new Progman/WorkerW handles) on Explorer return — no app restart.
+- **Bonus fixes found during M3 integration**: `D3D11DeviceManager::createDevice` failed with E_INVALIDARG for a null adapter (D3D11CreateDevice requires `D3D_DRIVER_TYPE_HARDWARE` with null adapter, not `UNKNOWN`) — the harness always passed an adapter so M2 missed it; `Logger` now flushes per line (buffered writes were invisible to tailing and lost on force-kill).
+- Static test texture (black/white checkerboard, 512×512, 32 px cells) renders behind icons full-screen via the M5-preview textured PS path.
 
 ---
 
