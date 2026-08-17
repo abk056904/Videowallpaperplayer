@@ -215,15 +215,22 @@ void WallpaperManager::recreateDeviceResources() {
     //    playback re-uploads on the next frame; a paused wallpaper shows the
     //    test texture until playback resumes — documented limitation).
     layer_ = {};
-    if (discoverDesktop() && ensureTestTexture() && createHosts()) {
-        if (auto rendered = renderAll(); !rendered) {
-            log.warn(L"post-recreate render incomplete: {}", rendered.error());
-        }
-    }
+    const bool rebuilt = discoverDesktop() && ensureTestTexture() && createHosts();
+    // The DEVICE is back regardless — clear the device-retry state (a hosts
+    // failure is the Explorer-restart path's job, not a device issue).
     recreateFailures_ = 0;
     ticksSinceRecreate_ = 0;
     deviceLostLogged_ = false;
-    log.info(L"device recreate complete — wallpaper resumed");
+    if (rebuilt) {
+        if (auto rendered = renderAll(); !rendered) {
+            log.warn(L"post-recreate render incomplete: {}", rendered.error());
+        }
+        log.info(L"device recreate complete — wallpaper resumed");
+    } else {
+        // The device is healthy but the desktop isn't (Explorer dead/restarting)
+        // — the Explorer-restart check rebuilds hosts when the shell returns.
+        log.warn(L"device recreated but hosts not built (Explorer unavailable?) — will retry");
+    }
 }
 
 Result<void> WallpaperManager::rebindLastFrames() {
@@ -243,7 +250,9 @@ Result<void> WallpaperManager::rebindLastFrames() {
             }
         }
     }
-    // Independent path: per-monitor textures on their own hosts.
+    // Independent path: per-monitor textures on their own hosts, each with
+    // ITS OWN aspect (different videos can have different aspects — using the
+    // clone path's frameDisplayAspect_ here was wrong: 0 in Independent mode).
     for (auto& [monitorId, slot] : perMonitorFrames_) {
         if (!slot.srv) {
             continue;
@@ -254,7 +263,7 @@ Result<void> WallpaperManager::rebindLastFrames() {
             continue; // monitor gone — its host is recreated from monitors_
         }
         auto result =
-            (*hostIt)->setVideoTexture(slot.srv.Get(), frameDisplayAspect_, scaling_);
+            (*hostIt)->setVideoTexture(slot.srv.Get(), slot.displayAspect, scaling_);
         if (!result) {
             anyError = true;
             log::Logger::instance().warn(L"rebind per-monitor texture failed for {}: {}",
@@ -635,8 +644,10 @@ Result<void> WallpaperManager::setVideoFrameFor(const std::wstring& monitorId,
     if (!uploaded) {
         return uploaded;
     }
-    const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
-    return (*hostIt)->setVideoTexture(slot.srv.Get(), aspect, scaling_);
+    // Remember THIS frame's display aspect for the M12 rebind path (each
+    // monitor can run a different-resolution video with its own aspect).
+    slot.displayAspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+    return (*hostIt)->setVideoTexture(slot.srv.Get(), slot.displayAspect, scaling_);
 }
 
 Result<void> WallpaperManager::bindFrameTexture() {

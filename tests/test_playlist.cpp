@@ -146,13 +146,19 @@ TEST_CASE("playlist: next/previous skip disabled items") {
 }
 
 TEST_CASE("playlist: next skips unavailable items (broken files)") {
+    // M12 review: a single failure is RETRYABLE (recovery-on-later-attempts) —
+    // only an item at the attempt CAP is skipped as dead for the rest of the
+    // run.
     PlaylistManager pm = threeItemPlaylist();
     pm.setMode(vw::playlist::Mode::Sequential);
     pm.setLoop(false);
     pm.setCurrent(0);
-    pm.markUnavailable(1);
+    for (unsigned k = 0; k < PlaylistManager::kMaxAttempts; ++k) {
+        pm.markUnavailable(1);
+    }
     CHECK(pm.isUnavailable(1));
-    CHECK(pm.nextIndex() == 2); // skips the broken item
+    CHECK(pm.attemptCount(1) == PlaylistManager::kMaxAttempts);
+    CHECK(pm.nextIndex() == 2); // skips the dead (capped) item
 }
 
 TEST_CASE("playlist: previous walks backward with wrap") {
@@ -264,8 +270,12 @@ TEST_CASE("playlist: shuffle navigation never returns a non-playable item") {
     pm.add(L"c.mp4");
     pm.setMode(vw::playlist::Mode::Shuffle);
     pm.setCurrent(1);
-    pm.markUnavailable(0);
-    pm.markUnavailable(2);
+    // Mark 0 and 2 to the CAP so they are genuinely dead this run (a single
+    // failure is now retryable — M12 review).
+    for (unsigned k = 0; k < PlaylistManager::kMaxAttempts; ++k) {
+        pm.markUnavailable(0);
+        pm.markUnavailable(2);
+    }
     // Only b is playable — navigation must land on it from either direction.
     CHECK(pm.nextIndex() == 1);
     CHECK(pm.previousIndex() == 1);
@@ -510,4 +520,69 @@ TEST_CASE("playlist: adopt resets attempts and unavailable state") {
     pm.adopt(std::move(data)); // e.g. a library refresh / new store load
     CHECK_FALSE(pm.isUnavailable(0));
     CHECK(pm.attemptCount(0) == 0);
+}
+
+// ---- M12 review: recovery-on-later-attempts (retry at the top of
+// nextIndex), replace() reset, Shuffle consistency --------------------------
+
+TEST_CASE("playlist: a broken item is retried on later cycles, then capped") {
+    // [a(0), b(1), c(2)] Loop, current=0. b fails once -> it is RETRIED on
+    // the next cycle (a restored file recovers mid-run); after the attempt
+    // cap it stays skipped.
+    PlaylistManager pm = threeItemPlaylist();
+    pm.setMode(vw::playlist::Mode::Loop);
+    pm.setCurrent(0);
+
+    // First walk: b is available (not yet failed) and visited.
+    size_t next = pm.nextIndex();
+    REQUIRE(next == 1);
+    // Simulate b failing on open.
+    pm.markUnavailable(1);
+    pm.setCurrent(next);
+
+    // Walk the rest of the cycle: 2, then wrap to 0 (b skipped this lap).
+    next = pm.nextIndex(); // 1 unavailable -> skip to 2
+    REQUIRE(next == 2);
+    pm.setCurrent(2);
+    next = pm.nextIndex(); // wrap -> 0 (b still unavailable this lap)
+    REQUIRE(next == 0);
+    pm.setCurrent(0);
+
+    // Next lap: the retry-at-top re-enables b (1 attempt < cap) -> visited
+    // again (the restored-file case).
+    next = pm.nextIndex();
+    REQUIRE(next == 1);
+    CHECK_FALSE(pm.isUnavailable(1)); // re-enabled by the navigation retry
+    CHECK(pm.attemptCount(1) == 1);
+}
+
+TEST_CASE("playlist: shuffle dead-end also retries uncapped items") {
+    // M12 review fix: the retry is uniform across modes — all-unavailable in
+    // Shuffle re-enables uncapped items instead of stopping dead.
+    PlaylistManager pm = threeItemPlaylist();
+    pm.setMode(vw::playlist::Mode::Shuffle);
+    pm.setLoop(true);
+    pm.setCurrent(0);
+    pm.markUnavailable(0);
+    pm.markUnavailable(1);
+    pm.markUnavailable(2);
+    // Single failure each (attempts 1 < 3): the navigation retry re-enables
+    // all of them -> a playable item comes back, not kNoIndex.
+    const size_t next = pm.nextIndex();
+    CHECK(next != PlaylistManager::kNoIndex);
+    CHECK_FALSE(pm.isUnavailable(next)); // the retried item is playable again
+}
+
+TEST_CASE("playlist: replace resets unavailable and attempts for the new file") {
+    PlaylistManager pm = threeItemPlaylist();
+    pm.markUnavailable(0);
+    pm.markUnavailable(0);
+    CHECK(pm.attemptCount(0) == 2);
+    PlaylistItem replacement;
+    replacement.path = L"new.mp4";
+    REQUIRE(pm.replace(0, replacement));
+    CHECK_FALSE(pm.isUnavailable(0));
+    CHECK(pm.attemptCount(0) == 0);
+    CHECK(pm.itemAt(0)->path == L"new.mp4");
+    CHECK(pm.itemAt(0)->duration100ns == 0); // cached metadata cleared too
 }

@@ -372,10 +372,12 @@ int wmain(int argc, wchar_t** argv) {
             }
             if (!running) break;
 
-            // M12 fault injection: simulate a lost device mid-run (after 120
-            // frames) — the next 1 Hz onTick must tear down, recreate the
-            // device, rebuild hosts, and rendering must continue.
-            if (deviceLossTest && !lossInjected && frames == 120) {
+            // M12 fault injection: simulate a lost device mid-run — the next
+            // 1 Hz onTick must tear down, recreate the device, rebuild hosts,
+            // and rendering must continue. Injects at 120 frames, or half the
+            // frame budget for short runs (so --frames < 240 still tests it).
+            const uint64_t injectAt = maxFrames > 0 ? std::min<uint64_t>(120, maxFrames / 2) : 120;
+            if (deviceLossTest && !lossInjected && frames == injectAt) {
                 wallpaper.requestDeviceRecreate();
                 lossInjected = true;
                 std::printf("gfx_harness: device loss injected (recreate requested)\n");
@@ -408,7 +410,7 @@ int wmain(int argc, wchar_t** argv) {
                 lastTick = now;
             }
 
-            if (lossInjected && !lossVerified && !wallpaper.isDeviceLost() && frames > 120) {
+            if (lossInjected && !lossVerified && !wallpaper.isDeviceLost() && frames > injectAt) {
                 std::printf("gfx_harness: device recreated + wallpaper recovered "
                             "(%llu frames so far, %zu host(s))\n",
                             static_cast<unsigned long long>(frames), wallpaper.hostCount());

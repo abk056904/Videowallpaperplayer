@@ -170,6 +170,7 @@ private:
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
         UINT width = 0;
         UINT height = 0;
+        float displayAspect = 0.0f; // SAR-corrected aspect of THIS frame (rebind)
     };
     std::map<std::wstring, PerMonitorFrame> perMonitorFrames_;
     gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;

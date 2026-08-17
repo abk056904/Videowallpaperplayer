@@ -219,12 +219,10 @@ TEST_CASE("library: non-video probe never crashes (listed, metadata unknown)") {
     lib.addFolder(s.root.wstring());
     CHECK(lib.size() == 2);
     // Probing the fake .mp4s: probe fails -> metadata stays unknown, listed.
-    vw::ui::LibraryItemId firstId = 0;
-    for (const auto& i : lib.items()) {
-        firstId = i.id;
-        break;
-    }
-    REQUIRE(firstId != 0);
+    // (Explicit front() — MSVC C4702 fires on a range-for whose body
+    // unconditionally breaks.)
+    REQUIRE(!lib.items().empty());
+    const vw::ui::LibraryItemId firstId = lib.items().front().id;
     CHECK(lib.requestMetadata(firstId));
     CHECK(waitFor(lib, [&] { return lib.metadataProbesCompleted() >= 1; }));
     const auto* after = lib.itemById(firstId);

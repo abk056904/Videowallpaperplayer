@@ -96,11 +96,14 @@ bool PlaylistManager::replace(size_t index, const PlaylistItem& item) {
     }
     data_.items[index] = item;
     // A different file may be behind the same index — clear the cached
-    // metadata (stale until the next real open refreshes it, docs §32).
+    // metadata (stale until the next real open refreshes it, docs §32), and
+    // reset the M12 unavailable/attempt state (the NEW file never failed).
     data_.items[index].duration100ns = 0;
     data_.items[index].width = 0;
     data_.items[index].height = 0;
     data_.items[index].codec.clear();
+    unavailable_[index] = false;
+    attempts_[index] = 0;
     return true;
 }
 
@@ -148,22 +151,22 @@ size_t PlaylistManager::nextIndex() {
     if (data_.items.empty()) {
         return kNoIndex;
     }
+    // M12 recovery-on-later-attempts: every navigation re-enables the
+    // unavailable items whose per-run attempt count is below the cap (a
+    // RESTORED file plays within a few cycles — no app restart needed);
+    // capped items stay dead. Bounded: each re-enabled item consumes an
+    // attempt when it fails again. Uniform across every mode (Single/Sequential
+    // /Loop/Shuffle). O(n) only while ANY item is unavailable.
+    if (std::any_of(unavailable_.begin(), unavailable_.end(), [](bool u) { return u; })) {
+        retryUnavailableOnce();
+    }
     switch (data_.mode) {
         case Mode::Single:
             return isPlayable(data_.current) ? data_.current : kNoIndex;
         case Mode::Sequential:
         case Mode::Loop: {
             const bool wrap = data_.loop || data_.mode == Mode::Loop;
-            size_t next = advanceFrom(data_.current, wrap);
-            if (next == kNoIndex) {
-                // M12 dead-end recovery: every remaining item is unavailable —
-                // re-enable the retryable ones (attempts below the cap) once
-                // so a RESTORED file can play without an app restart; capped
-                // items stay dead. Bounded: each retry consumes an attempt.
-                retryUnavailableOnce();
-                next = advanceFrom(data_.current, wrap);
-            }
-            return next;
+            return advanceFrom(data_.current, wrap);
         }
         case Mode::Shuffle: {
             // Position of the current item in the shuffled order.

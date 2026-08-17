@@ -687,4 +687,15 @@ Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.
 - **Live — playing-file rename**: renamed the playing mp4 mid-playback → the open reader kept decoding at ~33 fps, **no errors, no crash**; file restored after.
 - **NOT MEASURED (recorded for M14)**: a real GPU driver reset / adapter disable (declined — risky on this laptop; the injection + `GetDeviceRemovedReason` path is code-reviewed and the recreate is proven).
 
+### M12 review fixes (2026-08-17, before M13)
+
+1. **`rebindLastFrames` used the wrong aspect on the Independent path**: it passed the clone path's `frameDisplayAspect_` — which is **0 in Independent mode** — to every per-monitor rebind, so after an Explorer restart the frame rebind computed identity UV (a stretched frame, no crop/scale). Invisible on this machine only because the content (16:9) matches the monitor aspect. `PerMonitorFrame` now stores its own `displayAspect` (set by `setVideoFrameFor`, used by `rebindLastFrames`).
+2. **Dead-end-only retry was too weak**: a single broken file among healthy ones was never retried mid-run — the retry only fired when the WHOLE playlist was stuck. Replaced with **retry-at-top of `nextIndex`**: every navigation re-enables the unavailable items whose per-run attempt count is below the cap (a restored file plays within a few cycles; capped items stay dead). Uniform across Single/Sequential/Loop/Shuffle. The O(n) scan only runs while any item is unavailable (noted for the M13 hot-path audit).
+3. **`replace()` left the replaced item unavailable** with its old attempt count (a new file at the same index stayed dead for the run) — now resets unavailable + attempts.
+4. **`recreateDeviceResources` reset the failure counter + logged "complete" even when the rebuild failed** (Explorer dead during the recreate) — the device-retry state now clears (the device IS back) but the log distinguishes "wallpaper resumed" vs "hosts not built (Explorer unavailable?) — will retry" (the Explorer-restart path handles that).
+5. **Harness `--device-loss` injection clamped to `min(120, frames/2)`** so `--frames < 240` still exercises the injection.
+6. **The recurring MSVC C4702 was NOT transient** (it kept reappearing on every test_library.cpp recompile) — root-caused with a 17-line repro: MSVC flags a range-for whose body unconditionally `break`s as "unreachable code". The flagged loop is now an explicit `items().front()` lookup.
+
+**3 new tests → 169/169**, Debug + Release, 0 warnings. Harness `--device-loss` re-verified (inject → recovered at 146, rendered to 300); app smoke clean.
+
 ---
