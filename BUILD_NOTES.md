@@ -753,3 +753,17 @@ M13 Part A (profiling + optimization) complete; Part B soak running. Per the int
 - **`docs/README.md`** document map + `docs/06-progress-checklist.md` M14 section updated to link both.
 
 ---
+
+## M14 follow-up — UI resource review
+
+Goal: minimum resource use while keeping a decent UI (spec doc 1 §42 / doc 2 §77: stop expensive UI work when minimized to tray).
+
+- **The main finding — the 2 Hz telemetry timer ran forever.** `syncUiSubscription()` subscribed while `ui_->exists()` (window *created*), not `isVisible()`. With `minimizeToTray=true` (the default) closing the window only hid it, so the subscription stayed armed and every 500 ms the app ran `library_->pollChangeEvents()`, `config_->maybeFlushDirty()`, ~10 `SetWindowTextW` calls on hidden controls, and `updateTrayFromState()` — indefinitely. That is exactly the "expensive UI work" the specs say to stop when minimized to tray.
+- **Fix:** `syncUiSubscription()` now keys on `ui_->isVisible()`. Subscribed only while visible; hidden-to-tray or destroyed → `unsubscribe()` (timer killed). All open paths re-sync: the control-window FOCUS handler, the ShowUi/ToggleUi/Focus commands, and the onClose handler (both the hide and destroy branches — previously only destroy synced).
+- **Pull-on-open (decent-UI gap):** opening the UI previously pushed telemetry only to Home; Library/Playlists/Monitors/Performance/Settings stayed empty until the next change notification. Subscribe now pushes the current telemetry snapshot **and** calls `ui_->refreshFromSnapshot(getUiSnapshot())` so every panel shows current values immediately (spec §10.12).
+- **Bonus real bug — persisted `logLevel` ignored at startup.** The Logger level was set from the build macro (`VW_DEBUG` → Debug, else Info) and the config's `logLevel` was applied only via `applyConfigSetLive` (a Settings-panel change). Setting Debug in the panel persisted it, but a restart silently reverted to Info. Now honored at startup from `config.json` (debug|warn|error|info).
+- **Live verification** (`build/release/ui_timer_verify.ps1`, Release exe, config `logLevel=debug`): a debug tick marker in `onUiTelemetryTick` proves the timer state — ticks/6 s = **0** (startup, UI closed) → **12** (UI open, 2 Hz × 6 s) → **0** (WM_CLOSE → hidden to tray) → **12** (reopened via FOCUS). Handles/threads: UI open adds the 6-panel control set (~+420 handles, flat, bounded — consistent with M11's leak-cycle proof); RAM stable ~423–455 MB across all four phases.
+- **Verification scripts:** `build/release/ui_timer_verify.ps1` (this review's timer on/off check) and `build/release/ui_verify.ps1` (earlier CPU/handle sampling — CPU delta is dominated by the decode worker, so the tick marker is the reliable signal).
+- **Tests:** 171/171 both configs, 0 warnings (Debug 33,813 / Release 322,490 assertions).
+
+---

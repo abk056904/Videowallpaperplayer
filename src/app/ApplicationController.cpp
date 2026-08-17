@@ -130,6 +130,17 @@ int ApplicationController::run() {
     } else if (!config_->lastError().empty()) {
         log.warn(L"config: {}", config_->lastError());
     }
+    // Persisted logLevel (info|debug|warn|error) is honored at startup — the
+    // Settings panel persists it, so a restart must keep the same verbosity
+    // instead of silently reverting to the build default.
+    {
+        const auto& ll = config_->config().logLevel;
+        log::Logger::instance().setLevel(
+            ll == L"debug" ? log::Level::Debug
+                            : (ll == L"warn" ? log::Level::Warn
+                                              : (ll == L"error" ? log::Level::Error
+                                                                 : log::Level::Info)));
+    }
 
     // Telemetry aggregator (spec §10.12): holds the latest snapshot; the
     // playback session feeds it ~1 Hz; WorkloadMonitor completes it at M9.
@@ -169,6 +180,9 @@ int ApplicationController::run() {
             log.info(L"second instance requested focus");
             if (ui_) {
                 ui_->show();
+                // (Re)arm the telemetry subscription — the window may have
+                // been destroyed or hidden-to-tray (unsubscribed) earlier.
+                syncUiSubscription();
             }
         } else if (msg == commandWakeMessage()) {
             drainCommands(); // M11: UI/tray commands run on the control thread
@@ -399,13 +413,16 @@ int ApplicationController::run() {
         });
     ui_->setOnClose([this]() {
         // Spec §10.1: close hides to tray per config; otherwise the window is
-        // destroyed (engine + tray keep running either way).
+        // destroyed (engine + tray keep running either way). Both paths must
+        // re-sync the subscription: hidden-to-tray stops the 2 Hz telemetry
+        // timer (UI resources dormant, not active) and destroy releases the
+        // window's handles entirely.
         if (config_ && config_->config().minimizeToTray) {
             ui_->hide();
         } else {
             ui_->destroy();
-            syncUiSubscription();
         }
+        syncUiSubscription();
     });
 
     // Home panel GPU adapter field (first hardware adapter — cosmetic).
@@ -1133,14 +1150,26 @@ void ApplicationController::syncUiSubscription() {
     if (!ui_) {
         return;
     }
-    const bool uiExists = ui_->exists();
-    if (uiExists && sink_ != ui_.get()) {
+    // Subscribe only while the UI is VISIBLE, not merely created: with
+    // minimizeToTray the window survives hidden, and keeping the 2 Hz
+    // telemetry timer (library drain, config flush, hidden SetWindowText,
+    // tray tooltip) armed for a hidden window is exactly the "expensive UI
+    // work" the specs say to stop when minimized to tray (doc 2 §77, doc 1
+    // §42). Reopen re-subscribes + pulls the full snapshot below.
+    const bool uiVisible = ui_->isVisible();
+    if (uiVisible && sink_ != ui_.get()) {
         subscribe(ui_.get());
         if (sink_) {
             sink_->onTelemetry(statsCollector_ ? statsCollector_->snapshot()
                                                : vw::ui::TelemetrySnapshot{});
+            // Pull-on-open (spec §10.12): every panel gets current values
+            // before the first push — not just telemetry. (Previously only
+            // Home got the immediate push; Library/Playlists/Monitors/
+            // Performance/Settings stayed empty until the next change
+            // notification re-pulled.)
+            ui_->refreshFromSnapshot(getUiSnapshot());
         }
-    } else if (!uiExists && sink_) {
+    } else if (!uiVisible && sink_) {
         unsubscribe();
     }
 }
@@ -1149,6 +1178,9 @@ void ApplicationController::onUiTelemetryTick() {
     if (!sink_) {
         return;
     }
+    // DEBUG tick marker (runtime-gated): proves the 2 Hz timer is armed
+    // only while the UI is visible — no line while hidden-to-tray.
+    log::Logger::instance().debug(L"ui telemetry tick (2 Hz, UI visible)");
     if (library_) {
         library_->pollChangeEvents();
     }
