@@ -556,7 +556,7 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ## UNIVERSAL CROP/SCALE RULE — anamorphic (SAR) correction (2026-08-17, user: "make the crop and scale rule more universal")
 
-**Committed as `2f5a1b9`** — the crop/scale rule (crop evenly to the target aspect, scale to fill, no bars, no distortion) was already universal in one sense: `ScaleMath.h` computes against the **window's** aspect ratio, never a hardcoded 16:9. The gap was **sample aspect ratio (SAR)**: the renderer consumed the raw pixel dims, so anamorphic content (non-square pixels — e.g. 720×480 DVD, SAR 10:11) cropped/scaled to the wrong aspect and distorted.
+**Committed as `f5e33b2`** — the crop/scale rule (crop evenly to the target aspect, scale to fill, no bars, no distortion) was already universal in one sense: `ScaleMath.h` computes against the **window's** aspect ratio, never a hardcoded 16:9. The gap was **sample aspect ratio (SAR)**: the renderer consumed the raw pixel dims, so anamorphic content (non-square pixels — e.g. 720×480 DVD, SAR 10:11) cropped/scaled to the wrong aspect and distorted.
 
 ## What shipped
 
