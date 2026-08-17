@@ -535,7 +535,7 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ## M8 — Multi-monitor & multi-GPU (single-display scope)
 
-**Committed as `????????`** — per spec §6/§82/§125: real multi-monitor/hot-plug is **NOT MEASURED on this machine** (one display); the substitute is simulated-topology unit tests + single-monitor e2e. Multi-GPU adapter association is implemented + unit-tested; presentation locality is per-host vsync-blocked swap chains.
+**Committed as `c394ff5`** — per spec §6/§82/§125: real multi-monitor/hot-plug is **NOT MEASURED on this machine** (one display); the substitute is simulated-topology unit tests + single-monitor e2e. Multi-GPU adapter association is implemented + unit-tested; presentation locality is per-host vsync-blocked swap chains.
 
 ## What shipped
 
