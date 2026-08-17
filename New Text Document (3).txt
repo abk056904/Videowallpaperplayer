@@ -1,0 +1,2691 @@
+# PROJECT: ULTRA-LOW-RESOURCE WINDOWS 11 VIDEO WALLPAPER ENGINE
+
+You are a senior Windows systems engineer, C++ performance engineer,
+Direct3D 11 engineer, Media Foundation engineer, multimedia engineer,
+and Windows desktop application developer.
+
+Your task is to DESIGN, IMPLEMENT, BUILD, TEST, PROFILE, AND OPTIMIZE
+a native Windows 11 video wallpaper application.
+
+Do not merely provide an architecture or tutorial.
+
+You must actually inspect the repository, create the project, implement
+the application, compile it, test it, diagnose errors, and optimize it.
+
+============================================================
+# 1. FUNDAMENTAL OBJECTIVE
+============================================================
+
+The application's PRIMARY purpose is:
+
+    Play video files as animated Windows 11 desktop wallpapers.
+
+Its PRIMARY engineering objective is:
+
+    MINIMUM PRACTICAL RESOURCE CONSUMPTION.
+
+The application must use as little as reasonably possible:
+
+    - RAM
+    - CPU
+    - GPU
+    - VRAM
+    - disk space
+    - CPU wakeups
+    - threads
+    - handles
+    - filesystem I/O
+    - GPU memory transfers
+    - CPU↔GPU copies
+    - background activity
+    - power/battery
+
+while maintaining smooth, reliable video playback.
+
+IMPORTANT:
+
+Do NOT interpret "high performance" as:
+
+    "use as much CPU/GPU as possible."
+
+Interpret it as:
+
+    "produce the required visual output with the least amount of
+     hardware work possible."
+
+The application should never consume resources simply because
+those resources are available.
+
+The fundamental optimization principle is:
+
+    DO THE LEAST AMOUNT OF WORK NECESSARY TO DISPLAY THE CURRENT FRAME.
+
+And:
+
+    IF THE USER CANNOT SEE THE WALLPAPER, DO ALMOST NO VIDEO WORK.
+
+And:
+
+    IF THE CURRENT VIDEO FRAME HAS NOT CHANGED, DO NOT REDRAW IT
+    UNNECESSARILY.
+
+And:
+
+    IF PLAYBACK IS PAUSED, STOP THE DECODER AND RENDERER WHEN
+    PRACTICAL.
+
+============================================================
+# 2. TECHNOLOGY DECISION
+============================================================
+
+Use a NATIVE C++ implementation.
+
+Preferred:
+
+    C++20 or newer
+    MSVC
+    Windows 11 SDK
+    Win32
+    Direct3D 11
+    DXGI
+    Media Foundation
+    Windows APIs
+
+Do NOT use:
+
+    Electron
+    Chromium
+    WebView2
+    Unity
+    Unreal Engine
+    Qt
+    Avalonia
+    WPF
+    WinUI runtime as the core engine
+    .NET runtime
+    Java
+    Python
+    JavaScript runtime
+
+unless there is an extremely strong technical reason.
+
+The application should preferably be a single native executable
+with only the minimum required Windows/system dependencies.
+
+The reason for avoiding large frameworks is NOT that they are
+necessarily slow.
+
+The reason is that this application has an unusually strict
+resource-footprint objective.
+
+============================================================
+# 3. UI TECHNOLOGY
+============================================================
+
+Use native Win32 for the UI unless there is a compelling reason
+to use something else.
+
+The UI only needs to provide:
+
+    - playlist management
+    - video library management
+    - wallpaper selection
+    - monitor selection
+    - playback settings
+    - performance settings
+    - pause behavior
+    - game detection settings
+    - fullscreen detection settings
+    - battery behavior
+    - system tray controls
+
+The UI must NOT be responsible for:
+
+    - video decoding
+    - frame scheduling
+    - GPU rendering
+    - performance monitoring at high frequency
+    - wallpaper rendering
+    - video frame buffering
+
+The UI must be separable from the playback engine.
+
+When the settings window is closed:
+
+    release UI-specific resources.
+
+Do not keep unnecessary UI resources alive.
+
+============================================================
+# 4. TARGET APPLICATION MODEL
+============================================================
+
+The application should behave like a lightweight background
+Windows component.
+
+Normal operation:
+
+    Windows
+       |
+       +---- Native wallpaper engine
+                  |
+                  +---- Media Foundation
+                  |
+                  +---- D3D11
+                  |
+                  +---- DXGI
+                  |
+                  +---- Win32 wallpaper host
+                  |
+                  +---- Resource Governor
+
+There should NOT be:
+
+    one process per monitor
+    one process per video
+    one process per decoder
+    one process for performance monitoring
+    one process for the UI
+    background Windows service
+
+Prefer:
+
+    ONE native process.
+
+============================================================
+# 5. NO WINDOWS SERVICE
+============================================================
+
+Do not create a Windows Service.
+
+The wallpaper engine should be a normal user application.
+
+When the user exits the application:
+
+    all resources are released
+    wallpaper state is cleaned up
+    process terminates
+
+Do not leave a hidden service running.
+
+============================================================
+# 6. CORE ARCHITECTURE
+============================================================
+
+Design the application approximately as:
+
+    Application
+        |
+        +-- ApplicationController
+        |
+        +-- WallpaperManager
+        |
+        +-- MonitorManager
+        |
+        +-- PlaybackManager
+        |
+        +-- DecoderManager
+        |
+        +-- D3D11Renderer
+        |
+        +-- FrameScheduler
+        |
+        +-- PlaylistManager
+        |
+        +-- ResourceGovernor
+        |
+        +-- WorkloadDetector
+        |
+        +-- GameDetector
+        |
+        +-- FullscreenDetector
+        |
+        +-- SystemStateMonitor
+        |
+        +-- ConfigurationManager
+        |
+        +-- LibraryManager
+        |
+        +-- ThumbnailCache
+        |
+        +-- TrayController
+        |
+        +-- Win32UI
+
+Keep the architecture modular, but DO NOT over-engineer it.
+
+Do not create dozens of unnecessary abstraction layers.
+
+The code should remain understandable and measurable.
+
+============================================================
+# 7. CORE RESOURCE STATES
+============================================================
+
+Implement an explicit resource state machine.
+
+At minimum:
+
+    ACTIVE
+    REDUCED
+    PAUSED
+    SUSPENDED
+
+ACTIVE:
+
+    normal video playback.
+
+REDUCED:
+
+    minimize optional work while maintaining playback if possible.
+
+PAUSED:
+
+    stop video decoding/frame advancement and rendering when
+    the wallpaper does not need to change.
+
+SUSPENDED:
+
+    release decoder and temporary resources if the pause is
+    expected to last for a significant amount of time.
+
+Example:
+
+    ACTIVE
+       |
+       +---- game detected
+       |
+       +---- fullscreen detected
+       |
+       +---- high system workload
+       |
+       v
+    PAUSED
+       |
+       +---- long pause
+       |
+       v
+    SUSPENDED
+
+Resume:
+
+    SUSPENDED
+       |
+       v
+    recreate minimal playback resources
+       |
+       v
+    ACTIVE
+
+============================================================
+# 8. RESOURCE GOVERNOR
+============================================================
+
+Create:
+
+    ResourceGovernor
+
+It must be the central authority for deciding whether playback
+should be active.
+
+Do NOT allow five unrelated subsystems to independently start
+and stop the decoder.
+
+Use centralized state.
+
+Example pause reasons:
+
+    USER
+    GAME
+    FULLSCREEN
+    HIGH_CPU
+    HIGH_GPU
+    HIGH_MEMORY
+    BATTERY
+    LOCKED
+    DISPLAY_OFF
+    WALLPAPER_HIDDEN
+    SYSTEM_SUSPENDED
+
+Represent these efficiently, for example using a bitmask.
+
+Playback is allowed only when the relevant pause reasons are clear.
+
+============================================================
+# 9. GAME DETECTION
+============================================================
+
+The application must automatically detect when a game or
+high-workload application is running.
+
+The objective is:
+
+    stop wallpaper resource consumption during gaming.
+
+However, game detection itself must consume almost no resources.
+
+DO NOT continuously enumerate every process.
+
+DO NOT do this:
+
+    every 100 ms:
+        enumerate all processes
+        inspect every executable
+        calculate CPU usage
+
+Instead:
+
+    detect foreground-window changes
+            |
+            v
+    identify foreground process
+            |
+            v
+    inspect only the relevant process
+            |
+            v
+    classify/cache result
+
+Cache process classification.
+
+Invalidate cache when:
+
+    process exits
+    foreground process changes
+    configuration changes
+
+============================================================
+# 10. FULLSCREEN DETECTION
+============================================================
+
+Detect fullscreen applications.
+
+If a fullscreen application covers the wallpaper:
+
+    stop wallpaper playback.
+
+This should include:
+
+    games
+    fullscreen video players
+    presentations
+    fullscreen browsers
+    other fullscreen applications
+
+Do not continuously perform expensive fullscreen calculations.
+
+Use window/foreground state changes where possible.
+
+============================================================
+# 11. HIGH CPU/GPU WORKLOAD DETECTION
+============================================================
+
+Optionally pause playback when system workload becomes high.
+
+Monitor only what is necessary.
+
+Possible metrics:
+
+    CPU utilization
+    GPU utilization
+    memory pressure
+    foreground application
+    fullscreen state
+    game state
+
+Do NOT poll at extremely high frequency.
+
+A starting target:
+
+    approximately once every 1–2 seconds
+
+Then benchmark.
+
+The monitoring system itself must not become a resource problem.
+
+============================================================
+# 12. HYSTERESIS
+============================================================
+
+Avoid rapidly switching:
+
+    PLAY
+    PAUSE
+    PLAY
+    PAUSE
+
+Use hysteresis.
+
+Example:
+
+    CPU pause threshold:
+        85%
+
+    CPU resume threshold:
+        65%
+
+    GPU pause threshold:
+        90%
+
+    GPU resume threshold:
+        70%
+
+Require the threshold to remain exceeded for a configurable
+duration before changing state.
+
+Example:
+
+    pause after 3 seconds above threshold
+
+    resume after 5 seconds below threshold
+
+Make these configurable.
+
+============================================================
+# 13. IMMEDIATE PAUSE CONDITIONS
+============================================================
+
+The following should cause immediate or near-immediate suspension:
+
+    Windows locked
+    display off
+    system sleep
+    user manually paused
+    wallpaper no longer visible
+    fullscreen/game mode
+
+Do not wait several seconds for these conditions.
+
+============================================================
+# 14. MEDIA FOUNDATION
+============================================================
+
+Use Windows Media Foundation as the primary video playback/
+decoding pipeline.
+
+Prefer hardware decoding where supported.
+
+Target codecs:
+
+    H.264
+    HEVC/H.265
+    AV1
+    VP9
+
+Support common containers:
+
+    MP4
+    MKV
+    WebM
+
+where Media Foundation/system codecs support them.
+
+Do not bundle an enormous third-party codec framework simply
+because it is convenient.
+
+Use the Windows media stack where practical.
+
+============================================================
+# 15. HARDWARE DECODING
+============================================================
+
+Hardware decoding is preferred.
+
+The desired path is conceptually:
+
+    video file
+       |
+       v
+    Media Foundation
+       |
+       v
+    hardware decoder
+       |
+       v
+    D3D11/DXGI-compatible surface
+       |
+       v
+    GPU texture
+       |
+       v
+    minimal shader
+       |
+       v
+    wallpaper
+
+Avoid:
+
+    decoder
+       |
+       v
+    CPU frame
+       |
+       v
+    CPU color conversion
+       |
+       v
+    CPU memory copy
+       |
+       v
+    GPU upload
+       |
+       v
+    rendering
+
+unless absolutely necessary.
+
+Every CPU↔GPU transfer must be justified.
+
+============================================================
+# 16. GPU MEMORY
+============================================================
+
+Minimize VRAM usage.
+
+Do NOT:
+
+    decode dozens of frames ahead
+    duplicate textures
+    create unnecessary intermediate render targets
+    keep old video textures alive
+    maintain multiple copies of the same frame
+
+Keep the frame queue extremely small.
+
+Start with approximately:
+
+    2–3 frames
+
+and benchmark.
+
+Do not automatically increase buffering because more buffering
+"feels safer."
+
+For wallpaper playback, low latency is less important than
+resource efficiency.
+
+============================================================
+# 17. FRAME BUFFERING
+============================================================
+
+Implement a bounded frame queue.
+
+Never allow:
+
+    unlimited frames
+    growing queue
+    unbounded producer/consumer backlog
+
+If the decoder gets ahead:
+
+    stop/block production or discard obsolete frames.
+
+If playback falls behind:
+
+    drop obsolete frames rather than accumulating latency.
+
+For wallpaper playback:
+
+    newest useful frame > preserving every old frame.
+
+============================================================
+# 18. RAM OPTIMIZATION
+============================================================
+
+RAM is one of the most important optimization targets.
+
+DO NOT:
+
+    preload complete videos
+    decode complete videos
+    preload entire playlists into large objects
+    cache every thumbnail
+    keep multiple full-resolution CPU frame copies
+    keep inactive decoders alive
+    keep old video resources alive unnecessarily
+
+Example:
+
+A 3840×2160 RGBA frame is approximately:
+
+    3840 × 2160 × 4
+    ≈ 33 MB
+
+Therefore, several unnecessary copies can consume hundreds
+of megabytes very quickly.
+
+Avoid CPU-side 4K frame copies wherever possible.
+
+============================================================
+# 19. FRAME COPY AUDIT
+============================================================
+
+Document the path:
+
+    decoder
+      ->
+    frame
+      ->
+    queue
+      ->
+    renderer
+      ->
+    shader
+      ->
+    display
+
+For every transition determine whether it is:
+
+    reference
+    shared surface
+    GPU copy
+    CPU copy
+
+Minimize copies.
+
+The final implementation should have the fewest practical
+memory transfers.
+
+============================================================
+# 20. DIRECT3D 11
+============================================================
+
+Use Direct3D 11 for rendering unless profiling proves another
+native API is substantially better for this application.
+
+Reuse:
+
+    D3D11 device
+    device context
+    DXGI factory
+    shaders
+    sampler states
+    rasterizer state
+    common GPU resources
+
+Do not recreate them every frame.
+
+============================================================
+# 21. RENDER LOOP
+============================================================
+
+The render loop must NOT run continuously at maximum speed.
+
+Do NOT do:
+
+    while (running)
+        render();
+
+Do NOT render at:
+
+    240 FPS
+    360 FPS
+    1000 FPS
+
+just because the monitor supports it.
+
+If the source video is:
+
+    24 FPS
+
+there is no reason to perform 240 unique video rendering
+operations every second.
+
+Use intelligent frame scheduling.
+
+============================================================
+# 22. SOURCE FPS AWARENESS
+============================================================
+
+Detect:
+
+    source FPS
+    monitor refresh rate
+
+Examples:
+
+    24 FPS video on 60 Hz display
+    30 FPS video on 144 Hz display
+    60 FPS video on 165 Hz display
+
+Schedule presentation according to the actual video frame timing.
+
+Do not decode or process frames that cannot contribute to the
+visible output.
+
+============================================================
+# 23. STATIC FRAME OPTIMIZATION
+============================================================
+
+If the current frame has not changed:
+
+    do not unnecessarily redraw it.
+
+When paused:
+
+    do not continuously redraw.
+
+When wallpaper is completely covered:
+
+    do not continuously redraw.
+
+When display is off:
+
+    do not render.
+
+When game is active:
+
+    do not render.
+
+============================================================
+# 24. NO BUSY WAITING
+============================================================
+
+This is mandatory.
+
+Do NOT use:
+
+    while(true)
+    while(running)
+    Sleep(1)
+    Sleep(5)
+    Sleep(10)
+
+as the primary synchronization strategy.
+
+Do not continuously poll.
+
+Use:
+
+    Windows events
+    condition variables
+    waitable timers
+    message queues
+    callbacks
+    synchronization primitives
+    Media Foundation events
+
+Workers that have nothing to do should BLOCK.
+
+Desired behavior:
+
+    worker
+       |
+       v
+    wait
+       |
+       v
+    event
+       |
+       v
+    wake
+       |
+       v
+    perform necessary work
+       |
+       v
+    wait again
+
+============================================================
+# 25. THREAD COUNT
+============================================================
+
+Use as few threads as practical.
+
+Do not create:
+
+    one thread per monitor
+    one thread per video
+    one thread per playlist
+    one thread per performance counter
+
+A small architecture such as:
+
+    UI/main thread
+    decoder worker where required
+    minimal control/monitoring worker
+
+is preferable.
+
+Measure the actual thread count.
+
+============================================================
+# 26. THREAD IDLE BEHAVIOR
+============================================================
+
+Idle threads must block.
+
+They must not consume CPU while waiting.
+
+When playback is paused:
+
+    decoder worker should sleep/block.
+
+When the application is suspended:
+
+    unnecessary workers should terminate or block.
+
+============================================================
+# 27. ALLOCATION POLICY
+============================================================
+
+The playback hot path must have extremely low allocation activity.
+
+Do NOT allocate memory every frame.
+
+Do NOT create:
+
+    vector
+    string
+    texture
+    shader
+    COM object
+    buffer
+
+per frame unless absolutely unavoidable.
+
+Allocate reusable resources once and reuse them.
+
+Audit:
+
+    new
+    delete
+    malloc
+    free
+    vector growth
+    string construction
+
+inside playback/rendering code.
+
+============================================================
+# 28. COM RESOURCE MANAGEMENT
+============================================================
+
+Use RAII.
+
+Prefer:
+
+    Microsoft::WRL::ComPtr
+
+or an equivalent safe RAII wrapper.
+
+Audit all:
+
+    D3D11 resources
+    DXGI resources
+    Media Foundation objects
+    textures
+    surfaces
+    device references
+
+for lifetime leaks.
+
+============================================================
+# 29. MULTI-MONITOR SUPPORT
+============================================================
+
+Support multiple monitors.
+
+Example:
+
+    Monitor 1 -> video A
+    Monitor 2 -> video B
+    Monitor 3 -> video C
+
+This may require multiple decoders.
+
+However, share infrastructure wherever possible.
+
+Share:
+
+    D3D11 device
+    DXGI factory
+    shaders
+    common renderer infrastructure
+    configuration
+    workload monitor
+
+Do not duplicate them per monitor.
+
+============================================================
+# 30. SAME VIDEO ON MULTIPLE MONITORS
+============================================================
+
+This is a major optimization requirement.
+
+If:
+
+    Monitor 1 -> Video A
+    Monitor 2 -> Video A
+    Monitor 3 -> Video A
+
+do NOT decode Video A three times.
+
+Prefer:
+
+    ONE decoder
+       |
+       v
+    ONE playback timeline
+       |
+       v
+    shared decoded frame
+       |
+       +----> Monitor 1
+       +----> Monitor 2
+       +----> Monitor 3
+
+Scale/crop per monitor in the GPU.
+
+============================================================
+# 31. DIFFERENT VIDEO PER MONITOR
+============================================================
+
+If:
+
+    Monitor 1 -> A
+    Monitor 2 -> B
+    Monitor 3 -> C
+
+use only the required number of decoder pipelines.
+
+Do not create extra decoder instances.
+
+============================================================
+# 32. PLAYLIST SYSTEM
+============================================================
+
+Support:
+
+    single video
+    playlist
+    folder
+    multiple folders
+    loop
+    shuffle
+    sequential playback
+    next video
+    previous video
+
+A playlist containing 10,000 videos must not require enormous RAM.
+
+Store lightweight metadata:
+
+    file path
+    basic file metadata
+    duration if cached
+    resolution if cached
+    codec if cached
+
+Do not store decoded frames.
+
+============================================================
+# 33. VIDEO TRANSITIONS
+============================================================
+
+When Video A is ending and Video B is next:
+
+Do not unnecessarily keep two complete playback pipelines alive.
+
+Prefer:
+
+    current decoder = active
+
+and:
+
+    next video = lightweight preparation
+
+Only initialize the next decoder sufficiently early if profiling
+shows that this significantly improves transitions.
+
+Resource usage is more important than instant transition perfection.
+
+============================================================
+# 34. LOOPING
+============================================================
+
+For looping the same video:
+
+Do not rebuild the entire rendering infrastructure.
+
+Reuse:
+
+    D3D device
+    shaders
+    textures where possible
+    decoder infrastructure where possible
+    metadata
+
+Reset only the playback state.
+
+============================================================
+# 35. FRAME DROPPING
+============================================================
+
+If the decoder falls behind:
+
+    drop obsolete frames.
+
+Do not allow:
+
+    frame 1
+    frame 2
+    frame 3
+    ...
+    frame 100
+
+to accumulate.
+
+Wallpaper playback does not require perfect archival frame delivery.
+
+The current visible frame is more important than old frames.
+
+============================================================
+# 36. AUDIO
+============================================================
+
+Audio should be OFF by default.
+
+Do not initialize audio playback unless explicitly implemented
+as an optional future feature.
+
+The default wallpaper engine should not consume resources
+for audio.
+
+============================================================
+# 37. POWER MANAGEMENT
+============================================================
+
+The application must be battery-friendly.
+
+Detect:
+
+    AC power
+    battery power
+    display off
+    system lock
+    suspend/resume
+
+Default behavior should favor resource conservation.
+
+Possible default:
+
+    pause wallpaper on battery
+
+but make this configurable.
+
+============================================================
+# 38. LAPTOP GPU OPTIMIZATION
+============================================================
+
+Do not automatically force the discrete GPU.
+
+On laptops:
+
+    prefer the most power-efficient GPU capable of the task.
+
+Do not wake an NVIDIA/AMD discrete GPU unnecessarily for
+a simple wallpaper if the integrated GPU can efficiently
+perform the task.
+
+============================================================
+# 39. GPU ADAPTER DETECTION
+============================================================
+
+Detect:
+
+    GPU adapters
+    outputs
+    hardware decode capabilities
+
+Select an appropriate adapter.
+
+Do not blindly choose:
+
+    "most powerful GPU."
+
+The objective is:
+
+    "lowest resource/power cost that provides reliable playback."
+
+============================================================
+# 40. PAUSED STATE
+============================================================
+
+When paused:
+
+    stop decoder advancement
+    stop frame scheduling
+    stop unnecessary rendering
+    stop performance-intensive monitoring
+    clear obsolete frame buffers
+    retain minimal state
+
+If paused for a configurable long period:
+
+    release decoder
+    release temporary GPU resources
+    release unnecessary frame buffers
+
+Keep:
+
+    current playlist position
+    current file path
+    configuration
+    minimal state
+
+============================================================
+# 41. SUSPENDED STATE
+============================================================
+
+SUSPENDED means:
+
+    almost nothing related to video playback remains active.
+
+Target:
+
+    no decoding
+    no rendering
+    no frame queue
+    minimal timers
+    minimal wakeups
+    minimal GPU activity
+
+The application should resemble a tiny background control process.
+
+============================================================
+# 42. SMART RESUME
+============================================================
+
+When playback becomes necessary again:
+
+    initialize only what is required
+    recreate decoder if necessary
+    obtain current frame
+    restart scheduler
+    resume playback
+
+Avoid repeated rapid initialization attempts.
+
+Use controlled retry timing if hardware/media initialization fails.
+
+============================================================
+# 43. LOCK SCREEN
+============================================================
+
+When Windows is locked:
+
+    stop video decoding
+    stop rendering
+    release unnecessary playback resources
+
+When the user unlocks:
+
+    resume according to configuration.
+
+============================================================
+# 44. DISPLAY OFF
+============================================================
+
+When a monitor/display is turned off:
+
+    stop playback associated with it.
+
+Do not decode video that nobody can see.
+
+============================================================
+# 45. MONITOR HOT-PLUG
+============================================================
+
+Handle:
+
+    monitor connected
+    monitor disconnected
+    resolution changed
+    refresh rate changed
+    primary monitor changed
+
+without requiring a reboot.
+
+Do not leak D3D or window resources when a monitor disappears.
+
+============================================================
+# 46. WINDOWS EXPLORER RESTART
+============================================================
+
+Handle Explorer restarts where practical.
+
+The wallpaper should recover without requiring the user to
+manually restart the application.
+
+============================================================
+# 47. GPU DEVICE LOSS
+============================================================
+
+Handle Direct3D device loss/reset scenarios where practical.
+
+Do not leave the application permanently broken after:
+
+    GPU reset
+    driver reset
+    display topology change
+
+Recreate resources cleanly.
+
+============================================================
+# 48. FILE ERROR HANDLING
+============================================================
+
+Handle:
+
+    missing file
+    deleted file
+    moved file
+    corrupt file
+    unsupported codec
+    unsupported container
+    decoder initialization failure
+
+Do not crash.
+
+Skip invalid playlist entries where appropriate.
+
+============================================================
+# 49. LIBRARY SCANNING
+============================================================
+
+Do not scan the entire video library continuously.
+
+Use:
+
+    cached metadata
+    filesystem change notifications
+    incremental scanning
+
+If a folder contains:
+
+    10,000 videos
+
+the application should not repeatedly enumerate all 10,000 files
+every few seconds.
+
+============================================================
+# 50. THUMBNAIL SYSTEM
+============================================================
+
+If thumbnails are implemented:
+
+    use small thumbnails
+    use disk cache
+    use bounded memory cache
+    use LRU eviction
+
+Do not keep thousands of full-size thumbnails in RAM.
+
+When the library UI closes:
+
+    release unnecessary thumbnail memory.
+
+Thumbnail generation must NEVER interfere with active playback.
+
+============================================================
+# 51. BACKGROUND THUMBNAIL GENERATION
+============================================================
+
+Thumbnail generation must be:
+
+    low priority
+    throttled
+    cancellable
+
+If a game starts:
+
+    stop thumbnail generation.
+
+If the wallpaper is under heavy workload:
+
+    stop thumbnail generation.
+
+Never sacrifice the primary wallpaper performance goal for UI thumbnails.
+
+============================================================
+# 52. FILESYSTEM I/O
+============================================================
+
+Do not repeatedly touch the filesystem during normal frame playback.
+
+Avoid:
+
+    checking file existence every frame
+    reading metadata every frame
+    writing playback position every second
+    writing logs continuously
+
+Persist configuration only when necessary.
+
+============================================================
+# 53. LOGGING
+============================================================
+
+Release builds must have minimal logging.
+
+Do not log every frame.
+
+Do not log every GPU operation.
+
+Do not log every performance sample.
+
+Implement:
+
+    error logging
+    warning logging
+    optional debug logging
+
+Logs must be bounded.
+
+Example:
+
+    maximum total log size = 5–10 MB
+
+Do not allow logs to grow indefinitely.
+
+============================================================
+# 54. CONFIGURATION
+============================================================
+
+Provide settings for:
+
+    startup
+    autoplay
+    loop
+    shuffle
+    playlist
+    monitor
+    per-monitor video
+    game pause
+    fullscreen pause
+    high CPU pause
+    high GPU pause
+    battery pause
+    pause threshold
+    resume threshold
+    pause delay
+    resume delay
+    performance mode
+    frame buffering
+    thumbnail cache size
+
+Do not expose hundreds of confusing settings.
+
+Advanced resource settings can be placed under:
+
+    Advanced Performance
+
+============================================================
+# 55. PERFORMANCE MODES
+============================================================
+
+Provide:
+
+    PERFORMANCE
+    BALANCED
+    QUALITY
+
+and an aggressive:
+
+    ULTRA LOW RESOURCE
+
+mode.
+
+ULTRA LOW RESOURCE should prioritize:
+
+    minimal frame buffering
+    aggressive game pause
+    aggressive fullscreen pause
+    aggressive battery behavior
+    minimal monitoring
+    minimal thumbnail cache
+    minimal background work
+    decoder release during long pauses
+
+============================================================
+# 56. DEFAULT SETTINGS
+============================================================
+
+Use resource-efficient defaults.
+
+Suggested defaults:
+
+    hardware decoding = enabled
+    audio = disabled
+    game pause = enabled
+    fullscreen pause = enabled
+    display-off pause = enabled
+    lock pause = enabled
+    battery pause = enabled
+    loop = enabled
+    shuffle = disabled
+    frame queue = small
+    debug logging = disabled
+    verbose performance monitoring = disabled
+
+============================================================
+# 57. STARTUP OPTIMIZATION
+============================================================
+
+Startup must be lightweight.
+
+Do NOT:
+
+    launch
+    scan 10,000 videos
+    generate thumbnails
+    inspect every process
+    initialize every decoder
+    initialize every monitor
+    THEN show wallpaper
+
+Instead:
+
+    launch
+       |
+       v
+    minimal configuration
+       |
+       v
+    detect monitors
+       |
+       v
+    initialize only active wallpaper
+       |
+       v
+    start playback
+
+Everything else should be lazy.
+
+============================================================
+# 58. LAZY INITIALIZATION
+============================================================
+
+Initialize resources only when required.
+
+Examples:
+
+    decoder:
+        create when playback starts
+
+    thumbnail:
+        create when displayed
+
+    UI:
+        create when opened
+
+    monitor renderer:
+        create when monitor becomes active
+
+    next decoder:
+        prepare only when useful
+
+    performance diagnostics:
+        collect only when required
+
+============================================================
+# 59. MEMORY OWNERSHIP
+============================================================
+
+Every major object must have explicit ownership.
+
+Document:
+
+    who creates it
+    who owns it
+    when it is released
+
+Pay particular attention to:
+
+    COM references
+    D3D textures
+    decoder surfaces
+    file handles
+    event handles
+    threads
+    windows
+
+============================================================
+# 60. RESOURCE LIFETIME MODEL
+============================================================
+
+Application lifetime:
+
+    configuration
+    core D3D infrastructure
+
+Playback lifetime:
+
+    decoder
+    active video resources
+
+Frame lifetime:
+
+    current frame
+
+UI lifetime:
+
+    UI controls
+    thumbnails
+
+Monitor lifetime:
+
+    monitor-specific window/resources
+
+Do not keep playback resources alive for the entire application
+lifetime if they are not needed.
+
+============================================================
+# 61. SECURITY
+============================================================
+
+Do not require administrator privileges.
+
+Do not install kernel drivers.
+
+Do not install services.
+
+Do not modify unrelated system settings.
+
+Do not inject code into games.
+
+Game detection should use normal Windows APIs.
+
+============================================================
+# 62. NO GAME INJECTION
+============================================================
+
+Absolutely do not:
+
+    inject DLLs into games
+    hook game rendering
+    install anti-cheat-sensitive components
+    manipulate game memory
+
+Game detection must be external and lightweight.
+
+============================================================
+# 63. WINDOW MANAGEMENT
+============================================================
+
+Implement a proper Windows wallpaper hosting strategy.
+
+Research the appropriate Windows 10/11 desktop wallpaper hosting
+mechanism.
+
+Do not assume a fragile undocumented technique without testing.
+
+The wallpaper must:
+
+    appear behind desktop icons where appropriate
+    not steal keyboard focus
+    not interfere with normal applications
+    not interfere with games
+    survive Explorer restarts where practical
+
+============================================================
+# 64. INPUT
+============================================================
+
+The wallpaper must not capture normal user input.
+
+The desktop should remain usable normally.
+
+The wallpaper renderer should be effectively non-interactive
+unless an optional future interactive mode is added.
+
+============================================================
+# 65. RENDERING QUALITY
+============================================================
+
+Provide basic scaling modes:
+
+    Fill
+    Fit
+    Stretch
+    Center
+
+Default should be:
+
+    Fill
+
+Use a minimal shader.
+
+Do not add:
+
+    blur
+    particles
+    lighting
+    post-processing
+    visual effects
+
+unless explicitly requested.
+
+============================================================
+# 66. SHADER REQUIREMENTS
+============================================================
+
+Shader should perform only necessary work:
+
+    sample video texture
+    color conversion if required
+    calculate UV
+    crop/scale
+    output
+
+Keep shader complexity minimal.
+
+============================================================
+# 67. COLOR CONVERSION
+============================================================
+
+Handle common video formats efficiently.
+
+Prefer GPU color conversion when practical.
+
+Do not repeatedly perform expensive CPU color conversion.
+
+============================================================
+# 68. PERFORMANCE MONITORING
+============================================================
+
+Implement lightweight internal metrics.
+
+Measure:
+
+    CPU usage
+    GPU usage
+    VRAM
+    RAM
+    thread count
+    frame rate
+    dropped frames
+    decoder state
+    current video
+    monitor count
+
+But:
+
+    performance monitoring must itself be cheap.
+
+UI performance graphs should update approximately:
+
+    1–2 times per second
+
+not 60 times per second.
+
+============================================================
+# 69. RESOURCE TARGETS
+============================================================
+
+These are TARGETS, NOT fabricated guarantees.
+
+When paused/suspended:
+
+    CPU:
+        near-zero active CPU work
+
+    GPU:
+        near-zero wallpaper rendering
+
+    decoder:
+        stopped
+
+    frame queue:
+        empty/minimal
+
+    unnecessary timers:
+        stopped
+
+    background polling:
+        minimized
+
+When playing:
+
+    CPU:
+        as low as possible through hardware decoding
+
+    GPU:
+        only necessary rendering/decode work
+
+    RAM:
+        minimal bounded allocation
+
+    VRAM:
+        minimal bounded allocation
+
+Do NOT claim zero CPU, zero RAM, or zero GPU.
+
+Measure actual results.
+
+============================================================
+# 70. 4K MEMORY AWARENESS
+============================================================
+
+Remember:
+
+    3840 × 2160 × 4 bytes
+    ≈ 33 MB per RGBA frame
+
+Therefore:
+
+    3 frames ≈ 100 MB
+
+before considering other resources.
+
+Avoid CPU frame queues for 4K video if a GPU-native path is possible.
+
+============================================================
+# 71. 8K HANDLING
+============================================================
+
+Do not assume unlimited hardware capability.
+
+Detect:
+
+    resolution
+    codec
+    FPS
+    hardware decoder capability
+
+For unsupported/high-cost video:
+
+    fail gracefully
+    report the problem
+    avoid allocating enormous buffers
+
+Do not solve performance problems by simply increasing RAM usage.
+
+============================================================
+# 72. RELEASE BUILD
+============================================================
+
+Create an optimized Release build.
+
+Use appropriate MSVC optimizations such as:
+
+    /O2
+    whole-program optimization where beneficial
+    link-time optimization where beneficial
+
+Do not enable the D3D debug layer in Release.
+
+Do not include:
+
+    debug symbols in the production package
+    verbose logging
+    debug overlays
+    development assets
+
+unless explicitly requested.
+
+============================================================
+# 73. EXECUTABLE SIZE
+============================================================
+
+Minimize executable size without making the architecture
+unreasonably complex.
+
+Do not statically link enormous libraries without justification.
+
+Prefer Windows-provided system components.
+
+Measure:
+
+    .exe size
+    total DLL size
+    total installation footprint
+
+============================================================
+# 74. DEPENDENCY POLICY
+============================================================
+
+Before adding any library ask:
+
+    Can Windows provide this functionality?
+
+    Can the standard library provide this?
+
+    Can a small native implementation provide this?
+
+If yes:
+
+    do not add the dependency.
+
+For every dependency document:
+
+    purpose
+    disk size
+    runtime memory impact
+    startup impact
+    why it is necessary
+
+============================================================
+# 75. INSTALLATION
+============================================================
+
+Provide a lightweight deployment.
+
+Prefer:
+
+    portable ZIP
+
+and optionally:
+
+    lightweight installer
+
+Do not bundle:
+
+    sample videos
+    development files
+    unused codecs
+    debug binaries
+    large runtime frameworks
+
+============================================================
+# 76. SINGLE INSTANCE
+============================================================
+
+Prevent multiple wallpaper engine instances from running.
+
+Use a lightweight Windows mechanism such as:
+
+    named mutex
+
+If a second instance starts:
+
+    communicate with existing instance if appropriate
+    or exit cleanly.
+
+============================================================
+# 77. SYSTEM TRAY
+============================================================
+
+Provide a lightweight tray icon.
+
+Tray actions:
+
+    Play/Pause
+    Next
+    Previous
+    Open Settings
+    Open Library
+    Exit
+
+The tray system must not keep a heavy UI active.
+
+============================================================
+# 78. PLAYLIST API
+============================================================
+
+Internally design a clean playlist interface.
+
+Support:
+
+    Add
+    Remove
+    Reorder
+    Next
+    Previous
+    Shuffle
+    Loop
+    Current item
+
+Do not make playlist operations affect active frame playback
+unless necessary.
+
+============================================================
+# 79. FILE WATCHING
+============================================================
+
+If a watched video folder changes:
+
+    update library incrementally.
+
+Do not rescan the entire library unnecessarily.
+
+Use Windows filesystem notifications where appropriate.
+
+============================================================
+# 80. NO MEMORY LEAKS
+============================================================
+
+Perform explicit leak testing.
+
+Monitor:
+
+    RAM
+    VRAM
+    COM references
+    Windows handles
+    file handles
+    threads
+
+Run repeated:
+
+    play
+    pause
+    resume
+    next
+    previous
+    change monitor
+    change video
+    close/reopen UI
+
+cycles.
+
+Memory must not continuously increase.
+
+============================================================
+# 81. 24-HOUR TEST
+============================================================
+
+If the environment permits, perform a long-running test.
+
+Record:
+
+    RAM at start
+    RAM after 1 hour
+    RAM after 6 hours
+    RAM after 12 hours
+    RAM after 24 hours
+
+Also record:
+
+    VRAM
+    threads
+    handles
+    dropped frames
+
+Look for monotonic growth.
+
+============================================================
+# 82. STRESS TEST
+============================================================
+
+Test:
+
+    1080p video
+    1440p video
+    4K video
+    high FPS video
+    H.264
+    HEVC
+    AV1 where supported
+    multiple monitors
+    different videos per monitor
+    same video on multiple monitors
+    very large playlist
+    corrupt video
+    missing video
+
+============================================================
+# 83. GAME TEST
+============================================================
+
+Test:
+
+    normal desktop
+    fullscreen game
+    windowed game
+    borderless fullscreen game
+    high CPU workload
+    high GPU workload
+
+When game mode is triggered:
+
+    decoder should stop
+    rendering should stop
+    frame scheduling should stop
+    unnecessary monitoring should be minimized
+
+The wallpaper should consume almost no active video resources.
+
+============================================================
+# 84. BATTERY TEST
+============================================================
+
+Test on battery where possible.
+
+Verify:
+
+    battery policy
+    display-off behavior
+    game behavior
+    suspend/resume
+
+The application must not continuously wake the CPU.
+
+============================================================
+# 85. RESOURCE PROFILING
+============================================================
+
+Use appropriate Windows profiling tools.
+
+Where available, use:
+
+    Windows Performance Recorder
+    Windows Performance Analyzer
+    Task Manager
+    Process Explorer
+    GPUView
+    Visual Studio Profiler
+    PIX where useful
+    D3D diagnostics where useful
+
+Do not rely only on Task Manager.
+
+Measure actual behavior.
+
+============================================================
+# 86. PERFORMANCE REPORT
+============================================================
+
+At the end, produce a performance report containing:
+
+    Executable size
+    Total installed size
+    Startup RAM
+    Active playback RAM
+    Paused RAM
+    Suspended RAM
+    Active VRAM
+    Paused VRAM
+    CPU usage
+    GPU usage
+    Thread count
+    Handle count
+    Decoder count
+    Frame queue size
+    Dropped frames
+    Startup time
+
+Separate:
+
+    measured
+
+from:
+
+    estimated
+
+Never fabricate numbers.
+
+If something cannot be measured:
+
+    NOT MEASURED — explain why.
+
+============================================================
+# 87. CODE AUDIT
+============================================================
+
+Before finalizing, search the source code for:
+
+    while(true)
+    while (running)
+    Sleep(
+    sleep_for(
+    new
+    malloc
+    memcpy
+    CopyResource
+    Map
+    Unmap
+    CreateTexture
+    CreateThread
+
+Review every occurrence.
+
+Determine whether it is:
+
+    necessary
+    optimized
+    correctly synchronized
+    potentially wasteful
+
+============================================================
+# 88. HOT-PATH AUDIT
+============================================================
+
+Identify:
+
+    decoder hot path
+    frame queue
+    render path
+    frame scheduler
+    workload monitoring
+
+For each measure:
+
+    CPU time
+    allocations
+    locks
+    copies
+    system calls
+    GPU submissions
+
+Do not optimize based purely on assumptions.
+
+Measure first.
+
+============================================================
+# 89. NO FAKE OPTIMIZATION
+============================================================
+
+Do not claim:
+
+    "0% CPU"
+    "0 MB RAM"
+    "0% GPU"
+
+These are not realistic.
+
+Use:
+
+    near-zero active work
+    minimal practical footprint
+    measured CPU usage
+    measured RAM
+    measured GPU activity
+
+============================================================
+# 90. FAILURE RECOVERY
+============================================================
+
+The application must recover from:
+
+    decoder failure
+    missing files
+    corrupted files
+    GPU reset
+    display change
+    monitor disconnect
+    monitor reconnect
+    Explorer restart
+    invalid configuration
+
+Do not enter CPU-consuming retry loops.
+
+Use:
+
+    event
+       |
+       v
+    cleanup
+       |
+       v
+    delayed retry
+       |
+       v
+    initialization
+
+============================================================
+# 91. DEVELOPMENT PROCESS
+============================================================
+
+DO NOT attempt to write the entire project blindly in one step.
+
+Use this development process:
+
+PHASE 1:
+    inspect repository/environment
+
+PHASE 2:
+    create minimal Win32 application
+
+PHASE 3:
+    create wallpaper host
+
+PHASE 4:
+    create D3D11 renderer
+
+PHASE 5:
+    create Media Foundation playback
+
+PHASE 6:
+    hardware decoding
+
+PHASE 7:
+    frame scheduling
+
+PHASE 8:
+    playlist system
+
+PHASE 9:
+    multiple monitors
+
+PHASE 10:
+    game/fullscreen detection
+
+PHASE 11:
+    ResourceGovernor
+
+PHASE 12:
+    UI/settings
+
+PHASE 13:
+    performance profiling
+
+PHASE 14:
+    optimization
+
+PHASE 15:
+    reliability testing
+
+PHASE 16:
+    packaging
+
+After each phase:
+
+    BUILD
+    TEST
+    FIX
+    PROFILE where appropriate
+    COMMIT/record working state
+
+Do not continue while the previous fundamental stage is broken.
+
+============================================================
+# 92. BUILD SYSTEM
+============================================================
+
+Use CMake.
+
+Target:
+
+    Windows 11 x64
+
+Support:
+
+    Visual Studio / MSVC
+
+Provide:
+
+    Debug
+    Release
+
+The Release build must be the primary performance target.
+
+============================================================
+# 93. PROJECT STRUCTURE
+============================================================
+
+Use a clean structure similar to:
+
+    /src
+        /app
+        /wallpaper
+        /render
+        /media
+        /decoder
+        /playback
+        /scheduler
+        /monitor
+        /system
+        /performance
+        /library
+        /playlist
+        /config
+        /ui
+        /util
+
+    /tests
+
+    /assets
+        only required application assets
+
+    CMakeLists.txt
+
+Keep the project organized but avoid unnecessary abstraction.
+
+============================================================
+# 94. TESTING
+============================================================
+
+Create automated tests where practical for:
+
+    configuration
+    playlist
+    pause-state logic
+    hysteresis
+    resource governor
+    file handling
+    playlist transitions
+
+Hardware-specific video tests can be separate.
+
+============================================================
+# 95. RESOURCE GOVERNOR TESTS
+============================================================
+
+Test:
+
+    ACTIVE + no workload
+        -> ACTIVE
+
+    ACTIVE + game
+        -> PAUSED
+
+    ACTIVE + fullscreen
+        -> PAUSED
+
+    ACTIVE + high GPU
+        -> PAUSED after delay
+
+    high GPU disappears
+        -> remain paused until resume hysteresis clears
+
+    PAUSED + long duration
+        -> SUSPENDED
+
+    SUSPENDED + normal desktop
+        -> ACTIVE
+
+    LOCKED
+        -> SUSPENDED
+
+    DISPLAY OFF
+        -> SUSPENDED
+
+============================================================
+# 96. PERFORMANCE-FIRST DECISION RULE
+============================================================
+
+Whenever you encounter two possible implementations:
+
+    Implementation A:
+        simpler
+        slightly more resource usage
+
+    Implementation B:
+        more efficient
+        slightly more complex
+
+choose B if the measurable resource reduction is meaningful.
+
+But:
+
+    do NOT introduce enormous complexity for theoretical
+    micro-optimizations that cannot be measured.
+
+Use evidence.
+
+============================================================
+# 97. ABSOLUTE PROHIBITIONS
+============================================================
+
+Do NOT:
+
+    busy wait
+    decode entire videos
+    preload entire libraries
+    render at unnecessary FPS
+    allocate every frame
+    create textures every frame
+    create threads per video
+    create threads per monitor unnecessarily
+    poll all processes continuously
+    scan folders continuously
+    generate thumbnails continuously
+    keep the decoder alive while suspended
+    keep unnecessary GPU textures alive
+    write logs every frame
+    write playback position every second
+    bundle unnecessary frameworks
+    use Electron
+    use .NET
+    use a Windows Service
+    inject into games
+    hook games
+    use kernel drivers
+
+============================================================
+# 98. FINAL ACCEPTANCE CRITERIA
+============================================================
+
+The project is considered complete only when:
+
+APPLICATION:
+
+    [ ] Native Windows 11 x64 application
+    [ ] C++20+
+    [ ] CMake
+    [ ] MSVC Release build
+    [ ] No unnecessary runtime framework
+
+PLAYBACK:
+
+    [ ] Video playback
+    [ ] Loop
+    [ ] Playlist
+    [ ] Shuffle
+    [ ] Multiple monitors
+    [ ] Per-monitor video
+    [ ] Hardware decoding
+    [ ] Frame scheduling
+    [ ] Frame dropping
+    [ ] H.264
+    [ ] HEVC where supported
+    [ ] AV1 where supported
+    [ ] VP9 where supported
+
+RESOURCE EFFICIENCY:
+
+    [ ] Small RAM footprint
+    [ ] Small VRAM footprint
+    [ ] Minimal CPU usage
+    [ ] Minimal GPU work
+    [ ] No busy waiting
+    [ ] Minimal thread count
+    [ ] Minimal allocations
+    [ ] Bounded frame queue
+    [ ] No unnecessary CPU↔GPU copies
+    [ ] No memory leaks
+
+AUTO PAUSE:
+
+    [ ] Game detection
+    [ ] Fullscreen detection
+    [ ] High CPU detection
+    [ ] High GPU detection
+    [ ] Lock detection
+    [ ] Display-off detection
+    [ ] Battery behavior
+    [ ] Hysteresis
+    [ ] Delayed pause/resume
+
+SUSPENSION:
+
+    [ ] Decoder stops
+    [ ] Renderer stops
+    [ ] Frame queue cleared/minimized
+    [ ] Temporary GPU resources released
+    [ ] Long pauses release decoder resources
+
+RELIABILITY:
+
+    [ ] Explorer restart handling
+    [ ] Monitor hotplug
+    [ ] GPU/device recovery
+    [ ] Decoder recovery
+    [ ] Missing files
+    [ ] Corrupt files
+    [ ] Unsupported files
+    [ ] Clean shutdown
+
+UI:
+
+    [ ] Native Win32 UI
+    [ ] System tray
+    [ ] Settings
+    [ ] Playlist management
+    [ ] Library management
+    [ ] Monitor configuration
+    [ ] Performance configuration
+
+============================================================
+# 99. MOST IMPORTANT PERFORMANCE REQUIREMENT
+============================================================
+
+Remember this throughout the entire project:
+
+The application is NOT a game engine.
+
+It is NOT a visual-effects engine.
+
+It is NOT a media center.
+
+It is NOT supposed to continuously render frames at the
+maximum monitor refresh rate.
+
+It is a wallpaper engine.
+
+Therefore:
+
+    Video = 30 FPS
+    Monitor = 240 Hz
+
+does NOT mean:
+
+    render 240 unique video frames per second.
+
+It means:
+
+    decode the video at approximately the required rate,
+    present frames appropriately,
+    and avoid unnecessary work.
+
+============================================================
+# 100. ULTIMATE RESOURCE BEHAVIOR
+============================================================
+
+The ideal behavior is:
+
+NORMAL DESKTOP:
+
+    wallpaper visible
+    decoder active
+    minimal necessary GPU work
+    minimal necessary CPU work
+
+USER OPENS SETTINGS:
+
+    UI becomes active
+    additional UI resources temporarily used
+
+USER CLOSES SETTINGS:
+
+    UI resources released
+
+GAME STARTS:
+
+    wallpaper playback stops
+    decoder stops
+    rendering stops
+    optional monitoring reduces activity
+
+FULLSCREEN VIDEO STARTS:
+
+    wallpaper stops
+
+WINDOWS LOCKS:
+
+    wallpaper enters suspended state
+
+DISPLAY TURNS OFF:
+
+    wallpaper enters suspended state
+
+LONG PAUSE:
+
+    decoder/resources released
+
+USER RETURNS:
+
+    only necessary resources recreated
+
+============================================================
+# 101. FINAL COMMAND
+============================================================
+
+START IMPLEMENTATION NOW.
+
+First inspect the current repository and development environment.
+
+Do not ask me to manually implement pieces that you can implement yourself.
+
+Do not stop at an architectural explanation.
+
+Create the actual project.
+
+Compile it.
+
+Run tests.
+
+Fix compilation errors.
+
+Fix runtime errors.
+
+Profile resource consumption.
+
+Optimize the hot paths.
+
+Perform the resource audit.
+
+Then provide a final report containing:
+
+    1. Architecture
+    2. Build instructions
+    3. Supported Windows versions
+    4. Supported codecs/containers
+    5. Executable size
+    6. Installed size
+    7. Active RAM usage
+    8. Paused RAM usage
+    9. Suspended RAM usage
+    10. VRAM usage
+    11. CPU usage
+    12. GPU usage
+    13. Thread count
+    14. Frame buffer count
+    15. Decoder count
+    16. CPU↔GPU copies
+    17. Game detection behavior
+    18. Fullscreen detection behavior
+    19. ResourceGovernor behavior
+    20. Known limitations
+    21. Measured results
+    22. Unmeasured results
+
+For every performance number:
+
+    DO NOT INVENT IT.
+
+If you cannot measure it:
+
+    state "NOT MEASURED".
+
+The final implementation must prioritize:
+
+    MINIMUM RAM
+    MINIMUM CPU
+    MINIMUM GPU
+    MINIMUM VRAM
+    MINIMUM DISK
+    MINIMUM POWER
+    MINIMUM BACKGROUND ACTIVITY
+
+while still providing smooth, reliable Windows 11 video wallpaper playback.
+
+The guiding principle is:
+
+    "WAKE ONLY WHEN NECESSARY.
+     DECODE ONLY WHAT IS NECESSARY.
+     COPY ONLY WHAT IS NECESSARY.
+     RENDER ONLY WHEN NECESSARY.
+     RELEASE EVERYTHING THAT IS NOT NECESSARY."
