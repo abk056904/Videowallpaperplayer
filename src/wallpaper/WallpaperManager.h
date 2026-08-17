@@ -110,7 +110,7 @@ private:
     Result<void> bindGpuFrameFor(const std::wstring& monitorId,
                                  const video::DecodedFrame& frame);
     Result<void> bindFramePlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
-                                 UINT videoWidth, UINT videoHeight);
+                                 float videoAspect);
     void teardownHosts();
     void addHostFor(const std::wstring& monitorId);
     void removeHostFor(const std::wstring& monitorId);
@@ -127,6 +127,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frameTextureSrv_;
     UINT frameWidth_ = 0;
     UINT frameHeight_ = 0;
+    float frameDisplayAspect_ = 0.0f; // SAR-corrected aspect of the bound frame
     // M8: per-monitor upload textures for the INDEPENDENT path (each display
     // runs its own video). Keyed by stable monitor id.
     struct PerMonitorFrame {

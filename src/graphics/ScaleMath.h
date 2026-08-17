@@ -43,19 +43,33 @@ constexpr bool scalingNeedsBorder(Scaling mode) {
     return mode == Scaling::Fit || mode == Scaling::Center;
 }
 
+// The display aspect ratio a frame presents with: width/height corrected by
+// the sample aspect ratio (anamorphic content — non-square pixels). `display`
+// is the SAR-corrected aspect carried by the frame (0 when unknown); the raw
+// pixel dims are the fallback. Returns 0 when nothing is usable. This is what
+// the scaling math consumes so crop/scale stays universal (docs/02 §2.4).
+inline float videoAspectFor(std::uint32_t vidW, std::uint32_t vidH, float displayAspect) {
+    if (displayAspect > 0.0f && displayAspect < 100.0f) {
+        return displayAspect;
+    }
+    if (vidW > 0 && vidH > 0) {
+        return static_cast<float>(vidW) / static_cast<float>(vidH);
+    }
+    return 0.0f;
+}
+
 // Computes the window->texture UV mapping for the given scaling mode.
-// winW/winH: window (back buffer) size; vidW/vidH: video frame size.
-// Guarded against zero sizes (returns identity, matching the renderer's
-// pre-existing defensive behavior).
-inline ScaleOffset computeScaleOffset(std::uint32_t winW, std::uint32_t winH,
-                                      std::uint32_t vidW, std::uint32_t vidH,
+// winW/winH: window (back buffer) size; vidAspect: the video's DISPLAY aspect
+// ratio (SAR-corrected, see videoAspectFor). Guarded against zero sizes
+// (returns identity, matching the renderer's pre-existing defensive
+// behavior).
+inline ScaleOffset computeScaleOffset(std::uint32_t winW, std::uint32_t winH, float vidAspect,
                                       Scaling mode) {
     ScaleOffset out{1.0f, 1.0f, 0.0f, 0.0f};
-    if (winW == 0 || winH == 0 || vidW == 0 || vidH == 0) {
+    if (winW == 0 || winH == 0 || vidAspect <= 0.0f) {
         return out;
     }
     const float winAspect = static_cast<float>(winW) / static_cast<float>(winH);
-    const float vidAspect = static_cast<float>(vidW) / static_cast<float>(vidH);
     switch (mode) {
         case Scaling::Stretch: // full frame, aspect ignored
             break;
@@ -73,14 +87,33 @@ inline ScaleOffset computeScaleOffset(std::uint32_t winW, std::uint32_t winH,
                 out.sx = winAspect / vidAspect;
             }
             break;
-        case Scaling::Center: // 1:1 native pixels, centered
-            out.sx = static_cast<float>(winW) / static_cast<float>(vidW);
-            out.sy = static_cast<float>(winH) / static_cast<float>(vidH);
-            break;
+        case Scaling::Center: // 1:1 native pixels — needs the pixel dims the
+            break;            // width/height overload below provides; the
+                              // aspect overload (renderer) never uses Center.
     }
     out.ox = (1.0f - out.sx) * 0.5f;
     out.oy = (1.0f - out.sy) * 0.5f;
     return out;
+}
+
+// Width/height overload (square-pixel content, no SAR correction needed —
+// used by the unit tests and any caller without a display aspect). Center
+// keeps its native-pixel meaning here (vidW/vidH available).
+inline ScaleOffset computeScaleOffset(std::uint32_t winW, std::uint32_t winH,
+                                      std::uint32_t vidW, std::uint32_t vidH,
+                                      Scaling mode) {
+    if (mode == Scaling::Center) {
+        ScaleOffset out{1.0f, 1.0f, 0.0f, 0.0f};
+        if (winW == 0 || winH == 0 || vidW == 0 || vidH == 0) {
+            return out;
+        }
+        out.sx = static_cast<float>(winW) / static_cast<float>(vidW);
+        out.sy = static_cast<float>(winH) / static_cast<float>(vidH);
+        out.ox = (1.0f - out.sx) * 0.5f;
+        out.oy = (1.0f - out.sy) * 0.5f;
+        return out;
+    }
+    return computeScaleOffset(winW, winH, videoAspectFor(vidW, vidH, 0.0f), mode);
 }
 
 } // namespace vw::gfx

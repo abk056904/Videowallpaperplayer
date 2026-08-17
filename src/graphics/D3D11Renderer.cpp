@@ -78,14 +78,14 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
     return rebuildRtv(device, width, height);
 }
 
-Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
-                                           UINT videoHeight, Scaling scaling) {
+Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv, float videoAspect,
+                                           Scaling scaling) {
     if (srv && !psTex_) return std::unexpected(L"renderer: textured shader not initialized");
     videoSrv_ = srv;
     ySrv_.Reset();
     uvSrv_.Reset();
     if (srv) {
-        const ScaleOffset so = computeScaleOffset(width_, height_, videoWidth, videoHeight, scaling);
+        const ScaleOffset so = computeScaleOffset(width_, height_, videoAspect, scaling);
         scaleOffset_[0] = so.sx;
         scaleOffset_[1] = so.sy;
         scaleOffset_[2] = so.ox;
@@ -96,8 +96,8 @@ Result<void> D3D11Renderer::setVideoTexture(ID3D11ShaderResourceView* srv, UINT 
 }
 
 Result<void> D3D11Renderer::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
-                                           ID3D11ShaderResourceView* uvSrv, UINT videoWidth,
-                                           UINT videoHeight, Scaling scaling) {
+                                           ID3D11ShaderResourceView* uvSrv, float videoAspect,
+                                           Scaling scaling) {
     if (ySrv && !psYuv_) return std::unexpected(L"renderer: YUV shader not initialized");
     ySrv_ = ySrv;
     uvSrv_ = uvSrv;
@@ -107,7 +107,7 @@ Result<void> D3D11Renderer::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
     }
     // Map the fullscreen UV [0,1]^2 onto the texture UV per the scaling mode
     // (pure math in ScaleMath.h, unit-tested): texUv = uv*scale + offset.
-    const ScaleOffset so = computeScaleOffset(width_, height_, videoWidth, videoHeight, scaling);
+    const ScaleOffset so = computeScaleOffset(width_, height_, videoAspect, scaling);
     scaleOffset_[0] = so.sx;
     scaleOffset_[1] = so.sy;
     scaleOffset_[2] = so.ox;

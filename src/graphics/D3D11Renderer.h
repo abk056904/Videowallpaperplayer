@@ -33,16 +33,17 @@ public:
 
     // Software path (M4/M5-preview): when set, render() samples this SRV through
     // the textured pixel shader; null restores the gradient placeholder. The
-    // video dimensions + scaling mode drive the same UV mapping the hardware
-    // path uses, so Fit/Fill/Center/Stretch apply on both paths.
-    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
-                                 UINT videoHeight, Scaling scaling);
+    // video's DISPLAY aspect (SAR-corrected, videoAspectFor) + scaling mode
+    // drive the same UV mapping the hardware path uses, so Fit/Fill/Center/
+    // Stretch apply on both paths with no distortion for anamorphic content.
+    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv, float videoAspect,
+                                 Scaling scaling);
 
     // Hardware path (M5): two plane SRVs over one NV12/P010 decoder texture
-    // (Y: R8/R16, UV: R8G8/R16G16) + the video dimensions so the YUV shader
-    // can scale per the configured mode. Null ySrv restores the placeholder.
+    // (Y: R8/R16, UV: R8G8/R16G16) + the display aspect so the YUV shader can
+    // scale per the configured mode. Null ySrv restores the placeholder.
     Result<void> setVideoPlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
-                                UINT videoWidth, UINT videoHeight, Scaling scaling);
+                                float videoAspect, Scaling scaling);
 
     // Clears, draws, and presents (vsync). Device loss propagates as an error
     // so the caller can run the M12 recreate path.

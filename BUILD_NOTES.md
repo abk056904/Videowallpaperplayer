@@ -554,6 +554,26 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ---
 
+## UNIVERSAL CROP/SCALE RULE — anamorphic (SAR) correction (2026-08-17, user: "make the crop and scale rule more universal")
+
+**Committed as `2f5a1b9`** — the crop/scale rule (crop evenly to the target aspect, scale to fill, no bars, no distortion) was already universal in one sense: `ScaleMath.h` computes against the **window's** aspect ratio, never a hardcoded 16:9. The gap was **sample aspect ratio (SAR)**: the renderer consumed the raw pixel dims, so anamorphic content (non-square pixels — e.g. 720×480 DVD, SAR 10:11) cropped/scaled to the wrong aspect and distorted.
+
+## What shipped
+
+- **`VideoMetadata`**: reads `MF_MT_PIXEL_ASPECT_RATIO` (packed UINT64; `MFGetAttributeRatio` unpacks it) into `sarNum`/`sarDen` (default 1:1), and exposes `displayAspect = (width·sarNum)/(height·sarDen)` — the aspect the scaling math must consume.
+- **`DecodedFrame.displayAspect`**: carried on every frame (constant per stream, copied from the metadata in the decode worker). 0 = unknown → callers fall back to the raw pixel aspect.
+- **`ScaleMath.h`**: new `videoAspectFor(w, h, displayAspect)` (SAR-corrected aspect, raw-pixel fallback, garbage-guarded) + an aspect-based `computeScaleOffset(winW, winH, vidAspect, mode)` overload. The width/height overload now delegates (Center keeps its native-pixel meaning via a dedicated branch).
+- **`D3D11Renderer`/`WallpaperHost`/`WallpaperManager`/harness**: the video setters now take the display aspect instead of width/height — the renderer only used those for the aspect anyway. `WallpaperManager` computes it per frame with `videoAspectFor` (clone path caches it for the rebind).
+- **`VideoPlayer::open` log** now prints `SAR n:d, display aspect x.xxxx` so the metadata path is verifiable on real files.
+
+## Verified
+
+- **3 new unit tests** (videoAspectFor prefers SAR / fallbacks / guards; anamorphic Fill crops to the DISPLAY aspect with even offsets; Fit letterboxes the corrected aspect) → **122/122 tests**, Debug + Release, 0 warnings under /WX. The anamorphic test proves the old behavior cropped the wrong axis (visible 0.84375 vs 0.75 of the height) — the distortion this fixes.
+- **Live**: Eula clip opens with `SAR 1:1, display aspect 1.7778` (16:9 = identity under Fill, still edge-to-edge). No anamorphic clip exists on this machine to pixel-verify live; the unit tests cover the non-square-pixel math.
+- Behavior is unchanged for square-pixel content (all current clips): SAR 1:1 → display aspect == pixel aspect.
+
+---
+
 ## Toolchain note (cost this investigation real time)
 
 Scratch-probe builds from bash hit a confusing wall: `cl` from the hardcoded 14.44 path **ignored `/std:c++23`** (D9002) and `std::expected` never resolved. Two compounding factors: (1) this cl's named modes are `c++14|c++17|c++20|c++latest` — **no `c++23`**; CMake 4.4.2's C++23 maps to **`stdcpplatest`** in the vcxproj, so the project builds with `/std:c++latest`, and the M1 "c++23 confirmed" note was wrong; (2) MSYS2 argument conversion mangles `/nologo`-style flags (turned into `C:\Program Files\Git\nologo`) unless `MSYS2_ARG_CONV_EXCL='*'` is set. Scratch probes should compile with `/std:c++latest` + `MSYS2_ARG_CONV_EXCL='*'`, or better, through CMake.

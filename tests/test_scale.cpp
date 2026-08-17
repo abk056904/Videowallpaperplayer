@@ -6,6 +6,7 @@ using vw::gfx::computeScaleOffset;
 using vw::gfx::ScaleOffset;
 using vw::gfx::Scaling;
 using vw::gfx::scalingNeedsBorder;
+using vw::gfx::videoAspectFor;
 
 // Expected values are derived at pixel level (M5 review): e.g. window
 // 1920x1080 + video 640x480 under Fill = cover scales video to 1920x1440 and
@@ -97,6 +98,60 @@ TEST_CASE("scale: zero sizes are guarded (identity, no division by zero)") {
     CHECK(so.sy == doctest::Approx(1.0f));
     CHECK(so.ox == doctest::Approx(0.0f));
     CHECK(so.oy == doctest::Approx(0.0f));
+
+    // Zero display aspect is also guarded (identity).
+    const ScaleOffset zeroAspect = computeScaleOffset(1920, 1080, 0.0f, Scaling::Fill);
+    CHECK(zeroAspect.sx == doctest::Approx(1.0f));
+    CHECK(zeroAspect.sy == doctest::Approx(1.0f));
+}
+
+TEST_CASE("scale: videoAspectFor prefers the SAR-corrected display aspect") {
+    // 720x480 anamorphic DVD: raw pixel aspect is 3:2, but the SAR (10:11)
+    // makes the display 15:11 = 1.3636. The scaling math must consume the
+    // SAR-corrected aspect, not the raw 1.5.
+    const float dvd = videoAspectFor(720, 480, 720.0f * 10.0f / 11.0f / 480.0f);
+    CHECK(dvd == doctest::Approx(15.0f / 11.0f)); // 1.3636…
+
+    // Fallback: display aspect unknown (0) -> raw pixel aspect.
+    const float raw = videoAspectFor(720, 480, 0.0f);
+    CHECK(raw == doctest::Approx(1.5f));
+
+    // Degenerate display aspect is rejected -> raw pixel aspect.
+    const float garbage = videoAspectFor(720, 480, -5.0f);
+    CHECK(garbage == doctest::Approx(1.5f));
+
+    // Nothing usable at all -> 0 (renderer then keeps the identity mapping).
+    CHECK(videoAspectFor(0, 0, 0.0f) == doctest::Approx(0.0f));
+}
+
+TEST_CASE("scale: anamorphic Fill crops to the DISPLAY aspect, not the pixels") {
+    // 1920x1080 window (16:9) + 720x480 anamorphic video whose display is 4:3
+    // (SAR 10:11). Fill: the window is WIDER than the 4:3 video, so the video
+    // fills the width exactly and its HEIGHT is cropped evenly top/bottom —
+    // the "crop evenly both sides, fill the screen, no bars" rule. With the
+    // raw 3:2 pixel aspect the same call would crop far less height (0.5625
+    // visible) — the wrong (distorting) geometry.
+    const float displayAspect = 4.0f / 3.0f;
+    const ScaleOffset fill = computeScaleOffset(1920, 1080, displayAspect, Scaling::Fill);
+    CHECK(fill.sx == doctest::Approx(1.0f));  // fills the width exactly
+    CHECK(fill.ox == doctest::Approx(0.0f));
+    CHECK(fill.sy == doctest::Approx(displayAspect / (16.0f / 9.0f))); // < 1: height cropped
+    CHECK(fill.sy == doctest::Approx(0.75f)); // 16:9 shows 75% of the 4:3 height
+    CHECK(fill.oy == doctest::Approx(0.125f)); // cropped evenly top/bottom
+
+    // Sanity: the same video WITHOUT SAR correction (old behavior) computes
+    // the crop from the raw 3:2 pixels — visible 0.5625 of the height, wrong.
+    const ScaleOffset raw = computeScaleOffset(1920, 1080, 720.0f / 480.0f, Scaling::Fill);
+    CHECK(raw.sy == doctest::Approx(0.84375f));
+    CHECK(raw.oy == doctest::Approx(0.078125f));
+
+    // Fit with the same display aspect letterboxes the 4:3 into the 16:9
+    // window (sides): sx > 1, centered band.
+    const ScaleOffset fit = computeScaleOffset(1920, 1080, displayAspect, Scaling::Fit);
+    CHECK(fit.sx == doctest::Approx((16.0f / 9.0f) / displayAspect)); // 4/3
+    CHECK(fit.ox == doctest::Approx((1.0f - fit.sx) * 0.5f));
+    CHECK(fit.sy == doctest::Approx(1.0f));
+    CHECK(fit.oy == doctest::Approx(0.0f));
 }
 
 TEST_CASE("scale: BORDER sampler needed exactly for the letterbox modes") {

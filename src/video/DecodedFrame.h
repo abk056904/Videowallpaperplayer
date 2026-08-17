@@ -18,6 +18,11 @@ struct DecodedFrame {
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture; // hardware path
     UINT width = 0;
     UINT height = 0;
+    // Display aspect ratio = width/height corrected by the sample aspect
+    // ratio (anamorphic content). 0 when unknown, in which case the renderer
+    // falls back to width/height. The scaling math MUST use this (not the raw
+    // pixel dims) or non-square-pixel videos crop/scale distorted.
+    float displayAspect = 0.0f;
     LONGLONG timestamp = 0;     // media time, 100 ns units
     LONGLONG decodeTime100ns = 0; // wall clock (util::Clock) at decode, 100 ns
                                 // units — for decodeLatencyMs stats (M6)

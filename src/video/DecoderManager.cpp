@@ -491,6 +491,12 @@ void DecoderManager::workerLoop(FrameQueue* queue) {
                 continue;
             }
         }
+        // Anamorphic correction: the scaling math consumes the SAR-corrected
+        // display aspect, not the raw pixel dims (docs/02 §2.4). Constant per
+        // stream, so it is copied from the metadata on every frame.
+        if (metadata_.displayAspect > 0.0) {
+            frame.displayAspect = static_cast<float>(metadata_.displayAspect);
+        }
         frame.decodeTime100ns = util::Clock::instance().now100ns(); // M6 latency stats
         if (!queue->push(std::move(frame))) {
             break; // queue closed (stop requested)

@@ -40,16 +40,16 @@ public:
 
     // Rebinds the texture rendered on the next render() (M4: per-frame video
     // texture swaps; null restores whatever init bound).
-    // Binds the software-path frame (RGB32 SRV) with its dimensions + scaling
-    // mode so the renderer applies the same UV mapping as the hardware path.
-    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
-                                 UINT videoHeight, gfx::D3D11Renderer::Scaling scaling);
+    // Binds the software-path frame (RGB32 SRV) with its display aspect
+    // (SAR-corrected, videoAspectFor) + scaling mode so the renderer applies
+    // the same UV mapping as the hardware path.
+    Result<void> setVideoTexture(ID3D11ShaderResourceView* srv, float videoAspect,
+                                 gfx::D3D11Renderer::Scaling scaling);
 
     // Hardware path (M5): two plane SRVs over one NV12/P010 decoder texture,
-    // video dimensions, and the scaling mode (forwarded to the renderer).
+    // display aspect, and the scaling mode (forwarded to the renderer).
     Result<void> setVideoPlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
-                                UINT videoWidth, UINT videoHeight,
-                                gfx::D3D11Renderer::Scaling scaling);
+                                float videoAspect, gfx::D3D11Renderer::Scaling scaling);
 
     // Repositions/resizes the window + swap chain (monitor change).
     Result<void> setBounds(const RECT& bounds);

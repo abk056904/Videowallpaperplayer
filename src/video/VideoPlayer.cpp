@@ -20,9 +20,11 @@ Result<void> VideoPlayer::open(const std::wstring& path) {
     position_ = 0;
     auto& log = log::Logger::instance();
     const auto& m = metadata();
-    log.info(L"video opened: {} | {}x{} @ {:.2f} fps, {} ms, codec {}, {}-bit{}, audio={}",
+    log.info(L"video opened: {} | {}x{} @ {:.2f} fps, {} ms, codec {}, {}-bit{}, audio={}"
+             L" | SAR {}:{}, display aspect {:.4f}",
              path, m.width, m.height, m.fps, m.duration100ns / 10000, m.codec, m.bitDepth,
-             m.hdr ? L" HDR" : L"", m.hasAudio ? L"yes" : L"no");
+             m.hdr ? L" HDR" : L"", m.hasAudio ? L"yes" : L"no", m.sarNum, m.sarDen,
+             m.displayAspect);
     return {};
 }
 

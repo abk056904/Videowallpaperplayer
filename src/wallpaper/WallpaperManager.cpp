@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "graphics/ScaleMath.h"
 #include "graphics/TextureManager.h"
 #include "logging/Logger.h"
 #include "video/DecodedFrame.h"
@@ -393,6 +394,9 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
     if (!uploaded) {
         return uploaded;
     }
+    // Display aspect (SAR-corrected) for the scaling math — the clone path
+    // binds one frame on every host, so remember it for the rebind.
+    frameDisplayAspect_ = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
     return bindFrameTexture();
 }
 
@@ -435,14 +439,14 @@ Result<void> WallpaperManager::setVideoFrameFor(const std::wstring& monitorId,
     if (!uploaded) {
         return uploaded;
     }
-    return (*hostIt)->setVideoTexture(slot.srv.Get(), slot.width, slot.height, scaling_);
+    const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+    return (*hostIt)->setVideoTexture(slot.srv.Get(), aspect, scaling_);
 }
 
 Result<void> WallpaperManager::bindFrameTexture() {
     bool anyError = false;
     for (auto& host : hosts_) {
-        auto result =
-            host->setVideoTexture(frameTextureSrv_.Get(), frameWidth_, frameHeight_, scaling_);
+        auto result = host->setVideoTexture(frameTextureSrv_.Get(), frameDisplayAspect_, scaling_);
         if (!result) {
             anyError = true;
             log::Logger::instance().warn(L"bind video texture failed for {}: {}",
@@ -488,7 +492,8 @@ Result<void> WallpaperManager::bindGpuFrame(const video::DecodedFrame& frame) {
     if (!uvSrv) {
         return std::unexpected(uvSrv.error());
     }
-    return bindFramePlanes(ySrv->Get(), uvSrv->Get(), frame.width, frame.height);
+    const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+    return bindFramePlanes(ySrv->Get(), uvSrv->Get(), aspect);
 }
 
 Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
@@ -528,16 +533,16 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
     if (!uvSrv) {
         return std::unexpected(uvSrv.error());
     }
-    return (*hostIt)->setVideoPlanes(ySrv->Get(), uvSrv->Get(), frame.width, frame.height,
-                                     scaling_);
+    const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+    return (*hostIt)->setVideoPlanes(ySrv->Get(), uvSrv->Get(), aspect, scaling_);
 }
 
 Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,
                                                ID3D11ShaderResourceView* uvSrv,
-                                               UINT videoWidth, UINT videoHeight) {
+                                               float videoAspect) {
     bool anyError = false;
     for (auto& host : hosts_) {
-        auto result = host->setVideoPlanes(ySrv, uvSrv, videoWidth, videoHeight, scaling_);
+        auto result = host->setVideoPlanes(ySrv, uvSrv, videoAspect, scaling_);
         if (!result) {
             anyError = true;
             log::Logger::instance().warn(L"bind video planes failed for {}: {}",

@@ -113,8 +113,8 @@ Result<void> WallpaperHost::init(gfx::D3D11DeviceManager* deviceManager, const O
     // M3: the shared checkerboard test texture (512x512, square -> any scaling
     // mode is identity); M4+ rebinds per video frame with real dimensions.
     if (options.textureSrv) {
-        auto setResult = renderer_.setVideoTexture(options.textureSrv, kTestTextureSize,
-                                                   kTestTextureSize, gfx::D3D11Renderer::Scaling::Fill);
+        auto setResult = renderer_.setVideoTexture(options.textureSrv, 1.0f, // 512x512 square
+                                                   gfx::D3D11Renderer::Scaling::Fill);
         if (!setResult) {
             ::DestroyWindow(hwnd_);
             hwnd_ = nullptr;
@@ -143,22 +143,21 @@ Result<void> WallpaperHost::render() {
     return result;
 }
 
-Result<void> WallpaperHost::setVideoTexture(ID3D11ShaderResourceView* srv, UINT videoWidth,
-                                           UINT videoHeight,
+Result<void> WallpaperHost::setVideoTexture(ID3D11ShaderResourceView* srv, float videoAspect,
                                            gfx::D3D11Renderer::Scaling scaling) {
     if (!deviceManager_ || !hwnd_) {
         return std::unexpected(L"WallpaperHost::setVideoTexture: not initialized");
     }
-    return renderer_.setVideoTexture(srv, videoWidth, videoHeight, scaling);
+    return renderer_.setVideoTexture(srv, videoAspect, scaling);
 }
 
 Result<void> WallpaperHost::setVideoPlanes(ID3D11ShaderResourceView* ySrv,
-                                           ID3D11ShaderResourceView* uvSrv, UINT videoWidth,
-                                           UINT videoHeight, gfx::D3D11Renderer::Scaling scaling) {
+                                           ID3D11ShaderResourceView* uvSrv, float videoAspect,
+                                           gfx::D3D11Renderer::Scaling scaling) {
     if (!deviceManager_ || !hwnd_) {
         return std::unexpected(L"WallpaperHost::setVideoPlanes: not initialized");
     }
-    return renderer_.setVideoPlanes(ySrv, uvSrv, videoWidth, videoHeight, scaling);
+    return renderer_.setVideoPlanes(ySrv, uvSrv, videoAspect, scaling);
 }
 
 Result<void> WallpaperHost::setBounds(const RECT& bounds) {

@@ -54,6 +54,21 @@ Result<void> VideoMetadata::fillFromMediaType(IMFMediaType* type, VideoMetadata&
         out.fps = static_cast<double>(num) / static_cast<double>(den);
     }
 
+    // Sample aspect ratio (anamorphic correction). MF packs it as a UINT64:
+    // HI32 = numerator, LO32 = denominator; MFGetAttributeRatio unpacks it.
+    // Missing = square pixels (1:1). The display aspect drives the scaling
+    // math so crop/scale is universal across square and non-square content.
+    UINT32 sarNum = 0, sarDen = 0;
+    if (SUCCEEDED(::MFGetAttributeRatio(type, MF_MT_PIXEL_ASPECT_RATIO, &sarNum, &sarDen)) &&
+        sarNum > 0 && sarDen > 0) {
+        out.sarNum = sarNum;
+        out.sarDen = sarDen;
+    }
+    if (out.width > 0 && out.height > 0) {
+        out.displayAspect =
+            (static_cast<double>(out.width) * out.sarNum) / (static_cast<double>(out.height) * out.sarDen);
+    }
+
     // Bit depth comes from the subtype family (P010/P016/... = 10-bit, else
     // 8). There is no MF_MT_VIDEO_BIT_DEPTH attribute in the platform headers
     // (checked against the 26100 SDK) — never read a nonexistent attribute.

@@ -84,6 +84,7 @@ struct DecodedFrame {
     std::vector<uint8_t> bytes; // tightly packed w*4 per row
     UINT width = 0;
     UINT height = 0;
+    float displayAspect = 0.0f; // SAR-corrected aspect (0 = square pixels)
 };
 
 std::wstring formatHr(HRESULT hr) {
@@ -453,12 +454,14 @@ int wmain(int argc, wchar_t** argv) {
         deviceManager.context()->Unmap(texture->Get(), 0);
         auto srv = vw::gfx::TextureManager::createSrv(deviceManager.device(), texture->Get());
         if (!srv) fail(L"SRV creation failed: %s", srv.error().c_str());
-        auto setResult =
-            renderer.setVideoTexture(srv->Get(), frame.width, frame.height, videoScaling);
+        const float videoAspect =
+            vw::gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+        auto setResult = renderer.setVideoTexture(srv->Get(), videoAspect, videoScaling);
         if (!setResult) fail(L"setVideoTexture failed: %s", setResult.error().c_str());
         videoMode = true;
-        std::wprintf(L"gfx_harness: video frame decoded: %ux%u RGB32 -> texture (scaling=%d)\n",
-                     frame.width, frame.height, static_cast<int>(videoScaling));
+        std::wprintf(L"gfx_harness: video frame decoded: %ux%u RGB32 -> texture (scaling=%d, "
+                     L"aspect=%.3f)\n",
+                     frame.width, frame.height, static_cast<int>(videoScaling), videoAspect);
     }
 
     // 4. Render loop (vsync-blocked; harness-only).
