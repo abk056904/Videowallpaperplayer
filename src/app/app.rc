@@ -1,0 +1,5 @@
+// Application resources. The icon is embedded as the exe's application icon
+// (Explorer, taskbar, Alt-Tab, and any shown window use it).
+#include "resource.h"
+
+IDI_APP_ICON ICON "..\\..\\video_wallpaper_engine_compact_rgb.ico"

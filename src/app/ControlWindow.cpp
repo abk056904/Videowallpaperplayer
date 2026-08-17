@@ -1,5 +1,7 @@
 #include "app/ControlWindow.h"
 
+#include "app/resource.h"
+
 namespace vw::app {
 
 const wchar_t* ControlWindow::kClassName = L"VideoWallpaper.ControlWindow";
@@ -41,6 +43,9 @@ bool ControlWindow::create() {
     wc.lpfnWndProc = &ControlWindow::wndProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.lpszClassName = kClassName;
+    // App icon from the embedded resource (src/app/app.rc).
+    wc.hIcon = ::LoadIconW(wc.hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    wc.hIconSm = wc.hIcon;
     ::RegisterClassExW(&wc);
 
     hwnd_ = ::CreateWindowExW(

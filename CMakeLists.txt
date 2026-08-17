@@ -120,6 +120,7 @@ add_executable(VideoWallpaper WIN32
     src/app/main.cpp
     src/app/ApplicationController.cpp
     src/app/ControlWindow.cpp
+    src/app/app.rc   # embeds the application icon (video_wallpaper_engine_compact_rgb.ico)
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
     src/monitors/MonitorManager.cpp
