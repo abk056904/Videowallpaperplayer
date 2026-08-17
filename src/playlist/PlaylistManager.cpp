@@ -326,6 +326,7 @@ size_t PlaylistManager::shuffleBackward(size_t pos, bool wrap) const {
 void PlaylistManager::regenerateShuffle() {
     const size_t n = data_.items.size();
     data_.shuffleOrder = shuffledPermutation(rng_, n, data_.current);
+    ++shuffleGeneration_; // observable via shuffleGeneration() (tests)
 }
 
 void PlaylistManager::rebuildOrder() {

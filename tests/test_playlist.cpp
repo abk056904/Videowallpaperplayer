@@ -186,28 +186,27 @@ TEST_CASE("playlist: shuffle is a permutation with no immediate repeat") {
     CHECK(seen.count(1) == 1);
     CHECK(seen.count(2) == 1);
 
-    // Walk until the cycle wraps and a fresh order is generated. Consecutive
-    // plays are never the same item; the fresh cycle does not start with the
-    // item that was playing when the wrap happened (the old cycle's last item).
+    // Walk through at least one full cycle (3 items, so 6 advances cover two
+    // wraps). With loop=true each wrap REGENERATES the order — asserted via
+    // the generation counter (deterministic; comparing permutations would
+    // flake when a fresh cycle randomly collides with the old one).
+    const uint64_t gen0 = pm.shuffleGeneration(); // after setMode's regen
     size_t current = 0;
     size_t lastPlayed = current;
-    std::vector<size_t> fresh;
-    for (int i = 0; i < 6 && fresh.empty(); ++i) {
+    for (int i = 0; i < 6; ++i) {
         const size_t next = pm.nextIndex();
         REQUIRE(next != PlaylistManager::kNoIndex);
-        CHECK(next != current);
-        lastPlayed = current; // item playing when this advance happened
+        CHECK(next != current); // consecutive plays are never the same item
+        lastPlayed = current;   // item playing when this advance happened
         current = next;
         pm.setCurrent(current);
-        if (pm.shuffleOrder() != order0) {
-            fresh = pm.shuffleOrder();
-        }
     }
-    REQUIRE(fresh.size() == 3); // the wrapped cycle regenerated the order
-    // The wrap regenerates the cycle and returns its first playable item, so
-    // fresh.front() == current by construction; the guarantee is against the
-    // item that was playing when the wrap fired.
-    CHECK(fresh.front() != lastPlayed);
+    CHECK(pm.shuffleGeneration() > gen0); // the looped wrap regenerated
+    // The regenerated cycle is still a full permutation.
+    const auto fresh = pm.shuffleOrder();
+    REQUIRE(fresh.size() == 3);
+    std::set<size_t> freshSeen(fresh.begin(), fresh.end());
+    CHECK(freshSeen.size() == 3);
 }
 
 TEST_CASE("playlist: shuffle without loop stops at the cycle end") {

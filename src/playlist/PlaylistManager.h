@@ -98,6 +98,10 @@ public:
     bool loop() const { return data_.loop; }
     const std::vector<PlaylistItem>& items() const { return data_.items; }
     const std::vector<size_t>& shuffleOrder() const { return data_.shuffleOrder; }
+    // Monotonic count of shuffle regenerations (each looped-cycle wrap bumps
+    // it). Lets tests assert "the wrap regenerated the order" deterministically
+    // instead of comparing permutations (which can randomly collide).
+    uint64_t shuffleGeneration() const { return shuffleGeneration_; }
 
     // ---- persistence ----
     PlaylistData data() const { return data_; }
@@ -119,6 +123,7 @@ private:
 
     PlaylistData data_;
     std::vector<bool> unavailable_; // runtime only, parallel to items
+    uint64_t shuffleGeneration_ = 0; // bumped by regenerateShuffle()
     std::mt19937 rng_{std::random_device{}()};
 };
 

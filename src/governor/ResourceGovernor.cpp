@@ -33,35 +33,36 @@ std::chrono::steady_clock::time_point ResourceGovernor::now() {
 }
 
 uint32_t ResourceGovernor::setReason(Reason reason, bool on) {
-    const uint32_t oldMask = reasons_;
     if (on) {
         reasons_ |= reason;
     } else {
         reasons_ &= ~reason;
     }
-    // Pass the OLD mask so the transition logic sees the pre-update state
-    // (setReason ORs the bit in before calling setReasons).
-    return setReasonsWithTransition(oldMask, reasons_);
+    return setReasonsWithTransition(reasons_);
 }
 
 uint32_t ResourceGovernor::setReasons(uint32_t reasons) {
-    const uint32_t oldMask = reasons_;
     reasons_ = reasons;
-    return setReasonsWithTransition(oldMask, reasons_);
+    return setReasonsWithTransition(reasons_);
 }
 
-uint32_t ResourceGovernor::setReasonsWithTransition(uint32_t oldMask, uint32_t newMask) {
-    const bool wasPaused = oldMask != 0;
-    const bool nowPaused = newMask != 0;
-
-    // Any reason appearing while ACTIVE -> PAUSED; all cleared -> ACTIVE.
-    // The long-pause clock starts when the session first pauses.
-    if (!wasPaused && nowPaused && state_ == State::Active) {
+uint32_t ResourceGovernor::setReasonsWithTransition(uint32_t newMask) {
+    // The long-pause clock starts the moment the session first pauses (an
+    // ACTIVE session acquiring its first reason). Reasons piling on or
+    // clearing while already paused do NOT restart it — the total paused
+    // stretch is what triggers the decoder release.
+    if (state_ == State::Active && newMask != 0) {
         pausedSince_ = now();
-        transitionTo(State::Paused);
-    } else if (wasPaused && !nowPaused && state_ != State::Active) {
-        pausedSince_ = {};
-        transitionTo(State::Active);
+    }
+    // The policy is the single source of truth for the transition table;
+    // mask changes never know about the elapsed clock (a fresh reason
+    // appearing keeps the session paused, not suspended).
+    const State next = policy_.nextState(state_, newMask, false);
+    if (next != state_) {
+        if (next == State::Active) {
+            pausedSince_ = {};
+        }
+        transitionTo(next);
     }
     return reasons_;
 }
@@ -70,11 +71,11 @@ void ResourceGovernor::onTick() {
     if (state_ != State::Paused) {
         return; // nothing to release; ACTIVE/SUSPENDED handle their own timers
     }
-    const auto t = now();
-    const auto elapsed = t - pausedSince_;
+    const auto elapsed = now() - pausedSince_;
     const auto limit = std::chrono::seconds(policy_.config().longPauseReleaseSeconds);
-    if (elapsed >= limit) {
-        transitionTo(State::Suspended);
+    const State next = policy_.nextState(state_, reasons_, elapsed >= limit);
+    if (next != state_) {
+        transitionTo(next);
     }
 }
 
@@ -92,21 +93,24 @@ void ResourceGovernor::transitionTo(State next) {
             log.info(L"governor: ACTIVE -> PAUSED (reasons: {})", describeReasons(reasons_));
             break;
         case State::Suspended: // release the decoder entirely
-            // stop() logs the session summary + releases the reader/decoder;
-            // the position was kept by pause() (playback retains it across
-            // stop? NO — stop() drops the session; the resume path reopens
-            // and seeks). Long-pause release keeps config/playlist state.
+            // stop() logs the session summary + releases the reader/decoder
+            // (the resume path recreates it). Playlist/config state survives.
             playback_.stop();
             log.info(L"governor: PAUSED -> SUSPENDED (released decoder, {} s paused)",
                      policy_.config().longPauseReleaseSeconds);
             break;
-        case State::Active: // recreate + seek to the saved position
-            if (from == State::Suspended) {
-                // SUSPENDED dropped the session (stop()); the app reopens the
-                // current playlist item on resume (recreate decoder + seek).
-                log.info(L"governor: SUSPENDED -> ACTIVE (resume)");
+        case State::Active:
+            // SUSPENDED dropped the session, and a user stop does too (the app
+            // calls playback_->stop() after feeding the User reason) — both
+            // need the app to reopen the current playlist item. Only a plain
+            // PAUSED session (decoder kept by pause()) can resume in place.
+            if (from == State::Suspended || !playback_.isOpen()) {
+                log.info(L"governor: {} -> ACTIVE (reopen)",
+                         from == State::Suspended ? L"SUSPENDED" : L"PAUSED");
                 if (resumeHandler_) {
                     resumeHandler_();
+                } else {
+                    log.warn(L"governor: no resume handler — session left stopped");
                 }
             } else {
                 // PAUSED -> ACTIVE: the session is still open — plain resume.

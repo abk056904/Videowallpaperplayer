@@ -68,7 +68,7 @@ public:
 
 private:
     void transitionTo(State next);
-    uint32_t setReasonsWithTransition(uint32_t oldMask, uint32_t newMask);
+    uint32_t setReasonsWithTransition(uint32_t newMask);
     std::chrono::steady_clock::time_point now();
 
     playback::PlaybackController& playback_;

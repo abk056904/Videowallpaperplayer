@@ -578,6 +578,14 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 - **NOT MEASURED (recorded for M14)**: real lock/unlock and system suspend/resume (declined — disruptive to the session); the message routing is unit-tested and code-reviewed. Battery = user-assisted (unplug AC).
 - **M11 handoff**: the governor exposes `state()` + `reasons()` — the UI's Home panel (M11) reports state + active reasons; `CONFIG_SET` calls `markConfigChanged()` + `validateThresholdPairs()`.
 
+### M10 review fixes (2026-08-17, before M11)
+
+1. **Stop→resume within the release window failed**: the app's stop handler feeds the `User` reason (governor → PAUSED, decoder kept) **and then** calls `playback_->stop()` directly — so a resume within `longPauseReleaseSeconds` hit `resume()` on a stopped session (`unexpected("not paused (stopped)")`) and the governor reported ACTIVE while nothing played. `transitionTo(Active)` now routes ANY `!playback_.isOpen()` (user stop or SUSPENDED) through the reopen resume handler; plain `resume()` only for a live paused session. **1 regression test** (`governor: stop-then-resume within the release window reopens`).
+2. **`PausePolicy::nextState` was dead code**: the governor re-implemented the transition table in `setReasonsWithTransition`/`onTick` instead of delegating (two sources of truth). The governor now feeds its mask + elapsed-pause clock to `policy_.nextState()` and maps the returned state to playback actions; dead `wantsActive()` removed.
+3. **Flaky M7 playlist test fixed**: the shuffle-wrap test detected "order regenerated" by comparing permutations within 6 walk steps — with 3 items a fresh cycle randomly collides with the old one (~1/16, observed once as `REQUIRE( 0 == 3 )`). Now deterministic via a new `PlaylistManager::shuffleGeneration()` counter (bumped by every `regenerateShuffle()`).
+
+**149/149 tests, Debug + Release, 0 warnings under /WX** (5 consecutive runs). Live smoke: boots + plays.
+
 ---
 
 ## M9 — Detection & monitoring (workload sampling + game/fullscreen detection)

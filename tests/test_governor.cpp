@@ -107,6 +107,31 @@ TEST_CASE("governor: SUSPENDED + all clear -> ACTIVE via the resume handler") {
     CHECK(resumed); // the app's handler reopened the current item
 }
 
+TEST_CASE("governor: stop-then-resume within the release window reopens "
+          "(app stop drops the session)") {
+    Harness h;
+    auto t = std::chrono::steady_clock::now();
+    h.governor.setClockForTest([&t] { return t; });
+    int reopens = 0;
+    h.governor.setResumeHandler([&] { ++reopens; });
+
+    // The app's stop handler feeds the User reason (governor -> PAUSED, keeps
+    // the decoder) and THEN calls playback_->stop() directly, dropping the
+    // session. The governor must not assume the session survived the pause.
+    h.governor.setReason(Reason::User, true);
+    CHECK(h.governor.state() == State::Paused);
+    h.playback.stop();
+    CHECK_FALSE(h.playback.isOpen());
+
+    // Resume within the 5 s release window: the session is gone, so a plain
+    // resume() would fail ("not paused (stopped)") — the reopen handler must
+    // run instead (this was the pre-fix bug: state said ACTIVE, nothing played).
+    t += 3s;
+    h.governor.setReason(Reason::User, false);
+    CHECK(h.governor.state() == State::Active);
+    CHECK(reopens == 1);
+}
+
 TEST_CASE("governor: battery pause latches and clears with the power state") {
     Harness h;
     // Battery mode Pause: the monitor's battery query feeds the reason.

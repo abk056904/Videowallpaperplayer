@@ -76,15 +76,10 @@ public:
 
     explicit PausePolicy(Config cfg) : cfg_(std::move(cfg)) {}
 
-    // Should the session be ACTIVE (playing) given the current state + active
-    // reasons? ACTIVE requires: not paused by any reason AND (if suspended)
-    // a resume event — encoded by reasons being clear and state not being
-    // PAUSED. The governor owns the elapsed-pause clock for suspension.
-    bool wantsActive(uint32_t reasons) const { return reasons == 0; }
-
-    // Transition decision for the CURRENT state given the active reasons.
-    // Returns the state to move to. Pure: no side effects, no timers — the
-    // governor maps this onto concrete playback actions.
+    // Transition decision for the CURRENT state given the active reasons and
+    // whether the long-pause release time has elapsed. Pure: no side effects,
+    // no timers — the ResourceGovernor feeds its mask + elapsed-pause clock
+    // here and maps the returned state onto concrete playback actions.
     State nextState(State current, uint32_t reasons, bool longPauseElapsed) const {
         const bool paused = reasons != 0;
         switch (current) {
