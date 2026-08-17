@@ -7,9 +7,11 @@
 #include "config/ConfigurationManager.h"
 #include "detection/FullscreenDetector.h"
 #include "detection/GameDetector.h"
+#include "governor/ResourceGovernor.h"
 #include "performance/StatsCollector.h"
 #include "performance/WorkloadMonitor.h"
 #include "playlist/PlaylistManager.h"
+#include "system/SystemStateMonitor.h"
 #include "wallpaper/WallpaperManager.h"
 
 namespace vw::playback {
@@ -50,6 +52,7 @@ private:
     // M9: pure fullscreen classification of a window vs its monitor (wired
     // from onForegroundChange + WM_DISPLAYCHANGE; the governor consumes it).
     detection::WindowState classifyForegroundFullscreen(HWND hwnd) const;
+    void feedDetectionReasons(); // M10: game/fullscreen/workload -> governor
     void shutdown();
 
     static constexpr UINT_PTR kWallpaperTimerId = 1; // 1 Hz Explorer-restart stub
@@ -64,9 +67,12 @@ private:
     std::unique_ptr<performance::WorkloadMonitor> workloadMonitor_; // M9
     std::unique_ptr<detection::GameDetector> gameDetector_;        // M9
     detection::WindowState fullscreenState_ = detection::WindowState::Windowed; // M9
+    std::unique_ptr<governor::ResourceGovernor> governor_;        // M10
+    std::unique_ptr<system::SystemStateMonitor> systemMonitor_;    // M10
     std::unique_ptr<playlist::PlaylistManager> playlist_; // M7
     HWINEVENTHOOK winEventHook_ = nullptr; // M9: EVENT_SYSTEM_FOREGROUND (out-of-context)
     HWND lastForeground_ = nullptr; // M9: change detection cache
+    bool systemMonitorStarted_ = false; // M10: notification registration state
     std::filesystem::path playlistPath_;                 // M7: AppData/playlist.json
     std::wstring lastPlayedPath_;                        // M7: same-item loop detection
     bool mfStarted_ = false;

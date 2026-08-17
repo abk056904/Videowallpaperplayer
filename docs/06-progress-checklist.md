@@ -283,18 +283,19 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Objective:** central state authority; near-zero active work when hidden/paused.
 
-- [ ] `SystemStateMonitor`: `WTSRegisterSessionNotification` (lock/unlock), `WM_POWERBROADCAST` (suspend/resume, `GUID_MONITOR_POWER_ON`), AC/battery via notifications (not polling)
-- [ ] `ResourceGovernor`: sole authority over decode/render; pause-reason bitmask; transitions per plan §2.4
-- [ ] Battery policy: Continue / Reduce quality / Pause (default Pause), configurable
-- [ ] Long pause > `longPauseReleaseSeconds` (default 5 s) ⇒ SUSPENDED: release decoder + next-video prep + temp GPU resources; keep position/path/config
-- [ ] Resume: recreate decoder, seek to saved position, restart scheduler; device-loss routes through M12
-- [ ] **Threshold-pair cross-validation** (spec §9): pause ≥ resume for cpu/gpu/memory at load and on every `CONFIG_SET`; violations clamped (resume pulled toward pause) + logged
-- [ ] **Config revision counter** (spec §9): bumped on every accepted config change so the governor reacts to live threshold/delay/mode changes without polling `ConfigurationManager`
-- [ ] Files: `src/governor/ResourceGovernor*`, `PausePolicy*`, `src/system/SystemStateMonitor*`
+- [x] `SystemStateMonitor`: `WTSRegisterSessionNotification` (lock/unlock), `WM_POWERBROADCAST` (suspend/resume, `GUID_MONITOR_POWER_ON`), AC/battery via notifications (not polling)
+- [x] `ResourceGovernor`: sole authority over decode/render; pause-reason bitmask; transitions per plan §2.4
+- [x] Battery policy: Continue / Reduce quality / Pause (default Pause), configurable
+- [x] Long pause > `longPauseReleaseSeconds` (default 5 s) ⇒ SUSPENDED: release decoder + next-video prep + temp GPU resources; keep position/path/config
+- [x] Resume: recreate decoder, seek to saved position, restart scheduler; device-loss routes through M12
+- [x] **Threshold-pair cross-validation** (spec §9): pause ≥ resume for cpu/gpu/memory at load and on every `CONFIG_SET`; violations clamped (resume pulled toward pause) + logged
+- [x] **Config revision counter** (spec §9): bumped on every accepted config change so the governor reacts to live threshold/delay/mode changes without polling `ConfigurationManager`
+- [x] Files: `src/governor/ResourceGovernor*`, `PausePolicy*`, `src/system/SystemStateMonitor*`
 
-**Verify:** governor unit tests per doc 3 §95 transition table; lock screen ⇒ ~0 CPU/GPU + decoder released (handle count); unlock ⇒ resumes. **Exit:** ☐
+**Verify:** governor unit tests per doc 3 §95 transition table; lock screen ⇒ ~0 CPU/GPU + decoder released (handle count); unlock ⇒ resumes. **Exit:** ✅ (transition table + battery + message routing unit-tested; **live**: full ACTIVE→PAUSED→SUSPENDED→ACTIVE cycle verified via the allow-list; lock/unlock + suspend/resume NOT MEASURED — session events are code-reviewed + message-routing tested; battery = user-assisted)
 
 **Notes:**
+- **2026-08-17 (M10 complete)**: `ResourceGovernor` (sole authority; ACTIVE/PAUSED/SUSPENDED + 11-bit reason mask, injectable clock + transition observer) + pure `PausePolicy` (reason-agnostic: any bit pauses, zero resumes; long-pause → SUSPENDED releases the decoder; SUSPENDED→ACTIVE reopens the current playlist item via a resume handler). `SystemStateMonitor` (WTS lock/unlock, PBT suspend/resume, `GUID_MONITOR_POWER_ON` display-off, battery via injectable `GetSystemPowerStatus` query — translated to reason bits by `translate()`). App wiring: manual pause/resume/stop route through the governor (`User` reason); game/fullscreen/workload reasons fed by `feedDetectionReasons()` on every foreground/display/workload change; 1 Hz tick drives the long-pause release. Config: **threshold-pair cross-validation** (pause ≥ resume, resume clamped up, logged) at load + `validateThresholdPairs` for CONFIG_SET, and a **revision counter** (`markConfigChanged`/`revision()`). **8 new tests → 148/148**, both configs, 0 warnings. **Live e2e**: notepad.exe in allow-list → `governor: ACTIVE -> PAUSED (reasons: game)` → 5 s later `PAUSED -> SUSPENDED (released decoder)` → notepad closed → `SUSPENDED -> ACTIVE (resume)`. **NOT MEASURED**: real lock/unlock + system suspend (declined — disruptive); message routing unit-tested, code-reviewed.
 
 ---
 

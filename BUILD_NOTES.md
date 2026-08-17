@@ -559,6 +559,27 @@ The wallpaper HOST WINDOW was physically **25% oversized** — 2400×1350 on a 1
 
 ---
 
+## M10 — Resource governor & automatic suspension
+
+**Committed as `b7e0a51`** — per docs/02 §2.4 / docs/03 §3.12 / spec §9. The governor is the SOLE authority over decode/render start-stop: subsystems feed reasons, it owns the transitions.
+
+## What shipped
+
+- **`ResourceGovernor`** (`src/governor/ResourceGovernor.*`): states ACTIVE → PAUSED → SUSPENDED (+ reason bitmask: User/Game/Fullscreen/HighCPU/HighGPU/HighMemory/Battery/Locked/DisplayOff/SystemSuspended/MonitorHidden). Any reason set ⇒ PAUSED; all clear ⇒ ACTIVE; PAUSED longer than `longPauseReleaseSeconds` (default 5 s) ⇒ SUSPENDED (decoder + session released); SUSPENDED + clear ⇒ ACTIVE via a **resume handler** (the app reopens the current playlist item — recreate decoder + seek). Injectable clock + transition observer for unit tests.
+- **`PausePolicy`** (pure): reason-agnostic transition table (docs/03 §95) — workload reasons arrive pre-debounced by the M9 hysteresis engine; battery mode Pause is a required reason.
+- **`SystemStateMonitor`** (`src/system/SystemStateMonitor.*`): `WTSRegisterSessionNotification` (lock/unlock), `RegisterPowerSettingNotification(GUID_MONITOR_POWER_ON)` (display on/off), `WM_POWERBROADCAST` (suspend/resume), battery via `GetSystemPowerStatus` (injectable — never polled). `translate()` mutates the governor's reason mask.
+- **App wiring**: manual pause/resume/stop route through the governor (`User` reason); `feedDetectionReasons()` (game/fullscreen/workload) on every foreground/display/workload change; the 1 Hz tick drives the long-pause release; `WM_WTSSESSION_CHANGE` + `WM_POWERBROADCAST` route through the monitor.
+- **Config (spec §9)**: **threshold-pair cross-validation** — pause ≥ resume for cpu/gpu/memory, violations clamped (resume pulled UP to pause) + logged — at load and via `validateThresholdPairs()` for every `CONFIG_SET`; **revision counter** (`markConfigChanged()`/`revision()`) so the governor reacts to live threshold/delay/mode changes without polling.
+
+## Verified
+
+- **8 new unit tests** (transition table: game→PAUSED→clear→ACTIVE; multi-reason stays paused until the last clears; long-pause→SUSPENDED at the threshold; SUSPENDED→ACTIVE via resume handler; battery latch/clear; lock/unlock + suspend/resume message routing; unrelated messages ignored; threshold-pair clamping) → **148/148 tests**, Debug + Release, 0 warnings under /WX.
+- **Live e2e (full cycle)**: notepad.exe in the allow-list → `foreground: … (game [allow])` → `governor: ACTIVE -> PAUSED (reasons: game)` + `playback paused at 3116 ms` → 5 s later `PAUSED -> SUSPENDED (released decoder, 5 s paused)` → notepad closed → `SUSPENDED -> ACTIVE (resume)`. Config restored after the test.
+- **NOT MEASURED (recorded for M14)**: real lock/unlock and system suspend/resume (declined — disruptive to the session); the message routing is unit-tested and code-reviewed. Battery = user-assisted (unplug AC).
+- **M11 handoff**: the governor exposes `state()` + `reasons()` — the UI's Home panel (M11) reports state + active reasons; `CONFIG_SET` calls `markConfigChanged()` + `validateThresholdPairs()`.
+
+---
+
 ## M9 — Detection & monitoring (workload sampling + game/fullscreen detection)
 
 **Committed as `735362b`** — per docs/03 §3.11 / docs/04 §2. This milestone produces the DETECTION SIGNALS; the pause/resume ACTIONS land in M10's ResourceGovernor.

@@ -74,6 +74,18 @@ public:
 
     const std::wstring& lastError() const { return lastError_; }
 
+    // M10 (spec §9): the revision counter — bumped on every ACCEPTED config
+    // change (thresholds/delays/modes) so the ResourceGovernor reacts to live
+    // changes without polling. The UI calls markConfigChanged() after a
+    // CONFIG_SET; the governor compares revision() to its cached value.
+    uint64_t revision() const { return revision_; }
+    void markConfigChanged() { ++revision_; }
+
+    // M10 (spec §9): threshold-pair cross-validation — pause >= resume for
+    // cpu/gpu/memory. Violations are clamped (resume pulled UP to pause) and
+    // logged. Called at load and on every accepted CONFIG_SET.
+    static void validateThresholdPairs(Config& cfg);
+
 private:
     void applyDefaults();
     static void readInto(Config& cfg, const util::Json& root);
@@ -81,6 +93,7 @@ private:
     Options opts_;
     Config config_;
     mutable std::wstring lastError_; // written from const save()
+    uint64_t revision_ = 0; // M10: config revision counter (spec §9)
 };
 
 } // namespace vw::config

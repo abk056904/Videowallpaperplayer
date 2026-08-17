@@ -134,26 +134,38 @@ int ApplicationController::run() {
     // from config.playback on first run.
     loadPlaylist();
 
-    control_.setHandler([this](UINT msg, WPARAM wParam, LPARAM) {
+    control_.setHandler([this](UINT msg, WPARAM wParam, LPARAM lParam) {
         auto& log = log::Logger::instance();
         if (msg == ControlWindow::focusMessage()) {
             log.info(L"second instance requested focus (UI arrives in M11)");
         } else if (msg == WM_TIMER && wParam == kWallpaperTimerId && wallpaper_) {
             wallpaper_->onTick(); // Explorer-restart validity stub (~1 Hz)
+            // M10: long-pause release (PAUSED -> SUSPENDED). The 1 Hz tick
+            // is also the governor's clock.
+            if (governor_) {
+                governor_->onTick();
+            }
         } else if (msg == WM_TIMER && wParam == kWorkloadTimerId) {
             onWorkloadTick(); // M9: ~2 s CPU/GPU/RAM sampling
         } else if (msg == ControlWindow::pauseMessage()) {
-            // PlaybackController logs the pause position + cancels the timer.
-            if (playback_ && playback_->state() == playback::PlaybackController::State::Playing) {
+            // Explicit user pause routes through the governor (sole authority).
+            if (governor_) {
+                governor_->setReason(governor::Reason::User, true);
+            } else if (playback_) {
                 playback_->pause();
             }
         } else if (msg == ControlWindow::resumeMessage()) {
-            if (playback_ && playback_->state() == playback::PlaybackController::State::Paused) {
+            if (governor_) {
+                governor_->setReason(governor::Reason::User, false);
+            } else if (playback_) {
                 if (auto r = playback_->resume(); !r) {
                     log.warn(L"resume failed: {}", r.error());
                 }
             }
         } else if (msg == ControlWindow::stopMessage()) {
+            if (governor_) {
+                governor_->setReason(governor::Reason::User, true); // stop = pause-all
+            }
             if (playback_) {
                 playback_->stop();
             }
@@ -162,6 +174,13 @@ int ApplicationController::run() {
             // Monitor bounds changed — a fullscreen window's classification
             // (rect vs monitor) may be stale. Re-classify the foreground.
             onForegroundChange(::GetForegroundWindow());
+        } else if (systemMonitor_ && (msg == WM_WTSSESSION_CHANGE || msg == WM_POWERBROADCAST)) {
+            // M10: lock/unlock, suspend/resume, monitor on/off -> governor.
+            uint32_t reasons = governor_ ? governor_->reasons() : 0;
+            const uint32_t changed = systemMonitor_->translate(msg, wParam, lParam, reasons);
+            if (governor_ && changed != 0) {
+                governor_->setReasons(reasons);
+            }
         }
     });
 
@@ -217,6 +236,35 @@ int ApplicationController::run() {
     } else {
         mfStarted_ = true;
         startPlayback();
+    }
+
+    // M10: system-state notifications (lock/unlock, suspend/resume, monitor
+    // power, battery) + the ResourceGovernor (sole authority over decode/
+    // render start-stop). The governor is created AFTER startPlayback so
+    // playback_ exists; the monitor uses the control-window handle so
+    // notifications arrive as window messages.
+    systemMonitor_ = std::make_unique<system::SystemStateMonitor>(control_.handle());
+    systemMonitor_->start();
+    systemMonitorStarted_ = true;
+    if (playback_) {
+        const auto& c = config_->config();
+        governor_ = std::make_unique<governor::ResourceGovernor>(
+            *playback_,
+            governor::PausePolicy::Config{
+                .longPauseReleaseSeconds = c.longPauseReleaseSeconds,
+                .batteryPauses = c.batteryMode == config::BatteryMode::Pause,
+            });
+        // SUSPENDED released the decoder (stop()); reopening the current item
+        // recreates it and seeks to the saved position.
+        governor_->setResumeHandler([this]() {
+            if (playlist_ && playlist_->currentIndex() < playlist_->size()) {
+                startPlaylistItem(playlist_->currentIndex());
+            }
+        });
+        // Initial battery state (never polled afterwards — only on changes).
+        uint32_t reasons = governor_->reasons();
+        systemMonitor_->updateBatteryReason(reasons);
+        governor_->setReasons(reasons);
     }
 
     log.info(L"Video Wallpaper v{} starting", L"0.1.0");
@@ -499,6 +547,42 @@ void ApplicationController::onWorkloadTick() {
               state.gpuMemoryUsed / (1024.0 * 1024.0), state.gpuMemoryBudget / (1024.0 * 1024.0),
               state.cpuHigh ? L"yes" : L"no", state.gpuHigh ? L"yes" : L"no",
               state.memoryHigh ? L"yes" : L"no");
+    feedDetectionReasons(); // M10: hysteresis-latched workload -> governor
+}
+
+void ApplicationController::feedDetectionReasons() {
+    if (!governor_) {
+        return;
+    }
+    const auto& c = config_->config();
+    uint32_t reasons = governor_->reasons();
+
+    // Game / fullscreen (immediate reasons). The foreground classification is
+    // cached from the last WinEventHook event.
+    const bool gamePause =
+        c.pauseOnGame && gameDetector_ &&
+        gameDetector_->state().classification == detection::GameClass::Game;
+    const bool fsPause = c.pauseOnFullscreen && detection::isFullscreenState(fullscreenState_);
+    const performance::WorkloadState wl =
+        workloadMonitor_ ? workloadMonitor_->state() : performance::WorkloadState{};
+    const bool cpuPause = c.pauseOnHighCPU && wl.cpuHigh;
+    const bool gpuPause = c.pauseOnHighGPU && wl.gpuHigh;
+    const bool memPause = c.pauseOnHighRAM && wl.memoryHigh;
+
+    const uint32_t wanted = (gamePause ? governor::Reason::Game : 0) |
+                            (fsPause ? governor::Reason::Fullscreen : 0) |
+                            (cpuPause ? governor::Reason::HighCPU : 0) |
+                            (gpuPause ? governor::Reason::HighGPU : 0) |
+                            (memPause ? governor::Reason::HighMemory : 0);
+    // Preserve the non-detection reasons (User, Battery, Locked, DisplayOff,
+    // SystemSuspended) — the detection layer only owns these five bits.
+    constexpr uint32_t kDetectionMask = governor::Reason::Game | governor::Reason::Fullscreen |
+                                        governor::Reason::HighCPU | governor::Reason::HighGPU |
+                                        governor::Reason::HighMemory;
+    reasons = (reasons & ~kDetectionMask) | wanted;
+    if (reasons != governor_->reasons()) {
+        governor_->setReasons(reasons);
+    }
 }
 
 void ApplicationController::onForegroundChange(HWND hwnd) {
@@ -514,6 +598,7 @@ void ApplicationController::onForegroundChange(HWND hwnd) {
     // Cached on the controller — M10's ResourceGovernor reads it for the
     // pause-on-fullscreen policy.
     fullscreenState_ = classifyForegroundFullscreen(hwnd);
+    feedDetectionReasons(); // M10: game/fullscreen -> governor
 
     DWORD pid = 0;
     if (hwnd) {
@@ -576,6 +661,11 @@ detection::WindowState ApplicationController::classifyForegroundFullscreen(HWND 
 void ApplicationController::shutdown() {
     // docs/03 §3.17: stop workers -> stop rendering -> release GPU resources
     // -> MFShutdown -> save state -> close window -> flush logs -> exit.
+    if (systemMonitor_ && systemMonitorStarted_) {
+        systemMonitor_->stop(); // unregister WTS/power notifications
+        systemMonitorStarted_ = false;
+    }
+    systemMonitor_.reset();
     if (winEventHook_) {
         ::UnhookWinEvent(winEventHook_);
         winEventHook_ = nullptr;

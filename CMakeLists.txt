@@ -129,6 +129,12 @@ set(VW_DETECTION_SOURCES
     src/detection/GameDetector.cpp
 )
 
+# Governor + system module sources (M10: resource governor + system state).
+set(VW_GOVERNOR_SOURCES
+    src/governor/ResourceGovernor.cpp
+    src/system/SystemStateMonitor.cpp
+)
+
 # Playlist module sources (M7: playlist engine + persistence).
 set(VW_PLAYLIST_SOURCES
     src/playlist/PlaylistManager.cpp
@@ -156,11 +162,12 @@ add_executable(VideoWallpaper WIN32
     ${VW_PLAYBACK_SOURCES}
     ${VW_PERFORMANCE_SOURCES}
     ${VW_DETECTION_SOURCES}
+    ${VW_GOVERNOR_SOURCES}
     ${VW_PLAYLIST_SOURCES}
     ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr}
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi d3d11 dxgi ${VW_MF_LIBS})
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 d3d11 dxgi ${VW_MF_LIBS})
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug
@@ -191,6 +198,7 @@ add_executable(vw_tests
     tests/test_scale.cpp
     tests/test_stats.cpp
     tests/test_detection.cpp
+    tests/test_governor.cpp
     tests/test_video.cpp
     src/logging/Logger.cpp
     src/config/ConfigurationManager.cpp
@@ -203,10 +211,11 @@ add_executable(vw_tests
     ${VW_PLAYBACK_SOURCES}
     ${VW_PERFORMANCE_SOURCES}
     ${VW_DETECTION_SOURCES}
+    ${VW_GOVERNOR_SOURCES}
     ${VW_PLAYLIST_SOURCES}
 )
 target_include_directories(vw_tests PRIVATE src tests)
-target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 d3d11 dxgi ${VW_MF_LIBS})
+target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 psapi wtsapi32 d3d11 dxgi ${VW_MF_LIBS})
 target_compile_definitions(vw_tests PRIVATE ${VW_PUBLIC_DEFS})
 add_test(NAME vw_tests COMMAND vw_tests)
 

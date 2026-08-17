@@ -4,6 +4,7 @@
 #include <iterator>
 #include <sstream>
 
+#include "logging/Logger.h"
 #include "util/utf8.h"
 
 namespace vw::config {
@@ -216,6 +217,9 @@ bool ConfigurationManager::load() {
 
     applyDefaults();
     readInto(config_, *parsed);
+    // M10 (spec §9): threshold-pair cross-validation at load — pause >= resume
+    // for cpu/gpu/memory; violations clamped + logged.
+    validateThresholdPairs(config_);
     lastError_.clear();
     return true;
 }
@@ -295,6 +299,21 @@ bool ConfigurationManager::save() const {
         return false;
     }
     return true;
+}
+
+void ConfigurationManager::validateThresholdPairs(Config& cfg) {
+    auto& log = log::Logger::instance();
+    const auto clampPair = [&](int& pause, int& resume, const wchar_t* name) {
+        if (pause < resume) {
+            log.warn(L"config: {} pause threshold ({}) < resume threshold ({}) — "
+                     L"resume clamped up to pause",
+                     name, pause, resume);
+            resume = pause; // resume pulled UP to pause (never pause > resume)
+        }
+    };
+    clampPair(cfg.cpuPauseThreshold, cfg.cpuResumeThreshold, L"cpu");
+    clampPair(cfg.gpuPauseThreshold, cfg.gpuResumeThreshold, L"gpu");
+    clampPair(cfg.memoryPauseThreshold, cfg.memoryResumeThreshold, L"memory");
 }
 
 } // namespace vw::config
