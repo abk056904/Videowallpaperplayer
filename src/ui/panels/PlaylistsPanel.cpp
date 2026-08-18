@@ -32,8 +32,9 @@ bool PlaylistsPanel::create(HWND parent) {
     list_ = ctl(hwnd_, WC_LISTVIEW, L"",
                 WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 8, L.y(1),
                 400, 300, nullptr);
-    ::SendMessageW(list_, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
-                   LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    ::SendMessageW(list_, LVM_SETEXTENDEDLISTVIEWSTYLE,
+                   LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP,
+                   LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
     const wchar_t* titles[] = {L"#", L"Name", L"Start", L"End", L"On"};
     for (int c = 0; c < 5; ++c) {
         LVCOLUMNW col{};
@@ -272,6 +273,19 @@ LRESULT CALLBACK PlaylistsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         case WM_SIZE: {
             self->layout(LOWORD(lParam), HIWORD(lParam));
             return 0;
+        }
+        case WM_NOTIFY: {
+            const auto* nm = reinterpret_cast<NMHDR*>(lParam);
+            if (nm->hwndFrom == self->list_ && nm->code == LVN_GETINFOTIP) {
+                const auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(lParam);
+                const int row = tip->iItem;
+                if (row >= 0 && row < static_cast<int>(self->items_.size())) {
+                    ::wcsncpy_s(tip->pwzText, tip->cchTextMax,
+                                self->items_[row].path.c_str(), _TRUNCATE);
+                }
+                return 0;
+            }
+            break;
         }
     }
     return ::DefWindowProcW(hwnd, msg, wParam, lParam);
