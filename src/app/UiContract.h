@@ -149,7 +149,7 @@ struct ConfigSnapshot {
     int pauseDelaySeconds = 3, resumeDelaySeconds = 5;
     // frameQueue default 1 — consumer-paced decode (see ConfigurationManager:
     // depth 1 makes stale-frame drops impossible; matches the config default).
-    int longPauseReleaseSeconds = 5, frameQueue = 1;
+    int longPauseReleaseSeconds = 2, frameQueue = 1;
     BatteryMode batteryMode = BatteryMode::Pause;
     PlaylistMode playbackMode = PlaylistMode::Loop;
     bool loop = true;

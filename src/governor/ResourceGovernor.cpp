@@ -1,5 +1,7 @@
 #include "governor/ResourceGovernor.h"
 
+#include <Windows.h>
+#include <psapi.h>
 #include <string>
 
 #include "logging/Logger.h"
@@ -98,6 +100,10 @@ void ResourceGovernor::transitionTo(State next) {
             playback_.stop();
             log.info(L"governor: PAUSED -> SUSPENDED (released decoder, {} s paused)",
                      policy_.config().longPauseReleaseSeconds);
+            // M14 P4: release physical pages back to the OS after decoder
+            // release. The virtual allocation stays (fast resume), but the
+            // RAM footprint drops immediately.
+            ::EmptyWorkingSet(::GetCurrentProcess());
             break;
         case State::Active:
             // SUSPENDED dropped the session, and a user stop does too (the app

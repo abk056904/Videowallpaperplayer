@@ -56,7 +56,7 @@ struct Config {
     int pauseDelaySeconds = 3, resumeDelaySeconds = 5;
     PerfMode perfMode = PerfMode::Balanced;
     bool ultraLowResource = false;
-    int longPauseReleaseSeconds = 5;
+    int longPauseReleaseSeconds = 2; // M14 P4: faster memory release on pause
     // battery
     BatteryMode batteryMode = BatteryMode::Pause;
     // detection

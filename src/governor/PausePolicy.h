@@ -68,7 +68,7 @@ class PausePolicy {
 public:
     struct Config {
         // A long PAUSED stretch (>= this) releases the decoder -> SUSPENDED.
-        int longPauseReleaseSeconds = 5;
+        int longPauseReleaseSeconds = 2; // M14 P4: default 2 s for faster memory release
         // Battery mode: Pause = Battery is a required reason; Continue =
         // battery never pauses (ReduceQuality is an M13 perf-mode decision).
         bool batteryPauses = true;
