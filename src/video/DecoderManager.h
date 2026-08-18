@@ -14,6 +14,7 @@
 
 #include "util/Result.h"
 #include "video/FrameQueue.h"
+#include "graphics/D3D11DeviceManager.h"
 #include "video/VideoMetadata.h"
 
 namespace vw::video {
@@ -90,6 +91,7 @@ public:
     // retries via openSoftware (re-negotiating RGB32 on the same reader fails
     // with MF_E_INVALIDTYPE once NV12 is committed — probed).
     Result<void> openHardware(const std::wstring& path);
+    Result<void> tryHardwareWithDevice(const std::wstring& path, ID3D11Device* device);
     // Software path: NV12 first (GPU YUV conversion, no CPU color convert),
     // falling back per-file to RGB32 through the Video Processor MFT when the
     // decoder cannot output NV12.
@@ -112,6 +114,7 @@ private:
 
     Microsoft::WRL::ComPtr<IMFSourceReader> reader_;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> dxgiManager_;
+    Microsoft::WRL::ComPtr<ID3D11Device> decodeDevice_; // may differ from d3dDevice_
     VideoMetadata metadata_;
     ID3D11Device* d3dDevice_ = nullptr; // non-owning; must outlive this manager
     std::thread worker_;

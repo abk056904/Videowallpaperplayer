@@ -280,7 +280,7 @@ LRESULT CALLBACK PlaylistsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 const auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(lParam);
                 const int row = tip->iItem;
                 if (row >= 0 && row < static_cast<int>(self->items_.size())) {
-                    ::wcsncpy_s(tip->pwzText, tip->cchTextMax,
+                    ::wcsncpy_s(tip->pszText, tip->cchTextMax,
                                 self->items_[row].path.c_str(), _TRUNCATE);
                 }
                 return 0;

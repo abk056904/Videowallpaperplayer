@@ -182,6 +182,87 @@ Result<void> DecoderManager::open(const std::wstring& path) {
 }
 
 Result<void> DecoderManager::openHardware(const std::wstring& path) {
+    // Try the supplied render device first, then fall back to probing every
+    // other DXGI adapter. On hybrid-GPU laptops the render device is the
+    // display adapter (e.g. AMD iGPU) but the hardware decoder (NVDEC) may
+    // live on the discrete GPU (e.g. NVIDIA). Each adapter gets a temporary
+    // D3D11 device with VIDEO_SUPPORT; the first one that produces GPU
+    // surfaces wins.
+    std::vector<ComPtr<ID3D11Device>> candidates;
+    if (d3dDevice_) {
+        candidates.push_back(d3dDevice_);
+    }
+    // Enumerate additional adapters (skip the one matching the render
+    // device's LUID — already tried above).
+    LUID renderLuid{};
+    if (d3dDevice_) {
+        ComPtr<IDXGIDevice> dxgiDev;
+        if (SUCCEEDED(d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+            ComPtr<IDXGIAdapter> adap;
+            if (SUCCEEDED(dxgiDev->GetAdapter(&adap))) {
+                DXGI_ADAPTER_DESC desc{};
+                if (SUCCEEDED(adap->GetDesc(&desc))) {
+                    renderLuid = desc.AdapterLuid;
+                }
+            }
+        }
+    }
+    auto& log = log::Logger::instance();
+    auto adapters = gfx::D3D11DeviceManager::enumerateAdapters();
+    if (adapters) {
+        log.info(L"hardware probe: {} DXGI adapter(s) found", adapters->size());
+        for (UINT i = 0; i < adapters->size(); ++i) {
+            const auto& info = (*adapters)[i];
+            bool isRender = (info.luid.LowPart == renderLuid.LowPart &&
+                             info.luid.HighPart == renderLuid.HighPart);
+            log.info(L"  adapter {}: {} (LUID {}.{}{})", i, info.description,
+                     info.luid.HighPart, info.luid.LowPart,
+                     isRender ? L" [render device]" : L"");
+            if (isRender) {
+                continue; // already tried
+            }
+            auto adapter = gfx::D3D11DeviceManager::getAdapter(i);
+            if (!adapter) {
+                log.info(L"  adapter {}: getAdapter failed", i);
+                continue;
+            }
+            ComPtr<ID3D11Device> dev;
+            D3D_FEATURE_LEVEL fl{};
+            const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
+                                                D3D_FEATURE_LEVEL_11_0};
+            HRESULT hr = ::D3D11CreateDevice(
+                adapter->Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                levels, 2, D3D11_SDK_VERSION, &dev, &fl, nullptr);
+            if (SUCCEEDED(hr)) {
+                log.info(L"  adapter {}: device created (feature level 0x{:04X})",
+                         i, static_cast<unsigned>(fl));
+                candidates.push_back(std::move(dev));
+            } else {
+                log.info(L"  adapter {}: D3D11CreateDevice failed (0x{:08X})",
+                         i, static_cast<unsigned>(hr));
+            }
+        }
+    } else {
+        log.info(L"hardware probe: enumerateAdapters failed");
+    }
+
+    log.info(L"hardware probe: {} candidate device(s)", candidates.size());
+    for (auto& dev : candidates) {
+        auto result = tryHardwareWithDevice(path, dev.Get());
+        if (result) {
+            decodeDevice_ = dev; // may differ from d3dDevice_ (cross-adapter)
+            return {};
+        }
+        log.info(L"hardware probe failed on this adapter; trying next",
+                 result.error());
+    }
+    return std::unexpected(
+        std::wstring(L"no adapter produced GPU surfaces"));
+}
+
+Result<void> DecoderManager::tryHardwareWithDevice(const std::wstring& path,
+                                                   ID3D11Device* device) {
     ComPtr<IMFAttributes> attrs;
     HRESULT hr = ::MFCreateAttributes(&attrs, 4);
     if (FAILED(hr)) {
@@ -197,7 +278,7 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
     if (FAILED(::MFCreateDXGIDeviceManager(&resetToken, &dxgiManager))) {
         return std::unexpected(L"MFCreateDXGIDeviceManager failed");
     }
-    if (FAILED(dxgiManager->ResetDevice(d3dDevice_, resetToken))) {
+    if (FAILED(dxgiManager->ResetDevice(device, resetToken))) {
         return std::unexpected(L"DXGI manager ResetDevice failed");
     }
     if (FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, dxgiManager.Get())) ||
