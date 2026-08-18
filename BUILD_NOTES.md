@@ -885,3 +885,16 @@ Updated `docs/10-optimization-report.md`:
 Updated `docs/06-progress-checklist.md` M13 section with GPU measurement note.
 
 Soak #3 (final binary, PID 3948): running at 34.7 min, healthy (baseline ~440 MB, threads 77, handles ~1663, flat). Old binary's death window (min 9-11) cleared. Gate still open (~3.5 h remaining).
+
+## Re-package (2026-08-18)
+
+Repackaged `dist/VideoWallpaper-28b6319.zip` (1,064,258 B / 6 files) from the final optimized binary (commit 218ec90 + NV12/queue-1/UI-fix/desktop-click-fix, built 14:29). Old zip (4d9e341, pre-optimization) removed.
+
+Clean-extraction verification (extracted to build/release/verify_dist/):
+- **SHA256 match**: packaged exe = dev build (f6e5b72c6c48c582446cdc89a2a8d25c29ae037f5b9a85c68807ab56ab36b0d2).
+- **Startup**: D3D11 device created, wallpaper host on DISPLAY1 (1920x1080), hardware probe → software NV12 fallback, video opened (Eula 2560x1440@60 H.264), playback started in 143 ms.
+- **30s session**: decoded 59.8 fps, presented 59.8 fps, 0 dropped, render 0.4 ms.
+- **Second instance**: exit code 0, primary (PID 27132) alive, FOCUS delivered.
+- **No errors** in log. Cleaned up temp directory after verification.
+
+Soak #4 restarted (script PID 6856, app PID 20516) at 15:20 on the final binary. Fresh 4 h gate.

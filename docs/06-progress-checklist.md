@@ -379,7 +379,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 ## M14 — Packaging, README, final report
 
-- [x] Portable ZIP via script (`package.ps1`): exe + 3 MSVC runtime DLLs + LICENSE + README only (1,054,769 B zip / 2,366,103 B uncompressed); no samples/debug/symbols/test assets; verified from a clean extraction (second instance loaded the CRT, focused the primary, exited 0)
+- [x] Portable ZIP via script (`package.ps1`): exe + 3 MSVC runtime DLLs + LICENSE + README only (1,064,258 B zip / 2,366,103 B uncompressed); no samples/debug/symbols/test assets; repackaged 2026-08-18 with optimized binary (commit 28b6319). Verified from a clean extraction: SHA256 match (exe = dev build), 59.8 fps / 0 dropped / 0.4 ms render in 30 s session, second instance exit 0 (FOCUS delivered). Old zip (4d9e341) removed.
 - [x] Start-with-Windows optional (HKCU Run — implemented M11; verified absent by default, no admin, no service)
 - [x] `README.md` per spec §64 — full README written (overview, architecture, requirements, build/run, codecs, HW accel, multi-monitor, performance behavior, game detection, config, troubleshooting, limitations, development, testing + how low idle usage is achieved)
 - [x] Final report per spec §65 + doc 3 §101 (22-point list) — `docs/07-final-report.md`, measured numbers or explicit `NOT MEASURED — reason`
@@ -390,7 +390,7 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 
 **Notes:**
 
-- **Package (2026-08-17)**: `dist/VideoWallpaper-<commit>.zip`, 6 files: exe 1,602,048 B + msvcp140/vcruntime140/vcruntime140_1 (716 KB total) + README + LICENSE. DLL-import dump: all imports are system DLLs except the MSVC runtime (those 3 ship). Shaders embedded in the exe (no runtime lookups). Second-instance clean-extraction test: packaged exe ran, found the primary, requested focus, exited 0.
+- **Package (2026-08-18, repackaged)**: `dist/VideoWallpaper-28b6319.zip`, 6 files: exe 1,625,088 B + msvcp140/vcruntime140/vcruntime140_1 (732 KB total) + README + LICENSE. DLL-import dump: all imports are system DLLs except the MSVC runtime (those 3 ship). Shaders embedded in the exe (no runtime lookups). Clean-extraction verified: SHA256 match, 59.8 fps / 0 dropped / 0.4 ms render, second-instance FOCUS exit 0. Previous zip (4d9e341, pre-optimization) removed.
 - **README/report/audit** (2026-08-17): `README.md` (full §64), `docs/07-final-report.md` (22-point list), `docs/08-resource-audit.md` (20 questions). Every performance number cross-checked against the M13 baseline/stress/measurement records; unmeasurable items explicitly `NOT MEASURED — reason`.
 - **Version resource fix** (2026-08-17): `src/app/app.rc` gained a `VERSIONINFO` block, but FileVersion stayed empty — the PE resource directory showed RT_VERSION as a **named** entry (string "VS_VERSION_INFO") instead of **numeric ID 1**; Windows version APIs (`GetFileVersionInfo`) look up by ID 1. Root cause: `VS_VERSION_INFO` is a macro (`= 1`) defined in `winres.h`, which the .rc didn't include. Added `#include <winres.h>`; verified `FileVersion 1.0.0.0` / Product 1.0.0.0 / description / company via .NET `FileVersionInfo` and a direct PE resource-directory walk (tree: `named=0 id=1`, matching cmd.exe). Package rebuilt with the fixed exe.
 - **Soak note**: superseded by **soak #2** (see M13 section) — a fresh 4 h run started 2026-08-17 20:05 on the final binary (UI + desktop-click fixes), completion ~00:05; CSV at `build/release/soak_m13.csv`, result read at completion and recorded before M13 closes.
