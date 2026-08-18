@@ -139,7 +139,13 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
         cbParams.scaleOffset[2] = 0.0f;
         cbParams.scaleOffset[3] = 0.0f;
     }
-    context->UpdateSubresource(frameCb_.Get(), 0, nullptr, &cbParams, 0, 0);
+    // Dirty-track the CB (spec §22: never update unchanged data): tint is a
+    // constant 1.0 and scaleOffset changes only on a video size/scaling
+    // change, so the update happens once per change, not once per frame.
+    if (!(cbParams == cb_)) {
+        context->UpdateSubresource(frameCb_.Get(), 0, nullptr, &cbParams, 0, 0);
+        cb_ = cbParams;
+    }
 
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->IASetInputLayout(nullptr); // vertex-less: SV_VertexID only

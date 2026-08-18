@@ -9,12 +9,16 @@
 
 namespace vw::video {
 
-// One decoded frame (docs/02 §2.7). Two paths:
-// - Software (M4): `bytes` are tightly packed B8G8R8A8 (upload verbatim).
+// One decoded frame (docs/02 §2.7). Three paths:
+// - Software RGB32 (M4): `bytes` are tightly packed B8G8R8A8 (upload verbatim).
+// - Software NV12 (optimization): `bytes` are tightly packed NV12 — the Y
+//   plane (w*h) followed by the interleaved UV plane (w*h/2), 1.5 bytes/px.
+//   The GPU YUV shader converts + scales (no CPU color conversion, 62% less
+//   upload than RGB32).
 // - Hardware (M5): `texture` is the decoder's NV12/P010 GPU surface (no CPU
 //   copy); plane SRVs are created by the consumer on the D3D device.
 struct DecodedFrame {
-    std::vector<uint8_t> bytes;   // software path: w*4 per row, no padding
+    std::vector<uint8_t> bytes;   // software path: tightly packed, no padding
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture; // hardware path
     UINT width = 0;
     UINT height = 0;
@@ -28,6 +32,7 @@ struct DecodedFrame {
                                 // units — for decodeLatencyMs stats (M6)
     bool endOfStream = false;   // sentinel: the source reached the end
     bool hardware = false;      // true when `texture` is the payload
+    bool nv12 = false;          // software path: `bytes` are NV12 (not RGB32)
 };
 
 } // namespace vw::video

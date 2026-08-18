@@ -257,10 +257,51 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
 }
 
 Result<void> DecoderManager::openSoftware(const std::wstring& path) {
-    // Software path: RGB32 through the Video Processor MFT (documented
-    // YUV->RGB32 path; the decoder's own converter rejects RGB32). Without
-    // this the reader yields COMPRESSED samples at the native type and
-    // copySampleToFrame would read past the buffer.
+    // NV12 first (spec §9/§10: keep the native decoded representation; the GPU
+    // YUV shader converts + scales — no CPU color conversion, 1.5 vs 4 B/px
+    // upload). The decoder's NATIVE output is NV12, so negotiating it needs no
+    // video processing at all. Per-file fallback to RGB32 (below) when the
+    // decoder cannot output NV12 (e.g. codecs whose native output differs).
+    auto nv12 = openSoftwareNv12(path);
+    if (nv12) {
+        return {};
+    }
+    log::Logger::instance().warn(L"software NV12 unavailable ({}); falling back "
+                                 L"to the RGB32 path",
+                                 nv12.error());
+    return openSoftwareRgb32(path);
+}
+
+Result<void> DecoderManager::openSoftwareNv12(const std::wstring& path) {
+    // No attributes: without MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING the
+    // reader outputs the decoder's native type; NV12 is native for the H.264/
+    // HEVC software decoders, so SetCurrentMediaType(NV12) succeeds with NO
+    // conversion stage (no VP MFT in the chain at all).
+    VideoMetadata meta;
+    ComPtr<IMFSourceReader> reader;
+    auto prep = prepareReader(path, nullptr, reader, meta);
+    if (!prep) {
+        return prep;
+    }
+    auto negotiated = negotiateNv12Output(reader.Get());
+    if (!negotiated) {
+        return negotiated;
+    }
+
+    softwareNv12_ = true;
+    decoderName_ = L"software (NV12 output)";
+    log::Logger::instance().info(L"decoder: software (NV12 output)");
+    reader_ = std::move(reader);
+    metadata_ = std::move(meta);
+    opened_ = true;
+    return {};
+}
+
+Result<void> DecoderManager::openSoftwareRgb32(const std::wstring& path) {
+    // RGB32 through the Video Processor MFT (documented YUV->RGB32 path; the
+    // decoder's own converter rejects RGB32). Without this the reader yields
+    // COMPRESSED samples at the native type and copySampleToFrame would read
+    // past the buffer.
     ComPtr<IMFAttributes> attrs;
     HRESULT hr = ::MFCreateAttributes(&attrs, 4);
     if (FAILED(hr)) {
@@ -282,6 +323,7 @@ Result<void> DecoderManager::openSoftware(const std::wstring& path) {
         return negotiated;
     }
 
+    softwareNv12_ = false;
     decoderName_ = L"software (RGB32 output)";
     log::Logger::instance().info(L"decoder: software (RGB32 output)");
     reader_ = std::move(reader);
@@ -494,7 +536,12 @@ void DecoderManager::workerLoop(FrameQueue* queue) {
                 log.warn(L"decode: current media type has no frame size");
                 continue;
             }
-            if (!copySampleToFrame(sample.Get(), w, h, frame, copyErr)) {
+            if (softwareNv12_) {
+                if (!copySampleToNv12(sample.Get(), w, h, frame, copyErr)) {
+                    log.warn(L"frame copy failed: {}", copyErr);
+                    continue;
+                }
+            } else if (!copySampleToFrame(sample.Get(), w, h, frame, copyErr)) {
                 log.warn(L"frame copy failed: {}", copyErr);
                 continue;
             }
@@ -516,6 +563,66 @@ void DecoderManager::workerLoop(FrameQueue* queue) {
         ::CoUninitialize();
     }
     log.debug(L"decode worker exited");
+}
+
+bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height,
+                                      DecodedFrame& out, std::wstring& err) {
+    ComPtr<IMFMediaBuffer> buffer;
+    HRESULT hr = sample->GetBufferByIndex(0, &buffer);
+    if (FAILED(hr)) {
+        err = L"GetBufferByIndex failed: " + formatHr(hr);
+        return false;
+    }
+    sample->GetSampleTime(&out.timestamp);
+
+    ComPtr<IMF2DBuffer> buffer2d;
+    BYTE* scanline0 = nullptr;
+    LONG pitch = 0;
+    if (SUCCEEDED(buffer.As(&buffer2d))) {
+        hr = buffer2d->Lock2D(&scanline0, &pitch);
+        if (FAILED(hr)) {
+            err = L"Lock2D failed: " + formatHr(hr);
+            return false;
+        }
+    } else {
+        DWORD len = 0;
+        hr = buffer->Lock(&scanline0, nullptr, &len);
+        if (FAILED(hr)) {
+            err = L"media buffer Lock failed: " + formatHr(hr);
+            return false;
+        }
+        pitch = 0; // tight packing assumed
+    }
+
+    // NV12 layout in the 2D buffer: the Y plane (height rows of `pitch`
+    // bytes) followed immediately by the interleaved UV plane (height/2 rows
+    // of `pitch` bytes). Copy TIGHTLY packed (width per row) into frame.bytes
+    // — the uploader applies the D3D RowPitch. Odd widths (the 1916 px clip)
+    // work: only `width` bytes are copied per row.
+    out.width = width;
+    out.height = height;
+    out.nv12 = true;
+    const size_t srcPitch = pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width);
+    const size_t rowBytes = static_cast<size_t>(width);
+    out.bytes.resize(rowBytes * static_cast<size_t>(height) * 3 / 2);
+    BYTE* dst = out.bytes.data();
+    for (UINT y = 0; y < height; ++y) {
+        std::memcpy(dst + static_cast<size_t>(y) * rowBytes,
+                    scanline0 + static_cast<size_t>(y) * srcPitch, rowBytes);
+    }
+    const BYTE* uv = scanline0 + srcPitch * static_cast<size_t>(height);
+    const size_t ySize = rowBytes * static_cast<size_t>(height);
+    for (UINT y = 0; y < height / 2; ++y) {
+        std::memcpy(dst + ySize + static_cast<size_t>(y) * rowBytes,
+                    uv + static_cast<size_t>(y) * srcPitch, rowBytes);
+    }
+
+    if (buffer2d) {
+        buffer2d->Unlock2D();
+    } else {
+        buffer->Unlock();
+    }
+    return true;
 }
 
 bool DecoderManager::copySampleToTexture(IMFSample* sample, DecodedFrame& out,

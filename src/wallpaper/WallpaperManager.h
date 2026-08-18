@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <d3d11.h>
@@ -159,18 +160,38 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> testTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> testTextureSrv_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> frameTexture_; // M4: video upload
+    // The shared slot's views: frameTextureSrv_ (BGRA software path) OR
+    // nv12YSrv_/nv12UvSrv_ (NV12 software path — GPU YUV conversion);
+    // frameIsNv12_ selects the bind path.
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> frameTextureSrv_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nv12YSrv_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nv12UvSrv_;
+    bool frameIsNv12_ = false;
     UINT frameWidth_ = 0;
     UINT frameHeight_ = 0;
     float frameDisplayAspect_ = 0.0f; // SAR-corrected aspect of the bound frame
+    // B3: plane-SRV cache for the hardware path — the decoder hands back a NEW
+    // surface texture per frame, so the two plane views would be recreated per
+    // frame (GPU resource allocation); cache them per texture. Cleared on
+    // device recreate.
+    struct PlaneSrvCacheEntry {
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> y;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uv;
+    };
+    std::unordered_map<ID3D11Texture2D*, PlaneSrvCacheEntry> planeSrvCache_;
     // M8: per-monitor upload textures for the INDEPENDENT path (each display
-    // runs its own video). Keyed by stable monitor id.
+    // runs its own video). Keyed by stable monitor id. `srv` is the BGRA
+    // software path; `ySrv`/`uvSrv` (+ `nv12`) are the NV12 software path
+    // (GPU YUV conversion, B1 optimization).
     struct PerMonitorFrame {
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ySrv;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvSrv;
         UINT width = 0;
         UINT height = 0;
         float displayAspect = 0.0f; // SAR-corrected aspect of THIS frame (rebind)
+        bool nv12 = false;
     };
     std::map<std::wstring, PerMonitorFrame> perMonitorFrames_;
     gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;

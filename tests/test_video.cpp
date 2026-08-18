@@ -335,8 +335,15 @@ TEST_CASE("DecoderManager opens a real file and decodes a frame") {
     if (gotFrame) {
         CHECK(frame.width == meta.width);
         CHECK(frame.height == meta.height);
-        CHECK(frame.bytes.size() ==
-              static_cast<size_t>(meta.width) * static_cast<size_t>(meta.height) * 4);
+        // B1: the software path now prefers NV12 (1.5 B/px) with RGB32 as the
+        // per-file fallback (4 B/px) — assert per the ACTUAL path taken.
+        if (frame.nv12) {
+            CHECK(frame.bytes.size() == static_cast<size_t>(meta.width) *
+                                            static_cast<size_t>(meta.height) * 3 / 2);
+        } else {
+            CHECK(frame.bytes.size() ==
+                  static_cast<size_t>(meta.width) * static_cast<size_t>(meta.height) * 4);
+        }
     }
     dec.stop();
 }

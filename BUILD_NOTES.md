@@ -779,3 +779,48 @@ User report: "the video pauses every time I click on screen".
 - **Script:** `build/release/desktop_click_verify.ps1` (foregrounds Progman and asserts the windowed classification).
 
 ---
+
+---
+
+## Post-M14 — Extreme resource optimization (spec `extreme-resource-optimization.txt`)
+
+Work order followed the spec §55: inspect → profile → bottleneck report (`docs/09-optimization-audit.md`) → highest-impact changes first → benchmark each (`docs/10-optimization-report.md`).
+
+### B1 — Software path NV12 end-to-end (the headline)
+
+The M4 software path forced **RGB32** output through the Video Processor MFT, so MF converted YUV→RGB on the CPU and we uploaded 4 B/px (14.7 MB/frame at 2560×1440). The hardware path's YUV shader + plane views already existed, so the software path now:
+
+1. **`DecoderManager::openSoftwareNv12`** — negotiate the decoder's **native NV12** output (no attributes → no VP MFT in the chain at all); per-file fallback to the existing RGB32 path (`openSoftwareRgb32`) when NV12 negotiation fails. `softwareNv12_` selects the worker's copy function.
+2. **`copySampleToNv12`** — tightly-packed NV12 (Y plane w×h + interleaved UV w×h/2, 1.5 B/px) from the 2D-buffer pitch, reusing the M13 pooled buffers (spare size adjusts on format/size change only).
+3. **`WallpaperManager`** — new `createNv12Upload` (dynamic NV12 texture + R8/R8G8 plane SRVs) + `uploadNv12Bytes` (subresource 0 covers both planes; Y rows then UV rows at the same RowPitch); wired into **both** `setVideoFrame` (clone) and `setVideoFrameFor` (independent), each tracking its own format flag and clearing the other format's views on switch. `rebindLastFrames` rebinds NV12 through the plane path; `grabFrameSnapshot` returns the documented "no preview" error on NV12 (no CPU copy).
+4. The existing **`PSMainYuv`** shader (BT.709 limited→full-range, M5) converts + scales in one GPU pass — same matrix the VP MFT used for HD content, so colors are unchanged.
+
+### B2 — Constant-buffer dirty-tracking (spec §22)
+
+`D3D11Renderer::render()` called `UpdateSubresource(frameCb_)` every frame; content (tint = 1.0 constant, scaleOffset = size/scaling mapping) changes only on a video size/scaling change. `FrameParams::operator==` (memcmp on the two float arrays) + a `cb_` last-written copy: update only on change.
+
+### B3 — Plane-SRV cache (hardware path, spec §21/§38)
+
+`bindGpuFrame`/`bindGpuFrameFor` created two `CreateShaderResourceView` calls **per decoded frame**. Now cached per decoder surface texture (`planeSrvCache_`, keyed by `ID3D11Texture2D*`, cap 64 → clear+rebuild past the cap, cleared on device recreate). Views are resource-bound, so recycled surfaces with new pixels need no new views. Latent on this machine (no hardware MFT) — verified by build/tests, NOT MEASURED here.
+
+### Benchmarks (Release, same methodology both builds, 2560×1440@60 H.264 software decode)
+
+| Metric | Before (RGB32) | After (NV12) | Delta |
+|---|---|---|---|
+| CPU avg (25 × 1 s) | 180.8 % | 136.2 % | **−25 %** (−58 % per presented frame) |
+| RAM private avg / peak | 466.1 / 467.7 MB | 444.2 / 446.3 MB | −22 MB |
+| Decoded fps | 32.0 | 60.2 | **2×** |
+| Presented fps | 32.0 | ~57 | 32 → ~57 |
+| Upload size | 14.7 MB/frame | 5.5 MB/frame | −62 % |
+| Render avg | 0.4 ms | 0.4 ms | none |
+| Dropped (freshness) | 0 (silently under-presented ~28 fps) | ~3/s (stale-frame skip) | policy, not loss |
+| Disk I/O | 5.8 MB/20 s | 11.8 MB/20 s | 2× frames read; ~0.6 MB/s |
+| VRAM / GPU % / Frame P95 | NOT MEASURED (no sampler; app tracks 1 s averages) | same | — |
+
+Benchmark method: `build/release/perf_bench.ps1` (CPU/RAM sampling) + `build/release/measure_stats.ps1` (telemetry lines + Win32_Process read delta). The old build was measured by stashing the change set, rebuilding Release, running the same scripts, then restoring — identical methodology both sides.
+
+### Verification
+
+- 172/172 tests Debug + Release, 0 warnings; the real-file decode test now asserts NV12 (w×h×3/2) vs RGB32 (w×h×4) per the actual path.
+- Live (Release): `decoder: software (NV12 output)`; no render/device errors; NV12 active end-to-end on this machine (independent mode, 1 monitor).
+- The "dropped 0 → 66" delta is the **freshness policy** (`popNewestUpTo` keeps the newest at-or-before the deadline; `dropped_ += popped - 1`), not lost frames — the old build was decode-bound at 32 fps with ~28 fps silently missed. Documented in the report.

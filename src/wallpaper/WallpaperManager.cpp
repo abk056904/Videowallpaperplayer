@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "graphics/ScaleMath.h"
@@ -21,6 +22,11 @@ constexpr UINT kSpawnWorkerW = 0x052C;
 
 constexpr UINT kTestTextureSize = 512;  // checkerboard: 32 px cells -> 16x16
 constexpr UINT kTestCellPx = 32;
+
+// B3: plane-SRV cache cap. Hardware decoders recycle a small pool of
+// surfaces, so the map stays at pool size; the cap bounds a pathological
+// stream that never reuses a surface pointer (clear + rebuild on exceed).
+constexpr size_t kMaxPlaneSrvCacheEntries = 64;
 
 } // namespace
 
@@ -193,6 +199,10 @@ void WallpaperManager::recreateDeviceResources() {
     testTextureSrv_.Reset();
     frameTexture_.Reset();
     frameTextureSrv_.Reset();
+    nv12YSrv_.Reset();
+    nv12UvSrv_.Reset();
+    frameIsNv12_ = false;
+    planeSrvCache_.clear(); // views are device-bound — all stale after recreate
     frameWidth_ = 0;
     frameHeight_ = 0;
     frameDisplayAspect_ = 0.0f;
@@ -238,8 +248,20 @@ Result<void> WallpaperManager::rebindLastFrames() {
         return {};
     }
     bool anyError = false;
-    // Clone path: one shared frame texture on every host.
-    if (frameTextureSrv_) {
+    // Clone path: one shared frame texture on every host. NV12 software
+    // frames rebind through the plane path (same as hardware); BGRA through
+    // the texture path.
+    if (frameIsNv12_ && nv12YSrv_ && nv12UvSrv_) {
+        for (auto& host : hosts_) {
+            auto result = host->setVideoPlanes(nv12YSrv_.Get(), nv12UvSrv_.Get(),
+                                               frameDisplayAspect_, scaling_);
+            if (!result) {
+                anyError = true;
+                log::Logger::instance().warn(L"rebind video planes failed for {}: {}",
+                                             host->monitorId(), result.error());
+            }
+        }
+    } else if (frameTextureSrv_) {
         for (auto& host : hosts_) {
             auto result =
                 host->setVideoTexture(frameTextureSrv_.Get(), frameDisplayAspect_, scaling_);
@@ -254,20 +276,27 @@ Result<void> WallpaperManager::rebindLastFrames() {
     // ITS OWN aspect (different videos can have different aspects — using the
     // clone path's frameDisplayAspect_ here was wrong: 0 in Independent mode).
     for (auto& [monitorId, slot] : perMonitorFrames_) {
-        if (!slot.srv) {
-            continue;
-        }
         auto hostIt = std::find_if(hosts_.begin(), hosts_.end(),
                                    [&](const auto& h) { return h->monitorId() == monitorId; });
         if (hostIt == hosts_.end()) {
             continue; // monitor gone — its host is recreated from monitors_
         }
-        auto result =
-            (*hostIt)->setVideoTexture(slot.srv.Get(), slot.displayAspect, scaling_);
-        if (!result) {
-            anyError = true;
-            log::Logger::instance().warn(L"rebind per-monitor texture failed for {}: {}",
-                                         monitorId, result.error());
+        if (slot.nv12) {
+            auto result = (*hostIt)->setVideoPlanes(slot.ySrv.Get(), slot.uvSrv.Get(),
+                                                    slot.displayAspect, scaling_);
+            if (!result) {
+                anyError = true;
+                log::Logger::instance().warn(L"rebind per-monitor planes failed for {}: {}",
+                                             monitorId, result.error());
+            }
+        } else if (slot.srv) {
+            auto result =
+                (*hostIt)->setVideoTexture(slot.srv.Get(), slot.displayAspect, scaling_);
+            if (!result) {
+                anyError = true;
+                log::Logger::instance().warn(L"rebind per-monitor texture failed for {}: {}",
+                                             monitorId, result.error());
+            }
         }
     }
     if (anyError) {
@@ -286,6 +315,10 @@ void WallpaperManager::shutdown() {
     testTextureSrv_.Reset();
     frameTexture_.Reset();
     frameTextureSrv_.Reset();
+    nv12YSrv_.Reset();
+    nv12UvSrv_.Reset();
+    frameIsNv12_ = false;
+    planeSrvCache_.clear();
     frameWidth_ = 0;
     frameHeight_ = 0;
     layer_ = {};
@@ -366,6 +399,10 @@ Result<WallpaperManager::FrameSnapshot> WallpaperManager::grabFrameSnapshot() co
     ID3D11Texture2D* source = frameTexture_.Get();
     UINT width = frameWidth_;
     UINT height = frameHeight_;
+    // B1: NV12 textures hold YUV data — a CPU readback would return NV12
+    // bytes, not BGRA. No CPU copy exists on that path; the UI shows
+    // "no preview" (honest fallback, documented in the header).
+    bool nv12 = frameIsNv12_;
     if (!monitors_.empty()) {
         auto it = std::find_if(monitors_.begin(), monitors_.end(),
                                [](const monitors::MonitorInfo& m) { return m.primary; });
@@ -375,7 +412,11 @@ Result<WallpaperManager::FrameSnapshot> WallpaperManager::grabFrameSnapshot() co
             source = f->second.texture.Get();
             width = f->second.width;
             height = f->second.height;
+            nv12 = f->second.nv12;
         }
+    }
+    if (nv12) {
+        return std::unexpected(L"no preview on the NV12 path (no CPU copy)");
     }
     if (!source || width == 0 || height == 0) {
         return std::unexpected(L"no video frame has been presented yet");
@@ -560,6 +601,58 @@ Result<void> uploadFrameBytes(ID3D11DeviceContext* context, ID3D11Texture2D* tex
     context->Unmap(texture, 0);
     return {};
 }
+
+// B1: creates a dynamic NV12 upload texture + the Y/UV plane SRVs (R8 + R8G8
+// views of the same texture — the GPU YUV shader converts + scales, no CPU
+// color conversion).
+Result<std::tuple<Microsoft::WRL::ComPtr<ID3D11Texture2D>,
+                  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>,
+                  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>>>
+createNv12Upload(ID3D11Device* device, UINT width, UINT height) {
+    auto texture = gfx::TextureManager::createTexture(device, DXGI_FORMAT_NV12, width, height,
+                                                      true /* dynamic */);
+    if (!texture) {
+        return std::unexpected(texture.error());
+    }
+    auto ySrv = gfx::TextureManager::createPlaneSrv(device, texture->Get(), DXGI_FORMAT_R8_UNORM);
+    if (!ySrv) {
+        return std::unexpected(ySrv.error());
+    }
+    auto uvSrv =
+        gfx::TextureManager::createPlaneSrv(device, texture->Get(), DXGI_FORMAT_R8G8_UNORM);
+    if (!uvSrv) {
+        return std::unexpected(uvSrv.error());
+    }
+    return std::make_tuple(std::move(*texture), std::move(*ySrv), std::move(*uvSrv));
+}
+
+// B1: copies tightly-packed NV12 bytes (Y plane w*h, then interleaved UV
+// plane w*h/2) into a dynamic NV12 texture. Subresource 0 covers BOTH planes:
+// the Y rows first, then the UV rows, each at the same RowPitch.
+Result<void> uploadNv12Bytes(ID3D11DeviceContext* context, ID3D11Texture2D* texture,
+                             const video::DecodedFrame& frame) {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        return std::unexpected(L"NV12 texture Map failed");
+    }
+    const auto* src = frame.bytes.data();
+    const size_t rowBytes = static_cast<size_t>(frame.width);
+    const size_t ySize = rowBytes * static_cast<size_t>(frame.height);
+    auto* dst = static_cast<BYTE*>(mapped.pData);
+    for (UINT y = 0; y < frame.height; ++y) {
+        std::memcpy(dst + static_cast<size_t>(y) * mapped.RowPitch,
+                    src + static_cast<size_t>(y) * rowBytes, rowBytes);
+    }
+    // UV plane: right after the Y plane, height/2 rows of interleaved U/V.
+    auto* uvDst = dst + static_cast<size_t>(frame.height) * mapped.RowPitch;
+    const auto* uv = src + ySize;
+    for (UINT y = 0; y < frame.height / 2; ++y) {
+        std::memcpy(uvDst + static_cast<size_t>(y) * mapped.RowPitch,
+                    uv + static_cast<size_t>(y) * rowBytes, rowBytes);
+    }
+    context->Unmap(texture, 0);
+    return {};
+}
 } // namespace
 
 Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
@@ -580,15 +673,50 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
         return std::unexpected(L"setVideoFrame: invalid frame size");
     }
 
+    // NV12 software path (B1): one NV12 texture + plane SRVs; the GPU YUV
+    // shader converts + scales (1.5 vs 4 B/px upload, no CPU color
+    // conversion). Same bind path as hardware frames.
+    if (frame.nv12) {
+        if (!frameTexture_ || !frameIsNv12_ || frameWidth_ != frame.width ||
+            frameHeight_ != frame.height) {
+            auto created = createNv12Upload(deviceManager_.device(), frame.width, frame.height);
+            if (!created) {
+                return std::unexpected(created.error());
+            }
+            frameTexture_ = std::move(std::get<0>(*created));
+            nv12YSrv_ = std::move(std::get<1>(*created));
+            nv12UvSrv_ = std::move(std::get<2>(*created));
+            frameTextureSrv_.Reset(); // BGRA view is stale for an NV12 texture
+            frameIsNv12_ = true;
+            frameWidth_ = frame.width;
+            frameHeight_ = frame.height;
+            log::Logger::instance().debug(L"video NV12 upload texture (re)created: {}x{}",
+                                          frame.width, frame.height);
+        }
+        auto uploaded = uploadNv12Bytes(deviceManager_.context(), frameTexture_.Get(), frame);
+        if (!uploaded) {
+            return uploaded;
+        }
+        // Display aspect (SAR-corrected) for the scaling math — the clone
+        // path binds one frame on every host, so remember it for the rebind.
+        frameDisplayAspect_ = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+        return bindFramePlanes(nv12YSrv_.Get(), nv12UvSrv_.Get(), frameDisplayAspect_);
+    }
+
     // (Re)create the upload texture + SRV when the frame size changes (loop
-    // across different-resolution clips).
-    if (!frameTexture_ || frameWidth_ != frame.width || frameHeight_ != frame.height) {
+    // across different-resolution clips) OR the slot switched from NV12
+    // (same-resolution NV12 -> RGB32 clip must not reuse the NV12 texture).
+    if (!frameTexture_ || frameIsNv12_ || frameWidth_ != frame.width ||
+        frameHeight_ != frame.height) {
         auto created = createUploadTexture(deviceManager_.device(), frame.width, frame.height);
         if (!created) {
             return std::unexpected(created.error());
         }
         frameTexture_ = std::move(created->first);
         frameTextureSrv_ = std::move(created->second);
+        nv12YSrv_.Reset();
+        nv12UvSrv_.Reset();
+        frameIsNv12_ = false;
         frameWidth_ = frame.width;
         frameHeight_ = frame.height;
         log::Logger::instance().debug(L"video upload texture (re)created: {}x{}", frame.width,
@@ -626,15 +754,47 @@ Result<void> WallpaperManager::setVideoFrameFor(const std::wstring& monitorId,
         return std::unexpected(L"setVideoFrameFor: invalid frame size");
     }
 
-    // Per-monitor upload texture, recreated on size change.
+    // NV12 software path (B1): per-monitor NV12 texture + plane SRVs, bound
+    // through the same plane path as hardware frames.
+    if (frame.nv12) {
+        auto& slot = perMonitorFrames_[monitorId];
+        if (!slot.texture || !slot.nv12 || slot.width != frame.width ||
+            slot.height != frame.height) {
+            auto created = createNv12Upload(deviceManager_.device(), frame.width, frame.height);
+            if (!created) {
+                return std::unexpected(created.error());
+            }
+            slot.texture = std::move(std::get<0>(*created));
+            slot.ySrv = std::move(std::get<1>(*created));
+            slot.uvSrv = std::move(std::get<2>(*created));
+            slot.srv.Reset(); // BGRA view is stale for an NV12 texture
+            slot.nv12 = true;
+            slot.width = frame.width;
+            slot.height = frame.height;
+            log::Logger::instance().debug(L"per-monitor NV12 texture (re)created: {} ({}x{})",
+                                          monitorId, frame.width, frame.height);
+        }
+        auto uploaded = uploadNv12Bytes(deviceManager_.context(), slot.texture.Get(), frame);
+        if (!uploaded) {
+            return uploaded;
+        }
+        slot.displayAspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
+        return (*hostIt)->setVideoPlanes(slot.ySrv.Get(), slot.uvSrv.Get(), slot.displayAspect,
+                                         scaling_);
+    }
+
+    // Per-monitor upload texture, recreated on size change OR format switch.
     auto& slot = perMonitorFrames_[monitorId];
-    if (!slot.texture || slot.width != frame.width || slot.height != frame.height) {
+    if (!slot.texture || slot.nv12 || slot.width != frame.width || slot.height != frame.height) {
         auto created = createUploadTexture(deviceManager_.device(), frame.width, frame.height);
         if (!created) {
             return std::unexpected(created.error());
         }
         slot.texture = std::move(created->first);
         slot.srv = std::move(created->second);
+        slot.ySrv.Reset();
+        slot.uvSrv.Reset();
+        slot.nv12 = false;
         slot.width = frame.width;
         slot.height = frame.height;
         log::Logger::instance().debug(L"per-monitor video texture (re)created: {} ({}x{})",
@@ -689,18 +849,35 @@ Result<void> WallpaperManager::bindGpuFrame(const video::DecodedFrame& frame) {
             return std::unexpected(L"bindGpuFrame: unsupported surface format " +
                                    std::to_wstring(static_cast<int>(desc.Format)));
     }
-    auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                    yFormat);
-    if (!ySrv) {
-        return std::unexpected(ySrv.error());
-    }
-    auto uvSrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                     uvFormat);
-    if (!uvSrv) {
-        return std::unexpected(uvSrv.error());
+    // B3: cache the plane views per surface texture. The decoder hands back
+    // surfaces from its internal pool, so the same pointer recurs across
+    // frames — creating the two views once per surface (not per frame) cuts
+    // per-frame GPU resource allocation. Views are bound to the resource, not
+    // the content, so a recycled surface with new pixels needs no new views.
+    // Bounded: pooled surfaces keep the map tiny; a pathological stream that
+    // never reuses a pointer clears it past the cap (no unbounded growth).
+    auto& entry = planeSrvCache_[frame.texture.Get()];
+    if (!entry.y) {
+        if (planeSrvCache_.size() > kMaxPlaneSrvCacheEntries) {
+            planeSrvCache_.clear();
+            entry = planeSrvCache_[frame.texture.Get()];
+        }
+        auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                        yFormat);
+        if (!ySrv) {
+            return std::unexpected(ySrv.error());
+        }
+        auto uvSrv =
+            gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                uvFormat);
+        if (!uvSrv) {
+            return std::unexpected(uvSrv.error());
+        }
+        entry.y = std::move(*ySrv);
+        entry.uv = std::move(*uvSrv);
     }
     const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
-    return bindFramePlanes(ySrv->Get(), uvSrv->Get(), aspect);
+    return bindFramePlanes(entry.y.Get(), entry.uv.Get(), aspect);
 }
 
 Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
@@ -730,18 +907,29 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
             return std::unexpected(L"bindGpuFrameFor: unsupported surface format " +
                                    std::to_wstring(static_cast<int>(desc.Format)));
     }
-    auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                    yFormat);
-    if (!ySrv) {
-        return std::unexpected(ySrv.error());
-    }
-    auto uvSrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                     uvFormat);
-    if (!uvSrv) {
-        return std::unexpected(uvSrv.error());
+    // B3: cached plane views per surface (see bindGpuFrame).
+    auto& entry = planeSrvCache_[frame.texture.Get()];
+    if (!entry.y) {
+        if (planeSrvCache_.size() > kMaxPlaneSrvCacheEntries) {
+            planeSrvCache_.clear();
+            entry = planeSrvCache_[frame.texture.Get()];
+        }
+        auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                        yFormat);
+        if (!ySrv) {
+            return std::unexpected(ySrv.error());
+        }
+        auto uvSrv =
+            gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
+                                                uvFormat);
+        if (!uvSrv) {
+            return std::unexpected(uvSrv.error());
+        }
+        entry.y = std::move(*ySrv);
+        entry.uv = std::move(*uvSrv);
     }
     const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
-    return (*hostIt)->setVideoPlanes(ySrv->Get(), uvSrv->Get(), aspect, scaling_);
+    return (*hostIt)->setVideoPlanes(entry.y.Get(), entry.uv.Get(), aspect, scaling_);
 }
 
 Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,

@@ -90,12 +90,19 @@ public:
     // retries via openSoftware (re-negotiating RGB32 on the same reader fails
     // with MF_E_INVALIDTYPE once NV12 is committed — probed).
     Result<void> openHardware(const std::wstring& path);
+    // Software path: NV12 first (GPU YUV conversion, no CPU color convert),
+    // falling back per-file to RGB32 through the Video Processor MFT when the
+    // decoder cannot output NV12.
     Result<void> openSoftware(const std::wstring& path);
+    Result<void> openSoftwareNv12(const std::wstring& path);
+    Result<void> openSoftwareRgb32(const std::wstring& path);
 
 private:
     void workerLoop(FrameQueue* queue); // local queue ptr: stop() may null the member
     static bool copySampleToFrame(IMFSample* sample, UINT width, UINT height, DecodedFrame& out,
                                   std::wstring& err);
+    static bool copySampleToNv12(IMFSample* sample, UINT width, UINT height, DecodedFrame& out,
+                                 std::wstring& err);
     static bool copySampleToTexture(IMFSample* sample, DecodedFrame& out, std::wstring& err);
     static std::wstring formatHr(HRESULT hr);
     void detectDecoder(IMFSourceReader* reader); // MFT CLSID -> registry name
@@ -113,6 +120,7 @@ private:
     FrameQueue* queue_ = nullptr;
     std::wstring decoderName_;
     bool hardware_ = false;
+    bool softwareNv12_ = false; // software path output format (NV12 vs RGB32)
     bool opened_ = false;
 };
 

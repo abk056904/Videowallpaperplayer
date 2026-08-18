@@ -23,8 +23,9 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M12 — Recovery hardening | ✅ | 2026-08-17 | Device-loss recreate (harness-verified), Explorer-restart recovery + paused-frame rebind, decoder attempt tracking, config .bak (M1). See notes below |
 | M13 — Profiling, optimization & stability | ☐ | — | Code-search audit clean; baseline + hot-path measured; frame-buffer pool (resize+zero 4.5→0.00 ms/f); leak-cycle stress green; 4 h soak in progress |
 | M14 — Packaging, README, final report | ✅ | 2026-08-17 | `package.ps1` → 1.0 MB portable ZIP verified from clean extraction; version resource fixed (winres.h — ID 1) → FileVersion 1.0.0.0; full README + final report (`docs/07`) + resource audit (`docs/08`). Commit `fc28979`. Soak still running (M13 gate) |
+| OPT — Extreme resource optimization (post-M14, spec `extreme-resource-optimization.txt`) | ✅ | 2026-08-18 | Software NV12 end-to-end (CPU conversion → 0, upload −62 %), CB dirty-tracking, plane-SRV cache. Measured: CPU 180.8 → 136.2 % (−58 %/frame), RAM −22 MB, decode 32 → 60 fps, presented 32 → ~57 fps. Audit `docs/09`, report `docs/10`. See notes below |
 
-**Current milestone:** _M14 — Packaging, README, final report_ (soak still running for M13's gate)
+**Current milestone:** _OPT — Extreme resource optimization_ (complete: audit → implement → benchmark → report; see notes below)
 
 ---
 
@@ -395,6 +396,28 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 - **M14 review fix (flaky library test)**: `LibraryManager::requestMetadata` deduped only against `probeQueue_`, but the worker pops before probing (outside the lock) — a second request in that window re-enqueued and returned true (the test's `CHECK_FALSE(requestMetadata(realId))` failed intermittently in Debug, observed 1-in-4). Added `probeInFlight_` (popped-but-not-completed counts as pending; worker removes it after writing the result). 171/171 re-verified over multiple consecutive runs, Debug + Release. Details in BUILD_NOTES.
 - **UI resource review (2026-08-17)**: `syncUiSubscription()` keyed on `ui_->exists()` (window created), so with `minimizeToTray=true` (default) closing the window only hid it and the **2 Hz telemetry timer ran forever** (library poll + config flush + hidden `SetWindowTextW` + tray tooltip every 500 ms — the spec's "stop expensive UI work when minimized to tray" was violated). Fixed: subscribe keys on `ui_->isVisible()`; every open path re-syncs (FOCUS handler, ShowUi/ToggleUi/Focus commands, onClose both branches); reopen also **pull-refreshes every panel** (`refreshFromSnapshot` — previously only Home got an immediate push). Bonus fix: persisted `logLevel` was only applied live (Settings panel), never at startup — Release always started at Info; now honored at startup. **Live-verified** via a debug tick marker + logLevel=debug: ticks/6s = 0 (UI closed) → 12 (UI open) → 0 (hidden to tray) → 12 (reopened); handles/threads bounded (UI open ≈ +420 handles, flat). 171/171 Debug + Release, 0 warnings.
 - **Desktop-click pause fix (2026-08-17)**: clicking the desktop paused the video — the foreground becomes **Progman**, which covers the monitor with `WS_POPUP`, so `classifyWindowState` returned Fullscreen and `pauseOnFullscreen` paused. Fixed with `isDesktopShellClass` (`Progman`/`WorkerW`/`SHELLDLL_DefView` never classify as fullscreen; checked before the rect/style geometry). **Verified live**: foregrounding Progman logs `window: windowed` (pid explorer.exe), no pause lines; the unchanged geometry path still classifies a real popup fullscreen app as Fullscreen (unit test). 172/172 Debug + Release, 0 warnings.
+
+---
+
+## OPT — Extreme resource optimization (post-M14, spec `extreme-resource-optimization.txt`)
+
+Followed the spec's order: **inspect → profile → bottleneck report → highest-impact changes first → benchmark each**. All numbers Release-build, same methodology both builds (25 × 1 s samples after 8 s settle, 2560×1440@60 H.264 software decode). Full audit `docs/09-optimization-audit.md`; full report `docs/10-optimization-report.md`.
+
+- [x] **Audit + bottleneck report** (`docs/09`) — hot path walked end-to-end (decode → copy → upload → render → present); B1 (CPU NV12→RGB32 conversion + 4 B/px upload), B2 (redundant per-frame CB update), B3 (per-frame plane-SRV creation on the hardware path); B4 = verified-clean list (no busy-wait, pooled buffers, no per-frame allocs)
+- [x] **B1 — software NV12 end-to-end** (the headline): decoder negotiates native NV12 (no Video Processor MFT — the CPU color conversion stage is gone); frames copied as tightly-packed NV12 (1.5 B/px); `WallpaperManager` uploads to an NV12 texture + plane SRVs (clone + per-monitor paths); the existing YUV shader converts + scales on the GPU. Per-file RGB32 fallback retained; preview readback honestly reports "no preview" on the NV12 path (spec §10.5 fallback)
+- [x] **B2 — CB dirty-tracking** (spec §22): `render()` updates `frameCb_` only when tint/scaleOffset changed (memcmp equality)
+- [x] **B3 — plane-SRV cache** (spec §21/§38): Y/UV views cached per decoder surface (bounded map, cap 64, cleared on device recreate); zero per-frame `CreateShaderResourceView` on hardware machines (latent here — NOT MEASURED)
+- [x] **Benchmarks** (old build vs new, identical methodology):
+  - CPU avg **180.8 % → 136.2 %** (−25 % total; **−58 % per presented frame** — 5.65 → 2.39 CPU%-s/frame)
+  - RAM private **466.1 → 444.2 MB** avg (peak 467.7 → 446.3)
+  - Decode **32 → 60 fps**; presented **32 → ~57 fps** (was decode-bound; now near source rate)
+  - Upload **14.7 → 5.5 MB/frame** (−62 %); disk I/O 5.8 → 11.8 MB/20 s (2× frames decoded; ~0.6 MB/s — negligible)
+  - Render avg 0.4 ms both builds (no regression); dropped counter 0 → ~3/s — **freshness policy, not lost frames** (old build silently under-presented ~28 fps)
+  - Visual quality unchanged — same BT.709 limited→full-range conversion, now on the GPU (shader documented M5)
+- [x] **Tests**: 172/172 Debug + Release, 0 warnings (NV12 sizing assertion added to the real-file test; per-path RGB32/NV12 asserted)
+- [x] **Live-verified** (Release, this machine): log shows `decoder: software (NV12 output)`; no render/device errors; NV12 path active end-to-end
+
+**Acceptance (spec §57):** the 1080p60 targets (<1 % CPU, <200 MB RAM, 0 drops) are **hardware-decode targets** — this machine has no working hardware MFT (verified M5/M14), so decode is inherently software (§57: "maintain quality and explain the bottleneck"). Delivered: software path at its floor (no CPU color conversion, native-format upload, zero redundant per-frame GPU work), measured before/after, no quality/FPS regression.
 
 ---
 

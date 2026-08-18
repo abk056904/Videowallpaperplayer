@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 
 #include <d3d11.h>
 #include <dxgi1_4.h>
@@ -24,6 +25,10 @@ public:
     struct FrameParams {
         float tint[4];      // per-frame color modulation
         float scaleOffset[4]; // xy = texture UV scale, zw = UV offset
+        bool operator==(const FrameParams& o) const {
+            return std::memcmp(tint, o.tint, sizeof(tint)) == 0 &&
+                   std::memcmp(scaleOffset, o.scaleOffset, sizeof(scaleOffset)) == 0;
+        }
     };
 
     D3D11Renderer() = default;
@@ -68,6 +73,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ySrv_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvSrv_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> frameCb_;
+    FrameParams cb_{}; // last content written to frameCb_ (dirty-tracking, §22)
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;      // linear + CLAMP (Fill/Stretch)
     Microsoft::WRL::ComPtr<ID3D11SamplerState> borderSampler_; // linear + BORDER black (Fit/Center)
