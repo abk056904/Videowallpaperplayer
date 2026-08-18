@@ -36,6 +36,16 @@ foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
 Copy-Item (Join-Path $root "LICENSE") $stage
 Copy-Item (Join-Path $root "README.md") $stage
 
+# FFmpeg shared libraries (required for hardware decode)
+$ffmpegBin = Join-Path $root "ext\ffmpeg\ffmpeg-N-126207-g21bbd98e7b-win64-gpl-shared\bin"
+if (Test-Path $ffmpegBin) {
+    foreach ($dll in Get-ChildItem $ffmpegBin -Filter "*.dll") {
+        Copy-Item $dll.FullName $stage
+    }
+} else {
+    Write-Warning "FFmpeg DLLs not found at $ffmpegBin — package will be incomplete"
+}
+
 $zip = Join-Path $dist "VideoWallpaper-$tag.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip

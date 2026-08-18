@@ -1,8 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <iterator>
-#include <vector>
 
 namespace vw::util {
 

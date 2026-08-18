@@ -22,3 +22,27 @@ tmp/
 
 # Packaging output (regenerable via package.ps1)
 dist/
+
+# FFmpeg SDK (downloaded, not source-tracked — only headers + libs + DLLs needed)
+ext/ffmpeg/**/*.html
+ext/ffmpeg/**/*.css
+ext/ffmpeg/**/doc/
+ext/ffmpeg/**/examples/
+ext/ffmpeg/**/presets/
+ext/ffmpeg/**/ffplay*
+ext/ffmpeg/**/ffprobe*
+ext/ffmpeg/**/ffmpeg.exe
+ext/ffmpeg/**/*.def
+ext/ffmpeg/**/*.pc
+ext/ffmpeg/**/*.zip
+ext/ffmpeg/**/Changelog
+ext/ffmpeg/**/RELEASE
+ext/ffmpeg/**/VERSION
+
+# Stale working docs
+New Text Document*.txt
+improvements.txt
+ui-improvement.txt
+FINAL_APP_SIZE_ANALYSIS.md
+resource-optimization-v2-*.md
+implement-docs-plan-spec.md

@@ -2,7 +2,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <format>
 
 #include <mfapi.h>
 #include <mfidl.h>
@@ -13,6 +12,7 @@
 #include <evr.h>
 
 #include "logging/Logger.h"
+#include "util/HrToString.h"
 #include "util/clock.h"
 #include "util/HrToString.h"
 
@@ -153,9 +153,7 @@ DecoderManager::~DecoderManager() {
     close();
 }
 
-std::wstring DecoderManager::formatHr(HRESULT hr) {
-    return vw::util::formatHr(hr);
-}
+using vw::util::formatHr;
 
 Result<void> DecoderManager::open(const std::wstring& path) {
     close();

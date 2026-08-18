@@ -106,7 +106,6 @@ private:
     static bool copySampleToNv12(IMFSample* sample, UINT width, UINT height, DecodedFrame& out,
                                  std::wstring& err);
     static bool copySampleToTexture(IMFSample* sample, DecodedFrame& out, std::wstring& err);
-    static std::wstring formatHr(HRESULT hr);
     void detectDecoder(IMFSourceReader* reader); // MFT CLSID -> registry name
     static Result<void> prepareReader(const std::wstring& path, IMFAttributes* attrs,
                                       Microsoft::WRL::ComPtr<IMFSourceReader>& reader,

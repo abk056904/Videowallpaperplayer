@@ -13,6 +13,7 @@ extern "C" {
 #include <cstring>
 
 #include "logging/Logger.h"
+#include "util/utf8.h"
 
 // Suppress FFmpeg header warnings (treated as errors by /WX).
 #pragma warning(push)
@@ -22,21 +23,14 @@ namespace vw::video {
 
 namespace {
 
-std::wstring utf8ToWide(const char* s) {
+// FFmpegDecoder uses a non-Result utf8ToWide (metadata is always valid UTF-8;
+// the shared util::utf8ToWide returns Result for config-file strictness).
+std::wstring utf8ToWideFfmpeg(const char* s) {
     if (!s || !*s) return {};
     int len = ::MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
     if (len <= 0) return {};
     std::wstring result(len - 1, 0);
     ::MultiByteToWideChar(CP_UTF8, 0, s, -1, result.data(), len);
-    return result;
-}
-
-std::string wideToUtf8(const std::wstring& s) {
-    if (s.empty()) return {};
-    int len = ::WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return {};
-    std::string result(len, 0);
-    ::WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), result.data(), len, nullptr, nullptr);
     return result;
 }
 
@@ -62,7 +56,7 @@ Result<void> FFmpegDecoder::open(const std::wstring& path) {
 
 bool FFmpegDecoder::tryOpenHw(const std::wstring& path) {
     auto& log = log::Logger::instance();
-    std::string pathUtf8 = wideToUtf8(path);
+    std::string pathUtf8 = vw::util::wideToUtf8(path);
 
     AVFormatContext* fmtCtx = nullptr;
     if (avformat_open_input(&fmtCtx, pathUtf8.c_str(), nullptr, nullptr) < 0) return false;
@@ -108,7 +102,7 @@ bool FFmpegDecoder::tryOpenHw(const std::wstring& path) {
     codecCtx_ = codecCtx;
     videoStreamIdx_ = vidIdx;
     hardware_ = true;
-    decoderName_ = utf8ToWide(codec->name);
+    decoderName_ = utf8ToWideFfmpeg(codec->name);
 
     auto* stream = fmtCtx_->streams[videoStreamIdx_];
     metadata_.width = static_cast<UINT>(par->width);
@@ -116,7 +110,7 @@ bool FFmpegDecoder::tryOpenHw(const std::wstring& path) {
     metadata_.fps = av_q2d(stream->avg_frame_rate);
     if (metadata_.fps <= 0 || metadata_.fps > 240) metadata_.fps = 30.0;
     metadata_.duration100ns = (fmtCtx_->duration > 0) ? fmtCtx_->duration * 10 : 0;
-    metadata_.codec = utf8ToWide(avcodec_get_name(par->codec_id));
+    metadata_.codec = utf8ToWideFfmpeg(avcodec_get_name(par->codec_id));
     metadata_.bitDepth = 8;
     metadata_.displayAspect = static_cast<double>(par->width) / par->height;
 
@@ -129,7 +123,7 @@ bool FFmpegDecoder::tryOpenHw(const std::wstring& path) {
 
 bool FFmpegDecoder::tryOpenSw(const std::wstring& path) {
     auto& log = log::Logger::instance();
-    std::string pathUtf8 = wideToUtf8(path);
+    std::string pathUtf8 = vw::util::wideToUtf8(path);
 
     AVFormatContext* fmtCtx = nullptr;
     if (avformat_open_input(&fmtCtx, pathUtf8.c_str(), nullptr, nullptr) < 0) return false;
@@ -157,7 +151,7 @@ bool FFmpegDecoder::tryOpenSw(const std::wstring& path) {
     codecCtx_ = codecCtx;
     videoStreamIdx_ = vidIdx;
     hardware_ = false;
-    decoderName_ = utf8ToWide(codec->name);
+    decoderName_ = utf8ToWideFfmpeg(codec->name);
 
     auto* stream = fmtCtx_->streams[videoStreamIdx_];
     metadata_.width = static_cast<UINT>(par->width);
@@ -165,7 +159,7 @@ bool FFmpegDecoder::tryOpenSw(const std::wstring& path) {
     metadata_.fps = av_q2d(stream->avg_frame_rate);
     if (metadata_.fps <= 0 || metadata_.fps > 240) metadata_.fps = 30.0;
     metadata_.duration100ns = (fmtCtx_->duration > 0) ? fmtCtx_->duration * 10 : 0;
-    metadata_.codec = utf8ToWide(avcodec_get_name(par->codec_id));
+    metadata_.codec = utf8ToWideFfmpeg(avcodec_get_name(par->codec_id));
     metadata_.bitDepth = 8;
     metadata_.displayAspect = static_cast<double>(par->width) / par->height;
 
@@ -308,7 +302,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
 }
 
 Result<VideoMetadata> FFmpegDecoder::probeMetadata(const std::wstring& path) {
-    std::string pathUtf8 = wideToUtf8(path);
+    std::string pathUtf8 = vw::util::wideToUtf8(path);
 
     AVFormatContext* fmtCtx = nullptr;
     if (avformat_open_input(&fmtCtx, pathUtf8.c_str(), nullptr, nullptr) < 0)
@@ -333,7 +327,7 @@ Result<VideoMetadata> FFmpegDecoder::probeMetadata(const std::wstring& path) {
     meta.fps = av_q2d(stream->avg_frame_rate);
     if (meta.fps <= 0 || meta.fps > 240) meta.fps = 30.0;
     meta.duration100ns = (fmtCtx->duration > 0) ? fmtCtx->duration * 10 : 0;
-    meta.codec = utf8ToWide(avcodec_get_name(par->codec_id));
+    meta.codec = utf8ToWideFfmpeg(avcodec_get_name(par->codec_id));
     meta.bitDepth = 8;
     meta.displayAspect = (par->height > 0) ? static_cast<double>(par->width) / par->height : 0.0;
 
