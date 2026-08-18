@@ -155,7 +155,7 @@ struct ConfigSnapshot {
     bool loop = true;
     ScalingMode scaling = ScalingMode::Fill;
     bool clone = false; // wallpaper mode: true = Clone, false = Independent
-    bool startWithWindows = false, minimizeToTray = true;
+    bool startWithWindows = false, minimizeToTray = true, startMinimized = false;
     std::wstring logLevel = L"info";
 };
 
@@ -174,7 +174,8 @@ enum class CommandId : uint8_t {
     PlaylistAddFiles, PlaylistAddLibraryItems, PlaylistRemoveItem, PlaylistMoveItem,
     PlaylistToggleItem, PlaylistSetItemTimes, PlaylistSetMode, PlaylistSetLoop,
     LibraryAddFiles, LibraryAddFolder, LibraryRemove, LibraryRefresh,
-    ConfigSet, ShowUi, ToggleUi, Focus, Exit,
+    ConfigSet, ConfigExport, ConfigImport,
+    ShowUi, ToggleUi, Focus, Exit,
 };
 
 struct Command {                          // tagged POD payload; cheap to queue

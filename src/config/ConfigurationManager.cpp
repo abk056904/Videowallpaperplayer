@@ -135,6 +135,7 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
 
     readBool(general, L"startWithWindows", cfg.startWithWindows, [&](bool v) { cfg.startWithWindows = v; });
     readBool(general, L"minimizeToTray", cfg.minimizeToTray, [&](bool v) { cfg.minimizeToTray = v; });
+    readBool(general, L"startMinimized", cfg.startMinimized, [&](bool v) { cfg.startMinimized = v; });
     const auto& logLevelStr = general.get(L"logLevel");
     if (logLevelStr.isString()) {
         const auto s = logLevelStr.asString();
@@ -239,6 +240,7 @@ bool ConfigurationManager::save() {
     util::Json::Object general{
         {L"startWithWindows", util::Json::boolean(config_.startWithWindows)},
         {L"minimizeToTray", util::Json::boolean(config_.minimizeToTray)},
+        {L"startMinimized", util::Json::boolean(config_.startMinimized)},
         {L"logLevel", util::Json::string(config_.logLevel)},
     };
     util::Json::Object playback{
@@ -443,6 +445,7 @@ bool ConfigurationManager::applyConfigSet(Config& cfg, const std::wstring& key,
     else if (k == L"loop") { ok = parseBool(cfg.loop); }
     else if (k == L"startwithwindows") { ok = parseBool(cfg.startWithWindows); }
     else if (k == L"minimizetotray") { ok = parseBool(cfg.minimizeToTray); }
+    else if (k == L"startminimized") { ok = parseBool(cfg.startMinimized); }
     else if (k == L"loglevel") {
         if (v == L"info") { cfg.logLevel = L"info"; }
         else if (v == L"debug") { cfg.logLevel = L"debug"; }

@@ -213,7 +213,7 @@ add_custom_command(TARGET VideoWallpaper POST_BUILD
 if(MSVC)
     # FFmpeg headers emit warnings we can't fix — disable /WX for that TU.
     set_source_files_properties(src/video/FFmpegDecoder.cpp PROPERTIES COMPILE_FLAGS "/W0")
-    target_compile_options(VideoWallpaper PRIVATE /WX # warnings-as-errors (plan: CI-style)
+    target_compile_options(VideoWallpaper PRIVATE /WX /GR- # warnings-as-errors + no RTTI (saves ~50 KB)
         $<$<CONFIG:Release>:/O2;/GL;/Zi>
         $<$<CONFIG:Debug>:/Od;/Zi;/RTC1>
     )

@@ -25,6 +25,7 @@ struct Config {
     // general
     bool startWithWindows = false;
     bool minimizeToTray = true;
+    bool startMinimized = false; // #13: start minimized to tray (no UI flash)
     std::wstring logLevel = L"info"; // M11: Logger level (info|debug), persisted
     // playback
     PlaybackMode mode = PlaybackMode::Loop;
@@ -81,6 +82,7 @@ public:
 
     const Config& config() const { return config_; }
     Config& config() { return config_; }
+    const std::filesystem::path& configPath() const { return opts_.configPath; }
 
     const std::wstring& lastError() const { return lastError_; }
 

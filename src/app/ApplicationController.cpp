@@ -1,12 +1,14 @@
 #include "app/ApplicationController.h"
 
 #include <windows.h>
+#include <commdlg.h>
 #include <mfapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
 #include <chrono>
 #include <cstring>
+#include <format>
 #include <string>
 #include <vector>
 
@@ -120,6 +122,20 @@ int ApplicationController::run() {
 #endif
         .maxFileBytes = 5ull * 1024 * 1024,
     });
+
+    // #19: auto-delete log files older than 7 days on startup
+    {
+        const auto logsDir = appDataDir_ / L"logs";
+        const auto cutoff = std::chrono::file_clock::now() - std::chrono::hours(7 * 24);
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(logsDir, ec)) {
+            if (entry.is_regular_file() && entry.path().extension() == L".log") {
+                if (entry.last_write_time(ec) < cutoff) {
+                    std::filesystem::remove(entry.path(), ec);
+                }
+            }
+        }
+    }
 
     config_ = std::make_unique<config::ConfigurationManager>(
         config::ConfigurationManager::Options{appDataDir_ / L"config.json"});
@@ -1084,6 +1100,62 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
         case vw::ui::CommandId::ConfigSet:
             applyConfigSetLive(c.s1, c.s2);
             break;
+        case vw::ui::CommandId::ConfigExport: {
+            // #15: export config.json to a user-chosen location
+            if (!config_) break;
+            if (auto saved = config_->save(); !saved) {
+                log.warn(L"config export: save failed: {}", config_->lastError());
+            }
+            wchar_t path[MAX_PATH] = {};
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndControl = ui_ ? ui_->hwnd() : control_.handle();
+            ofn.lpstrFilter = L"JSON files\0*.json\0All files\0*.*\0";
+            ofn.lpstrFile = path;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrTitle = L"Export Config";
+            ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+            ofn.lpstrDefExt = L"json";
+            if (::GetSaveFileNameW(&ofn)) {
+                std::error_code ec;
+                std::filesystem::copy_file(config_->configPath(), path,
+                                           std::filesystem::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    log.warn(L"config export failed: {}", ec.message());
+                } else {
+                    log.info(L"config exported to {}", path);
+                }
+            }
+            break;
+        }
+        case vw::ui::CommandId::ConfigImport: {
+            // #15: import config.json from a user-chosen file
+            if (!config_) break;
+            wchar_t path[MAX_PATH] = {};
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndControl = ui_ ? ui_->hwnd() : control_.handle();
+            ofn.lpstrFilter = L"JSON files\0*.json\0All files\0*.*\0";
+            ofn.lpstrFile = path;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrTitle = L"Import Config";
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+            if (::GetOpenFileNameW(&ofn)) {
+                std::error_code ec;
+                std::filesystem::copy_file(path, config_->configPath(),
+                                           std::filesystem::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    log.warn(L"config import failed: {}", ec.message());
+                } else {
+                    config_->load();
+                    config_->markConfigChanged();
+                    log.info(L"config imported from {}", path);
+                    pushPlaybackState();
+                    updateTrayFromState();
+                }
+            }
+            break;
+        }
         case vw::ui::CommandId::ShowUi:
             if (ui_) {
                 ui_->selectTab(c.i1);
@@ -1250,7 +1322,15 @@ void ApplicationController::updateTrayFromState() {
             case governor::State::Suspended: state = L"Suspended"; break;
         }
     }
-    tray_->setTooltip(std::wstring(L"Video Wallpaper — ") + state);
+    std::wstring tip = std::wstring(L"Video Wallpaper — ") + state;
+    // #22: Show FPS in tray tooltip when playing
+    if (statsCollector_ && governor_ && governor_->state() == governor::State::Active) {
+        const auto snap = statsCollector_->snapshot();
+        if (snap.presentedFps > 0) {
+            tip += std::format(L" \u2022 {:.0f} fps", snap.presentedFps);
+        }
+    }
+    tray_->setTooltip(tip);
     tray_->setCurrentVideo(currentVideoName());
 }
 
@@ -1525,6 +1605,7 @@ vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
     s.config.clone = c.wallpaperMode == config::WallpaperMode::Clone;
     s.config.startWithWindows = c.startWithWindows;
     s.config.minimizeToTray = c.minimizeToTray;
+    s.config.startMinimized = c.startMinimized;
     s.config.logLevel = c.logLevel;
     return s;
 }
