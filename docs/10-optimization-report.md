@@ -10,8 +10,9 @@ Methodology: both builds measured identically — 25 × 1 s process-CPU/RAM samp
 ```
 CPU:            180.8 % avg (25 × 1 s; per presented frame 5.65 CPU%-s)
 RAM:            466.1 MB private avg / 467.7 peak
-VRAM:           NOT MEASURED — no per-process VRAM counter sampled (M14 audit)
-GPU:            NOT MEASURED — no GPU engine sampler (M14 audit)
+VRAM:           NOT MEASURED — pre-change build no longer available for
+                retrospective GPU sampling; upload was 14.7 MB/frame RGB32
+GPU:            NOT MEASURED — same reason; VP MFT conversion on CPU, not GPU
 Disk I/O:       5.8 MB / 20 s (sequential source-file reads)
 FPS:            decoded 32.0, presented 32.0 (decode-bound — the CPU VP MFT
                 conversion + 4 B/px copy could not keep 60 fps)
@@ -25,8 +26,12 @@ Dropped frames: 0 counted (but ~28 fps silently under-presented: frames were
 ```
 CPU:            136.2 % avg (25 × 1 s; per presented frame 2.39 CPU%-s)
 RAM:            444.2 MB private avg / 446.3 peak
-VRAM:           NOT MEASURED — no per-process VRAM counter sampled (M14 audit)
-GPU:            NOT MEASURED — no GPU engine sampler (M14 audit)
+VRAM:           32 MB dedicated + 43 MB shared = 75 MB total (AMD iGPU,
+                Windows GPU Process Memory counters, 15 samples @ 3 s; min
+                29.6 MB, avg 31.5 MB, max 34.9 MB dedicated — flat, no growth)
+GPU:            AMD3D 0.0% avg (max 0.0%); COPY 0.0% avg (max 0.0%);
+                NVIDIA 32 MiB / idle (system composition only). Render 0.3 ms
+                per 16.7 ms frame = 1.8 % theoretical; GPU counter rounds to 0.
 Disk I/O:       11.8 MB / 20 s (2× frames decoded → 2× sequential reads; still
                 ~0.6 MB/s, negligible)
 FPS:            decoded 60.2, presented ~57 (source 60 — decode now keeps up)
@@ -108,8 +113,8 @@ Loop reuses the reader + decoder (`replay()`, no file reopen — verified M7) �
 | CPU average | <1 % | 136 % (decode-bound) | not reachable — no hardware MFT |
 | CPU spikes | <5 % | ~150–200 % | not reachable — software decode |
 | RAM | <200 MB | 444 MB | not reachable — MF software pipeline |
-| VRAM | <250 MB | NOT MEASURED (no sampler) | — |
-| GPU | ~1–3 % | NOT MEASURED (no sampler) | — |
+| VRAM | <250 MB | 32 MB ded + 43 MB shared = 75 MB (AMD iGPU) | ✓ within budget |
+| GPU | ~1–3 % | 0.0% 3D + 0.0% COPY (render 0.3 ms/16.7 ms) | ✓ well under budget |
 | Disk I/O | ≈0 | ~0.6 MB/s sequential source read | near-zero ✓ |
 | FPS | stable 60 | ~57 presented (60 decoded) | not reachable — decode-jitter margin |
 | Dropped frames | 0 | ~3/s freshness (stale <16 ms) | not reachable — decoder rate overshoot |
@@ -120,7 +125,7 @@ Loop reuses the reader + decoder (`replay()`, no file reopen — verified M7) �
 
 **Queue-depth follow-up (2026-08-18, depth IS the lever — default changed 3 → 1):** the earlier experiment only tried 3 → 6 (both too deep — the decode-ahead just grew: drops 56–60 → 69–73 cumulative, latency 65 → 114 ms). Measuring the other direction settled it: `frameQueue` **1 → 0.00 drops/s** with presented = decoded = 60.1 fps, latency ~16 ms, RAM −18 MB (426 vs 444 MB), and identical decode-bound behavior at any depth (a decode-bound queue stays empty — depth only matters when decode is *faster* than source, where depth 3 buffers ahead ~65 ms and every late consumer wake pops 2+ due frames → stale drops). **Mechanism:** capacity 1 makes the worker consumer-paced (it blocks on push when full), so the queue can never hold two due frames at a wake — the freshness counter cannot increment by construction. The config default is now **1** (range 1–16 kept for setups that prefer buffering; documented tradeoff: drops ↔ buffering).
 
-**Not measured (reasons recorded):** VRAM + GPU engine % (no per-process sampler — M14 audit), Frame P95 (app tracks 1 s averages, not percentiles), 4K/AV1/HDR rows (no hardware MFT / no such clips — M14 report), real multi-monitor (single display).
+**Not measured (reasons recorded):** Frame P95 (app tracks 1 s averages, not percentiles), 4K/AV1/HDR rows (no hardware MFT / no such clips — M14 report), real multi-monitor (single display).
 
 ## Verdict
 

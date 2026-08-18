@@ -867,3 +867,21 @@ User request: "reduce the ~3/s stale-frame drops". The first experiment (depth 3
 **Change:** default `playback.frameQueue` 3 → 1 in `ConfigurationManager.h`, `UiContract.h` (Performance panel field), and `VideoPlayer.h`. Range 1–16 kept — raising it trades drops for buffering on jittery sources (documented in the config comment + `docs/10`).
 
 **Verified:** 35 steady-state samples at the new default — 0.00 drops/s, presented 60.1 = decoded 60.1; RAM −18 MB vs depth 3 (426 vs 444 MB, shallower queue); 172/172 tests Debug + Release, 0 warnings. `docs/10`'s earlier "queue depth is not a lever" conclusion corrected (that experiment only tested 3 → 6).
+
+## Post-OPT-GPU — GPU metrics measurement (2026-08-18)
+
+GPU metrics measured during active playback (software decode, NV12, queue=1, 2560x1440@60) via Windows GPU Process Memory + Engine counters + nvidia-smi (15 samples @ 3 s, 60 s total):
+
+- **AMD iGPU (Ryzen 7535HS)**: dedicated VRAM 32 MB avg (min 29.6, max 34.9, flat), shared 43 MB; 3D engine 0.0% avg, COPY engine 0.0% avg (render 0.3 ms per 16.7 ms frame).
+- **NVIDIA RTX 3050**: 32 MiB VRAM used (system composition only, not by app).
+- Process renders on AMD iGPU (display adapter); NVIDIA idle for this workload.
+
+Updated `docs/10-optimization-report.md`:
+- Before build VRAM/GPU: stays NOT MEASURED (build no longer available for retrospective sampling).
+- After build VRAM/GPU: filled with measured values (75 MB total GPU memory, 0.0% engine util).
+- Section 57 table: VRAM and GPU rows updated from NOT MEASURED to actual values.
+- "Not measured" line: VRAM + GPU engine % removed (now measured).
+
+Updated `docs/06-progress-checklist.md` M13 section with GPU measurement note.
+
+Soak #3 (final binary, PID 3948): running at 34.7 min, healthy (baseline ~440 MB, threads 77, handles ~1663, flat). Old binary's death window (min 9-11) cleared. Gate still open (~3.5 h remaining).
