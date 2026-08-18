@@ -5,7 +5,7 @@
 
 #include "util/Result.h"
 #include "video/DecodedFrame.h"
-#include "video/DecoderManager.h"
+#include "video/FFmpegDecoder.h"
 #include "video/FrameQueue.h"
 
 namespace vw::video {
@@ -79,7 +79,7 @@ public:
 private:
     void tearDown(); // join worker + close queue (idempotent)
 
-    DecoderManager decoder_;
+    FFmpegDecoder decoder_;
     std::unique_ptr<FrameQueue> queue_;
     State state_ = State::Stopped;
     LONGLONG position_ = 0;

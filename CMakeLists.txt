@@ -104,11 +104,13 @@ set(VW_GRAPHICS_SOURCES
     src/graphics/TextureManager.cpp
 )
 
-# Video module sources (M4: Media Foundation playback, software first).
+# Video module sources (M4: Media Foundation playback, software first;
+# FFmpeg backend for NVDEC hardware decode).
 set(VW_VIDEO_SOURCES
     src/video/VideoMetadata.cpp
     src/video/FrameQueue.cpp
     src/video/DecoderManager.cpp
+    src/video/FFmpegDecoder.cpp
     src/video/VideoPlayer.cpp
 )
 
@@ -162,6 +164,13 @@ set(VW_UI_SOURCES
 # Media Foundation libraries (M4+; evr provides MR_VIDEO_ACCELERATION_SERVICE).
 set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf evr)
 
+# FFmpeg shared libraries (NVDEC hardware decode via libavcodec/libavformat).
+set(FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/ext/ffmpeg/ffmpeg-N-126207-g21bbd98e7b-win64-gpl-shared")
+set(FFMPEG_INCLUDE_DIR "${FFMPEG_ROOT}/include")
+set(FFMPEG_LIB_DIR "${FFMPEG_ROOT}/lib")
+set(FFMPEG_DLL_DIR "${FFMPEG_ROOT}/bin")
+set(FFMPEG_LIBS avcodec avformat avutil swscale swresample)
+
 # ---- application ----
 add_executable(VideoWallpaper WIN32
     src/app/main.cpp
@@ -186,14 +195,24 @@ add_executable(VideoWallpaper WIN32
     ${VW_UI_SOURCES}
     ${_vs_hdr} ${_ps_hdr} ${_ps_tex_hdr} ${_ps_yuv_hdr}
 )
-target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS})
+target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR} ${FFMPEG_INCLUDE_DIR})
+target_link_directories(VideoWallpaper PRIVATE ${FFMPEG_LIB_DIR})
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS} ${FFMPEG_LIBS})
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug
 )
 
+# Copy FFmpeg DLLs to the output directory so the exe can find them.
+file(GLOB FFMPEG_DLLS "${FFMPEG_DLL_DIR}/*.dll")
+add_custom_command(TARGET VideoWallpaper POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} $<TARGET_FILE_DIR:VideoWallpaper>
+    COMMENT "Copying FFmpeg DLLs"
+)
+
 if(MSVC)
+    # FFmpeg headers emit warnings we can't fix — disable /WX for that TU.
+    set_source_files_properties(src/video/FFmpegDecoder.cpp PROPERTIES COMPILE_FLAGS "/W0")
     target_compile_options(VideoWallpaper PRIVATE /WX # warnings-as-errors (plan: CI-style)
         $<$<CONFIG:Release>:/O2;/GL;/Zi>
         $<$<CONFIG:Debug>:/Od;/Zi;/RTC1>
@@ -236,8 +255,9 @@ add_executable(vw_tests
     ${VW_LIBRARY_SOURCES}
     tests/test_library.cpp
 )
-target_include_directories(vw_tests PRIVATE src tests)
-target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS})
+target_include_directories(vw_tests PRIVATE src tests ${FFMPEG_INCLUDE_DIR})
+target_link_directories(vw_tests PRIVATE ${FFMPEG_LIB_DIR})
+target_link_libraries(vw_tests PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS} ${FFMPEG_LIBS})
 target_compile_definitions(vw_tests PRIVATE ${VW_PUBLIC_DEFS})
 add_test(NAME vw_tests COMMAND vw_tests)
 

@@ -692,7 +692,8 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
     }
     // Hardware path (M5): the frame IS a GPU surface — view its two planes
     // (Y + interleaved UV) and rebind the hosts. No CPU upload.
-    if (frame.hardware) {
+    // FFmpeg HW decode: hardware=true but texture=null (CPU-transferred NV12).
+    if (frame.hardware && frame.texture) {
         return bindGpuFrame(frame);
     }
     if (frame.endOfStream || frame.bytes.empty()) {
@@ -775,7 +776,9 @@ Result<void> WallpaperManager::setVideoFrameFor(const std::wstring& monitorId,
         return {}; // unknown monitor (e.g. unplugged between events) — no-op
     }
     // Hardware path (M5): GPU surface — bind planes on THAT host only.
-    if (frame.hardware) {
+    // But FFmpeg HW decode transfers to CPU NV12 (hardware=true, texture=null)
+    // so fall through to the NV12 software upload path in that case.
+    if (frame.hardware && frame.texture) {
         return bindGpuFrameFor(monitorId, frame);
     }
     if (frame.endOfStream || frame.bytes.empty()) {
