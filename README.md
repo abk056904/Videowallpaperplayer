@@ -13,6 +13,19 @@ Windows already provides is used as-is.
 > [`docs/06-progress-checklist.md`](docs/06-progress-checklist.md), and the final
 > measured report in [`docs/07-final-report.md`](docs/07-final-report.md).
 
+## Download
+
+[**⬇ VideoWallpaper-d5f99ca.zip**](https://github.com/abk056904/Videowallpaperplayer/raw/main/dist/VideoWallpaper-d5f99ca.zip) (1.0 MB)
+
+Portable ZIP — extract anywhere, run `VideoWallpaper.exe`. No installer, no admin
+rights needed. Includes the three MSVC runtime DLLs, `README.md`, and `LICENSE`.
+
+| File | Size | SHA256 |
+|---|---|---|
+| `VideoWallpaper-d5f99ca.zip` | 1,068,705 B | `4f50862f…081c` |
+
+**Requirements:** Windows 11 (or 10 21H2+), x64, GPU with Direct3D 11.1.
+
 ---
 
 ## Overview
