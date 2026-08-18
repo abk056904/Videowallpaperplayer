@@ -6,7 +6,6 @@
 #include <shlobj.h>
 
 #include <chrono>
-#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>

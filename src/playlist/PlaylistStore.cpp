@@ -1,6 +1,5 @@
 #include "playlist/PlaylistStore.h"
 
-#include <cstdio>
 #include <fstream>
 #include <string>
 #include <utility>

@@ -4,7 +4,6 @@
 #include <commctrl.h>
 
 #include <cstdio>
-#include <cwchar>
 #include <filesystem>
 
 namespace vw::ui {

@@ -5,7 +5,6 @@
 #include <shellapi.h>
 
 #include <cstdio>
-#include <cwchar>
 #include <filesystem>
 
 #include "logging/Logger.h"
