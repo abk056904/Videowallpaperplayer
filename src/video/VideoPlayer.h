@@ -83,7 +83,7 @@ private:
     std::unique_ptr<FrameQueue> queue_;
     State state_ = State::Stopped;
     LONGLONG position_ = 0;
-    size_t queueCapacity_ = 3; // config.playback.frameQueue default
+    size_t queueCapacity_ = 1; // config.playback.frameQueue default (consumer-paced)
     bool opened_ = false;
 };
 

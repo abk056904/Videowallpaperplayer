@@ -31,7 +31,15 @@ struct Config {
     bool shuffle = false;
     bool loop = true;
     ScalingMode scaling = ScalingMode::Fill;
-    int frameQueue = 3;
+    // Frame queue depth. Default 1: the decode worker is then consumer-paced
+    // (blocks when the queue is full), so the queue can never hold two frames
+    // that became due between two consumer wakes — stale-frame drops become
+    // impossible by construction (measured 0.00/s vs ~3/s at depth 3; the
+    // depth-3 decode-ahead of ~65 ms was the drop source). Decode-bound
+    // playback behaves identically at any depth (the queue stays empty).
+    // Raised (2..16) only when a jittery source needs buffering at the cost
+    // of drops + latency.
+    int frameQueue = 1;
     bool audio = false;
     std::wstring videoPath; // M4: single clip to play (empty = none, wallpaper shows checkerboard)
     // wallpaper (M8)

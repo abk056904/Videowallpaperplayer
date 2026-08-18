@@ -848,3 +848,22 @@ While verifying, the app appeared to die on startup. WER showed `VideoWallpaper.
 - Playlist rows now read `1 | Arlecchino-In-The-Rain-Genshin-Impact-Moewalls-Com.mp4 | - | - | ✓` (all 6 items) via `ui_verify_safe.ps1`.
 - Preview: `STM_GETIMAGE` on the preview static returns a non-zero HBITMAP after the click; no `preview grab failed` in the log; app alive (PID stayed up, playing).
 - 172/172 tests Debug + Release, 0 warnings.
+
+---
+
+## Post-UI-fixes — Frame-queue depth: default 3 → 1 (0.00 stale drops/s)
+
+User request: "reduce the ~3/s stale-frame drops". The first experiment (depth 3 → 6) made drops worse — but it only probed the TOO-DEEP direction. Measuring down settled the mechanism:
+
+| frameQueue | stale drops/s (35 s steady state) | decodeLatency | presented fps |
+|---|---|---|---|
+| 6 | ~3.5 | 114 ms | ~57 |
+| 3 (old default) | ~3 | 65 ms | ~57 |
+| 2 | ~2.3 | ~48 ms | ~59.6 |
+| **1 (new default)** | **0.00** | ~16 ms | **60.1 = decoded** |
+
+**Mechanism (why depth 1 is special):** the stale-drop counter (`FrameQueue::popNewestUpTo`, freshness policy) increments when a consumer wake finds ≥2 frames with PTS at-or-before the deadline. With capacity ≥2 the decoder runs ahead (~65 ms at depth 3), so any consumer wake ≥ 1 interval late pops 2+ due frames and drops the older ones. With capacity **1** the decode worker is consumer-paced (it blocks on push when full), the queue can never hold two due frames, and the counter cannot increment **by construction** — regardless of decode rate, PTS jitter, or wake lateness. Decode-bound playback (decode < source) is identical at any depth (the queue stays empty either way); the depth only matters when decode is *faster* than source, where deeper = more decode-ahead = more drops.
+
+**Change:** default `playback.frameQueue` 3 → 1 in `ConfigurationManager.h`, `UiContract.h` (Performance panel field), and `VideoPlayer.h`. Range 1–16 kept — raising it trades drops for buffering on jittery sources (documented in the config comment + `docs/10`).
+
+**Verified:** 35 steady-state samples at the new default — 0.00 drops/s, presented 60.1 = decoded 60.1; RAM −18 MB vs depth 3 (426 vs 444 MB, shallower queue); 172/172 tests Debug + Release, 0 warnings. `docs/10`'s earlier "queue depth is not a lever" conclusion corrected (that experiment only tested 3 → 6).

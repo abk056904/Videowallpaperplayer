@@ -147,7 +147,9 @@ struct ConfigSnapshot {
     int gpuPauseThreshold = 90, gpuResumeThreshold = 70;
     int memoryPauseThreshold = 90, memoryResumeThreshold = 75;
     int pauseDelaySeconds = 3, resumeDelaySeconds = 5;
-    int longPauseReleaseSeconds = 5, frameQueue = 3;
+    // frameQueue default 1 — consumer-paced decode (see ConfigurationManager:
+    // depth 1 makes stale-frame drops impossible; matches the config default).
+    int longPauseReleaseSeconds = 5, frameQueue = 1;
     BatteryMode batteryMode = BatteryMode::Pause;
     PlaylistMode playbackMode = PlaylistMode::Loop;
     bool loop = true;
