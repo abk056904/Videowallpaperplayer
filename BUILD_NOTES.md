@@ -898,3 +898,10 @@ Clean-extraction verification (extracted to build/release/verify_dist/):
 - **No errors** in log. Cleaned up temp directory after verification.
 
 Soak #4 restarted (script PID 6856, app PID 20516) at 15:20 on the final binary. Fresh 4 h gate.
+
+## P4: EmptyWorkingSet + faster pause release (54cd34c)
+
+- Added `EmptyWorkingSet(GetCurrentProcess())` on PAUSED→SUSPENDED transition — releases physical pages immediately after decoder release
+- Changed `longPauseReleaseSeconds` default from 5 s to 2 s across all config layers (UiContract, ConfigurationManager, PausePolicy)
+- Both configs build clean, 172/172 tests pass
+- Need `#include <Windows.h>` before `<psapi.h>` in ResourceGovernor.cpp (compile fix)
