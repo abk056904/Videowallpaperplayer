@@ -393,22 +393,22 @@ TEST_CASE("config: markDirty debounces — no write before the window, one after
     mgr.markDirty(t);
     CHECK(mgr.dirty());
 
-    // Inside the 1.5 s debounce window: nothing written.
-    t += 1s;
+    // Inside the 5 s debounce window: nothing written.
+    t += 2s;
     mgr.maybeFlushDirty(t);
     CHECK(mgr.dirty());
 
     // Past the window: saved + flag cleared.
-    t += 1s;
+    t += 4s;
     mgr.maybeFlushDirty(t);
     CHECK_FALSE(mgr.dirty());
 
     // A second change re-arms the debounce (the LAST change anchors the clock).
     mgr.markDirty(t);
-    t += 500ms;
+    t += 2s;
     mgr.maybeFlushDirty(t); // still inside the new window
     CHECK(mgr.dirty());
-    t += 2s;
+    t += 4s;
     mgr.maybeFlushDirty(t);
     CHECK_FALSE(mgr.dirty());
 }
@@ -422,7 +422,7 @@ TEST_CASE("config: debounced flush persists the last state") {
 
     mgr.config().pauseOnHighRAM = true;
     mgr.markDirty();
-    auto t = std::chrono::steady_clock::now() + 2s;
+    auto t = std::chrono::steady_clock::now() + 6s;
     mgr.maybeFlushDirty(t);
 
     // A FRESH manager reading the file must see the flushed value.

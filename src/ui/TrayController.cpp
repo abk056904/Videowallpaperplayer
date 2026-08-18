@@ -48,6 +48,7 @@ void TrayController::destroy() {
 }
 
 void TrayController::setTooltip(const std::wstring& text) {
+    if (text == tooltip_) return; // M14 P5.4: skip unchanged (avoids 2 Hz shell IPC)
     tooltip_ = text;
     if (!added_ || !window_) {
         return;

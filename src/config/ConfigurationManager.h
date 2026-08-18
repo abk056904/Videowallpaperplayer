@@ -113,7 +113,7 @@ public:
 
     // M11 (spec §9 / §10.10): debounced write-batching. CONFIG_SETs call
     // markDirty(); the app's low-frequency tick calls maybeFlushDirty(now),
-    // which persists once the debounce window (kSaveDebounce = 1.5 s) has
+    // which persists once the debounce window (kSaveDebounce = 5 s) has
     // passed since the LAST change. shutdown()'s save() is the final flush.
     // No per-click disk writes; UI edits survive a crash up to the debounce.
     // now = the change time (injectable for tests; defaults to the real clock).
@@ -121,7 +121,7 @@ public:
                    std::chrono::steady_clock::now());
     void maybeFlushDirty(std::chrono::steady_clock::time_point now);
     bool dirty() const { return dirty_; }
-    static constexpr auto kSaveDebounce = std::chrono::milliseconds(1500);
+    static constexpr auto kSaveDebounce = std::chrono::milliseconds(5000); // M14 P5.2: 5 s debounce (was 1.5 s)
 
 private:
     void applyDefaults();

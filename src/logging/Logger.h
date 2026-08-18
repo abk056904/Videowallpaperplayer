@@ -22,7 +22,7 @@ public:
     struct Options {
         std::filesystem::path logDir; // empty => no file sink (default for tests)
         Level level = Level::Info;
-        uint64_t maxFileBytes = 5ull * 1024 * 1024; // current.log rotates to previous.log
+        uint64_t maxFileBytes = 1ull * 1024 * 1024; // M14 P5.3: 1 MB rotation (was 5 MB)
     };
 
     explicit Logger(Options opts = {});
@@ -75,7 +75,7 @@ private:
 
     std::filesystem::path dir_;
     std::filesystem::path filePath_;
-    uint64_t maxBytes_ = 5ull * 1024 * 1024;
+    uint64_t maxBytes_ = 1ull * 1024 * 1024; // M14 P5.3: matches Options default
     uint64_t bytes_ = 0;
     std::mutex mu_;
     std::ofstream file_; // UTF-8 byte sink (lines converted explicitly)
