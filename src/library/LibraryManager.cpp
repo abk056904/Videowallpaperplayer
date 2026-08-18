@@ -7,6 +7,7 @@
 #include <filesystem>
 
 #include "logging/Logger.h"
+#include "util/vecutil.h"
 #include "video/DecoderManager.h"
 
 namespace vw::library {
@@ -473,7 +474,7 @@ void LibraryManager::pollChangeEvents() {
                     const auto it = itemIndex_.find(canon);
                     if (it != itemIndex_.end()) {
                         removed.push_back(items_[it->second].id);
-                        items_.erase(items_.begin() + static_cast<ptrdiff_t>(it->second));
+                        items_.erase(items_.begin() + vw::util::idx(it->second));
                         // itemIndex_ rebuilt below (positions shifted).
                     }
                 } else { // Updated / modified

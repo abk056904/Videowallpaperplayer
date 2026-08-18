@@ -1,14 +1,12 @@
 #include "graphics/TextureManager.h"
 
-#include <format>
+#include "util/HrToString.h"
 
 namespace vw::gfx {
 
 namespace {
 
-std::wstring formatHr(HRESULT hr) {
-    return std::format(L"hr=0x{:08X}", static_cast<unsigned>(hr));
-}
+using vw::util::formatHr;
 
 } // namespace
 

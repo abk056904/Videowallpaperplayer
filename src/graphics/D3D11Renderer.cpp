@@ -1,9 +1,9 @@
 #include "graphics/D3D11Renderer.h"
 
 #include <algorithm>
-#include <format>
 
 #include "graphics/D3D11DeviceManager.h"
+#include "util/HrToString.h"
 #include "graphics/TextureManager.h"
 #include "generated/VideoShaderPsData.h"
 #include "generated/VideoShaderPsTexData.h"
@@ -14,9 +14,7 @@ namespace vw::gfx {
 
 namespace {
 
-std::wstring formatHr(HRESULT hr) {
-    return std::format(L"hr=0x{:08X}", static_cast<unsigned>(hr));
-}
+using vw::util::formatHr;
 
 } // namespace
 

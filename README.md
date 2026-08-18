@@ -278,7 +278,7 @@ changes via a revision counter (no polling).
 | Config resets to defaults | Corrupt config was detected → `.bak` written next to it, defaults applied, app continues. |
 | No tray icon | The tray icon lives while the app runs; it can be hidden by Windows tray settings (show hidden icons). |
 
-Logs: `%APPDATA%\VideoWallpaper\logs\current.log` (rotates at 5 MB → `previous.log`).
+Logs: `%APPDATA%\VideoWallpaper\logs\current.log` (rotates at 1 MB → `previous.log`).
 
 ## Known limitations (v1)
 

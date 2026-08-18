@@ -14,6 +14,7 @@
 
 #include "logging/Logger.h"
 #include "util/clock.h"
+#include "util/HrToString.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -153,7 +154,7 @@ DecoderManager::~DecoderManager() {
 }
 
 std::wstring DecoderManager::formatHr(HRESULT hr) {
-    return std::format(L"0x{:08X}", static_cast<unsigned>(hr));
+    return vw::util::formatHr(hr);
 }
 
 Result<void> DecoderManager::open(const std::wstring& path) {
@@ -210,12 +211,12 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
     auto& log = log::Logger::instance();
     auto adapters = gfx::D3D11DeviceManager::enumerateAdapters();
     if (adapters) {
-        log.info(L"hardware probe: {} DXGI adapter(s) found", adapters->size());
+        log.debug(L"hardware probe: {} DXGI adapter(s) found", adapters->size());
         for (UINT i = 0; i < adapters->size(); ++i) {
             const auto& info = (*adapters)[i];
             bool isRender = (info.luid.LowPart == renderLuid.LowPart &&
                              info.luid.HighPart == renderLuid.HighPart);
-            log.info(L"  adapter {}: {} (LUID {}.{}{})", i, info.description,
+            log.debug(L"  adapter {}: {} (LUID {}.{}{})", i, info.description,
                      info.luid.HighPart, info.luid.LowPart,
                      isRender ? L" [render device]" : L"");
             if (isRender) {
@@ -223,7 +224,7 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
             }
             auto adapter = gfx::D3D11DeviceManager::getAdapter(i);
             if (!adapter) {
-                log.info(L"  adapter {}: getAdapter failed", i);
+                log.debug(L"  adapter {}: getAdapter failed", i);
                 continue;
             }
             ComPtr<ID3D11Device> dev;
@@ -235,26 +236,26 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 levels, 2, D3D11_SDK_VERSION, &dev, &fl, nullptr);
             if (SUCCEEDED(hr)) {
-                log.info(L"  adapter {}: device created (feature level 0x{:04X})",
+                log.debug(L"  adapter {}: device created (feature level 0x{:04X})",
                          i, static_cast<unsigned>(fl));
                 candidates.push_back(std::move(dev));
             } else {
-                log.info(L"  adapter {}: D3D11CreateDevice failed (0x{:08X})",
+                log.debug(L"  adapter {}: D3D11CreateDevice failed (0x{:08X})",
                          i, static_cast<unsigned>(hr));
             }
         }
     } else {
-        log.info(L"hardware probe: enumerateAdapters failed");
+        log.debug(L"hardware probe: enumerateAdapters failed");
     }
 
-    log.info(L"hardware probe: {} candidate device(s)", candidates.size());
+    log.debug(L"hardware probe: {} candidate device(s)", candidates.size());
     for (auto& dev : candidates) {
         auto result = tryHardwareWithDevice(path, dev.Get());
         if (result) {
             decodeDevice_ = dev; // may differ from d3dDevice_ (cross-adapter)
             return {};
         }
-        log.info(L"hardware probe failed on this adapter; trying next",
+        log.debug(L"hardware probe failed on this adapter; trying next",
                  result.error());
     }
     return std::unexpected(

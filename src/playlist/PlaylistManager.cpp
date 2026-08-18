@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "util/vecutil.h"
+
 namespace vw::playlist {
 
 namespace {
@@ -53,9 +55,9 @@ bool PlaylistManager::remove(size_t index) {
     if (!inRange(index)) {
         return false;
     }
-    data_.items.erase(data_.items.begin() + static_cast<ptrdiff_t>(index));
-    unavailable_.erase(unavailable_.begin() + static_cast<ptrdiff_t>(index));
-    attempts_.erase(attempts_.begin() + static_cast<ptrdiff_t>(index)); // M12
+    data_.items.erase(data_.items.begin() + vw::util::idx(index));
+    unavailable_.erase(unavailable_.begin() + vw::util::idx(index));
+    attempts_.erase(attempts_.begin() + vw::util::idx(index)); // M12
     if (data_.current == index) {
         data_.current = kNoIndex; // caller re-selects
     } else if (data_.current > index) {
@@ -72,12 +74,12 @@ bool PlaylistManager::move(size_t from, size_t to) {
     const PlaylistItem item = data_.items[from];
     const bool wasUnavailable = unavailable_[from];
     const unsigned wasAttempts = attempts_[from]; // M12
-    data_.items.erase(data_.items.begin() + static_cast<ptrdiff_t>(from));
-    unavailable_.erase(unavailable_.begin() + static_cast<ptrdiff_t>(from));
-    attempts_.erase(attempts_.begin() + static_cast<ptrdiff_t>(from));
-    data_.items.insert(data_.items.begin() + static_cast<ptrdiff_t>(to), item);
-    unavailable_.insert(unavailable_.begin() + static_cast<ptrdiff_t>(to), wasUnavailable);
-    attempts_.insert(attempts_.begin() + static_cast<ptrdiff_t>(to), wasAttempts);
+    data_.items.erase(data_.items.begin() + vw::util::idx(from));
+    unavailable_.erase(unavailable_.begin() + vw::util::idx(from));
+    attempts_.erase(attempts_.begin() + vw::util::idx(from));
+    data_.items.insert(data_.items.begin() + vw::util::idx(to), item);
+    unavailable_.insert(unavailable_.begin() + vw::util::idx(to), wasUnavailable);
+    attempts_.insert(attempts_.begin() + vw::util::idx(to), wasAttempts);
     // Track the moved index through the shift.
     if (data_.current == from) {
         data_.current = to;
