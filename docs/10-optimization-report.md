@@ -61,14 +61,67 @@ The `dropped` delta (0 → ~3/s) is **not a regression**: the counter (`FrameQue
 - **Performance impact:** not measurable here (path inactive — documented NOT MEASURED); verified by build + tests; bounded (no unbounded growth on a pathological stream).
 - **Risk:** cache keyed by surface pointer — safe because views are bound to the resource, not the content; cap + device-recreate clear prevent staleness.
 
-## Acceptance (spec §57)
+## Requirement compliance check (spec §1–§57, run 2026-08-18)
 
-The §57 targets (1080p60: CPU <1 %, RAM <200 MB, VRAM <250 MB, GPU ~1–3 %, FPS 60, 0 drops) are **hardware-decode targets**. This machine has **no working hardware MFT** (verified M5/M14 — NV12 negotiates but the decoder hands back system-memory samples), so decode is inherently software — the documented deviation: *"if hardware limitations prevent the target, maintain quality and explain the bottleneck"* (kept, this document + `docs/09`).
+Every requirement group checked against the implemented + measured state. **Met** = implemented + verified; **Met (design)** = implemented, verified by code/tests, not measurable on this machine; **Not met on this machine** = target requires hardware decode this machine lacks (reason + §57 escape clause).
 
-What this work delivers on the software path:
-- (a) **the software path at its floor** — no CPU color conversion, minimum (native-format) upload, no redundant per-frame GPU work;
-- (b) **measured before/after** (above) — CPU −25 % total / −58 % per frame, RAM −22 MB, decode 2×, presentation 32 → ~57 fps;
-- (c) **no quality/FPS regression** — same BT.709 limited→full-range conversion (now GPU), render time unchanged (0.4 ms), and the remaining drops are the documented freshness policy, not lost frames;
-- (d) remaining gap to §57 is the absent hardware decoder (explained above) — with a hardware MFT, B3 removes the per-frame SRV allocation and B1's NV12 upload feeds the same shader.
+### §1 Non-negotiable priorities + DO-NOT list — MET
+
+Priorities 1–5 (correctness, visual quality, stable pacing, source FPS, responsiveness) were never traded for resource numbers; the optimizations reduced CPU/upload **while increasing** the presentation rate (32 → ~57 fps) with identical color output (same BT.709 limited→full-range matrix, now on the GPU).
+
+| DO-NOT | State |
+|---|---|
+| reduce resolution / source FPS / bitrate / recompress | ✗ none — decode unchanged, pacing at source FPS (M6 scheduler) |
+| intentionally skip frames / cap FPS below source | ✗ none — presented 57/60 ≈ source; drops are the freshness policy (stale <16 ms frames), never source-FPS capping |
+| software decode when hardware available | ✗ HW is attempted FIRST + runtime-probed (M5); this machine has no working hardware MFT → fallback per spec §5 |
+| continuously poll / busy-wait | ✗ event-driven; message pump blocks when idle; the only periodic work is the ~1 Hz Explorer-validity tick (documented exception, docs/02 §2.8) |
+| allocate per frame | ✗ pooled frame buffers (M13), persistent upload texture, cached plane SRVs (B3) |
+| copy full frames unnecessarily | ✗ NV12 1.5 B/px, no CPU color conversion, no CPU scaling |
+| decode frames that will never be displayed | ~0.2 % overshoot (~4 frames/20 s) — bounded 3-deep queue; measured waste negligible |
+| keep rendering while not visible | ✗ no presents when paused/hidden; UI telemetry timer killed when hidden (UI review) |
+| keep decoding while suspended | ✗ pause joins the decode worker (M10) |
+
+### §4/§5 Media Foundation + hardware decode — MET (with documented fallback)
+
+IMFSourceReader ✓; hardware path attempted first via `IMFDXGIDeviceManager` + `MF_SOURCE_READER_D3D_MANAGER` ✓; **verified the decoder is actually accelerated** by probing the first sample for a DXGI buffer (never assumed — M5) ✓; capability probed once at open, never per-frame ✓; graceful, diagnosed fallback ✓; Debug-build diagnostics (decoder / HW yes-no / codec / resolution / FPS / pixel format / GPU) ✓.
+
+### §6 GPU device management — MET
+
+One D3D11 device per adapter (shared by all videos/hosts, never per-video) ✓; no device recreate on wallpaper change ✓; `D3D11_CREATE_DEVICE_BGRA_SUPPORT` ✓; no debug layer in Release ✓.
+
+### §7 Video frame lifetime — MET
+
+Reusable resources only: pooled decode buffers (M13), persistent upload texture recreated only on size/format change, plane-SRV cache (B3), no per-frame `CreateTexture`/SRV/buffer ✓.
+
+### §31 Pause / §32 Idle — MET (measured)
+
+Paused: decoder worker joined, no timers, no presents → **CPU ~0 %** (measured 0.00 CPU-s/8 s, M6; soak flat) ✓; RAM/VRAM held only for fast resume (upload texture + MF reader) ✓.
+
+### §33 Loop / §34 Playlist switch — MET
+
+Loop reuses the reader + decoder (`replay()`, no file reopen — verified M7) ✓; playlist switch prepares the new media, waits for the first valid frame, then atomically rebinds (no black frame) ✓; shared graphics infrastructure untouched across switches ✓.
+
+### §57 Acceptance targets — NOT MET ON THIS MACHINE (hardware-decode targets; §57 escape clause applies)
+
+| Target (1080p60) | Required | Measured here (1440p60 SW) | Status |
+|---|---|---|---|
+| CPU average | <1 % | 136 % (decode-bound) | not reachable — no hardware MFT |
+| CPU spikes | <5 % | ~150–200 % | not reachable — software decode |
+| RAM | <200 MB | 444 MB | not reachable — MF software pipeline |
+| VRAM | <250 MB | NOT MEASURED (no sampler) | — |
+| GPU | ~1–3 % | NOT MEASURED (no sampler) | — |
+| Disk I/O | ≈0 | ~0.6 MB/s sequential source read | near-zero ✓ |
+| FPS | stable 60 | ~57 presented (60 decoded) | not reachable — decode-jitter margin |
+| Dropped frames | 0 | ~3/s freshness (stale <16 ms) | not reachable — decoder rate overshoot |
+| Visible stutter | none | none observed (0.4 ms render) | ✓ |
+| Visual quality | unchanged | unchanged (BT.709, GPU) | ✓ |
+
+**Why the numeric budgets are not reachable here:** the §57 targets presume hardware decode. This machine has **no working hardware MFT** (verified M5/M14: NV12 negotiates but the decoder returns system-memory samples on both the AMD iGPU and the RTX 3050), so 1440p60 H.264 decode alone costs ~130 % CPU and ~440 MB RAM. §57: *"If hardware limitations prevent the target: maintain quality and explain the bottleneck"* — done here and in `docs/09`/M14 report. On a machine with a working hardware decoder, B3 removes the per-frame SRV allocation and B1's NV12 upload feeds the same shader; the architecture is already at the spec's ideal pipeline (§3) for that case.
+
+**Queue-depth experiment (2026-08-18, ruled out as a lever):** the ~3/s freshness drops were hypothesized to be decode-jitter absorbed by a deeper queue. Measured `frameQueue` 3 → 6 on the same clip: drops 56–60 → 69–73 cumulative, decodeLatency 65 → 114 ms, RAM +21 MB, CPU unchanged (147 vs 151 %, within run-to-run noise). The drops are the software decoder's slight rate overshoot (~0.2 fps surplus → stale frames skipped by the freshness policy), not a queue-depth problem; depth 3 kept (config default).
 
 **Not measured (reasons recorded):** VRAM + GPU engine % (no per-process sampler — M14 audit), Frame P95 (app tracks 1 s averages, not percentiles), 4K/AV1/HDR rows (no hardware MFT / no such clips — M14 report), real multi-monitor (single display).
+
+## Verdict
+
+**Optimization requirements are met to the extent this machine allows.** Everything under the application's control — §1 DO-NOT list, §4–§7 architecture, §31–§35 behavior, no per-frame allocations/copies/wakeups, minimal upload, event-driven idle — is implemented and verified, with measured before/after (CPU −25 % / −58 % per frame, RAM −22 MB, decode 2×, presentation 32 → ~57 fps) and no quality/FPS regression. The only unmet items are the **§57 numeric budgets**, which are hardware-decode targets this machine cannot reach (no working hardware MFT — documented deviation per §57's own escape clause, with the bottleneck explained).

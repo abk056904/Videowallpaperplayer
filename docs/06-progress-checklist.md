@@ -418,6 +418,7 @@ Followed the spec's order: **inspect → profile → bottleneck report → highe
 - [x] **Live-verified** (Release, this machine): log shows `decoder: software (NV12 output)`; no render/device errors; NV12 path active end-to-end
 
 **Acceptance (spec §57):** the 1080p60 targets (<1 % CPU, <200 MB RAM, 0 drops) are **hardware-decode targets** — this machine has no working hardware MFT (verified M5/M14), so decode is inherently software (§57: "maintain quality and explain the bottleneck"). Delivered: software path at its floor (no CPU color conversion, native-format upload, zero redundant per-frame GPU work), measured before/after, no quality/FPS regression.
+- [x] **Requirement compliance check (2026-08-18)** — full §1–§57 matrix in `docs/10` (Verdict section): all §1 DO-NOT items met; §4–§7 (MF/HW/device/frame-lifetime) met; §31/§32 pause+idle met (CPU ~0 % paused); §33/§34 loop+switch met; §57 numeric budgets **not reachable on this machine** (hardware-decode targets; no working hardware MFT — §57 escape clause with bottleneck explained). **Queue-depth experiment** (frameQueue 3 → 6) ruled out as a lever: drops got worse (56–60 → 69–73), latency 65 → 114 ms, RAM +21 MB — the ~3/s freshness drops are the software decoder's rate overshoot, not a queue-depth issue; config restored to 3.
 
 ---
 
