@@ -824,3 +824,27 @@ Benchmark method: `build/release/perf_bench.ps1` (CPU/RAM sampling) + `build/rel
 - 172/172 tests Debug + Release, 0 warnings; the real-file decode test now asserts NV12 (w×h×3/2) vs RGB32 (w×h×4) per the actual path.
 - Live (Release): `decoder: software (NV12 output)`; no render/device errors; NV12 active end-to-end on this machine (independent mode, 1 monitor).
 - The "dropped 0 → 66" delta is the **freshness policy** (`popNewestUpTo` keeps the newest at-or-before the deadline; `dropped_ += popped - 1`), not lost frames — the old build was decode-bound at 32 fps with ~28 fps silently missed. Documented in the report.
+
+---
+
+## Post-OPT — UI fixes (2026-08-18, user report)
+
+User report: "parts of ui are broken and in playlist list of ui show the video names".
+
+### 1. Playlist list: Name column was empty (real bug)
+
+`PlaylistsPanel::rebuildItems()` inserted the FULL PATH as the column-0 text (`lv.pszText = item.path`), then overwrote column 0 with the row number via `setSub(0, ...)` — and **never set column 1 (Name) at all**. The list showed `# | (empty) | Start | End | On`. Fixed: the Name column now shows `std::filesystem::path(path).filename()` (same pattern as the Monitors source combo), and `setSub` uses `wcsncpy_s(..., _TRUNCATE)` so long filenames truncate instead of leaving the cell blank (`wcscpy_s` fails-whole-buffer on overflow).
+
+### 2. Monitors Preview: broken by the B1 NV12 change (regression)
+
+`grabFrameSnapshot()` returned `"no preview on the NV12 path (no CPU copy)"` — the software path is NV12 since B1, so the Preview button error-boxed on this machine. Fixed: the readback now **converts NV12→BGRA on the CPU** with the same BT.709 limited→full-range math as `PSMainYuv` (user-initiated, ONE frame — the conversion cost is fine here; the shader-equivalence was checked: same 16-235/16-240 rescale + same coefficients). Only the transient HARDWARE path (decoder surfaces not retained) still reports no preview — documented in the header.
+
+### 3. Crash investigation: MY PROBE, not the app
+
+While verifying, the app appeared to die on startup. WER showed `VideoWallpaper.exe ... faulting module COMCTL32.dll, 0xC0000005 / 0xC000041D`. Root cause: a naive cross-process `LVM_GETITEMTEXTW` probe passed a pointer into the PowerShell process's memory as lParam — the listview in the app process dereferenced it (access violation). The app itself was healthy (its own session summaries: 57 fps, 0.3 ms render). Lesson recorded: listview item reads across processes must allocate the buffer **inside the target** (VirtualAllocEx + WriteProcessMemory + ReadProcessMemory) — kept as `build/release/ui_verify_safe.ps1`.
+
+### Verification (live, Release)
+
+- Playlist rows now read `1 | Arlecchino-In-The-Rain-Genshin-Impact-Moewalls-Com.mp4 | - | - | ✓` (all 6 items) via `ui_verify_safe.ps1`.
+- Preview: `STM_GETIMAGE` on the preview static returns a non-zero HBITMAP after the click; no `preview grab failed` in the log; app alive (PID stayed up, playing).
+- 172/172 tests Debug + Release, 0 warnings.

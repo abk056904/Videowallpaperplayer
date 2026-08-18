@@ -116,10 +116,12 @@ public:
 
     // M11 Monitors-panel preview: one-time CPU readback of the CURRENT video
     // frame (the software-path upload texture). Returns tightly-packed BGRA8
-    // rows (row 0 = top, ready for a top-down DIB) + size. On the hardware/
-    // NV12 path there is no CPU copy — returns an error and the UI shows
-    // "no preview" (honest fallback per spec §10.5; on this machine the
-    // software path is active so preview works).
+    // rows (row 0 = top, ready for a top-down DIB) + size. NV12 software
+    // frames are converted to BGRA on the CPU (same BT.709 limited->full-range
+    // math as the GPU shader; user-initiated, one frame). Only the HARDWARE
+    // path returns an error (the decoder's surfaces are transient — never
+    // retained — so no CPU copy exists; the UI shows "no preview", honest
+    // fallback per spec §10.5).
     struct FrameSnapshot {
         std::vector<uint8_t> bgra;
         uint32_t width = 0;

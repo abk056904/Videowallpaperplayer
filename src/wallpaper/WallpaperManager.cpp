@@ -399,9 +399,12 @@ Result<WallpaperManager::FrameSnapshot> WallpaperManager::grabFrameSnapshot() co
     ID3D11Texture2D* source = frameTexture_.Get();
     UINT width = frameWidth_;
     UINT height = frameHeight_;
-    // B1: NV12 textures hold YUV data — a CPU readback would return NV12
-    // bytes, not BGRA. No CPU copy exists on that path; the UI shows
-    // "no preview" (honest fallback, documented in the header).
+    // The bound texture may be NV12 (B1 software path) or BGRA. NV12 readback
+    // yields YUV bytes — converted to BGRA below with the same BT.709
+    // limited->full-range math as the GPU shader (user-initiated, ONE frame;
+    // the conversion cost is fine on this path). The hardware path's decoder
+    // surfaces are transient (never retained) — no CPU copy exists there and
+    // the caller sees "no preview" (documented in the header).
     bool nv12 = frameIsNv12_;
     if (!monitors_.empty()) {
         auto it = std::find_if(monitors_.begin(), monitors_.end(),
@@ -414,9 +417,6 @@ Result<WallpaperManager::FrameSnapshot> WallpaperManager::grabFrameSnapshot() co
             height = f->second.height;
             nv12 = f->second.nv12;
         }
-    }
-    if (nv12) {
-        return std::unexpected(L"no preview on the NV12 path (no CPU copy)");
     }
     if (!source || width == 0 || height == 0) {
         return std::unexpected(L"no video frame has been presented yet");
@@ -444,9 +444,40 @@ Result<WallpaperManager::FrameSnapshot> WallpaperManager::grabFrameSnapshot() co
     out.height = height;
     out.bgra.resize(static_cast<size_t>(height) * static_cast<size_t>(width) * 4);
     const auto* src = static_cast<const BYTE*>(mapped.pData);
-    for (UINT y = 0; y < height; ++y) {
-        std::memcpy(out.bgra.data() + static_cast<size_t>(y) * width * 4,
-                    src + static_cast<size_t>(y) * mapped.RowPitch, static_cast<size_t>(width) * 4);
+    if (nv12) {
+        // NV12 layout in subresource 0: the Y plane (height rows of RowPitch)
+        // followed immediately by the interleaved UV plane (height/2 rows of
+        // RowPitch, one U/V pair per 2x2 luma block). Same math as PSMainYuv:
+        // limited->full range (luma 16-235, chroma 16-240) then BT.709.
+        const auto* uv = src + static_cast<size_t>(height) * mapped.RowPitch;
+        const size_t rowPitch = static_cast<size_t>(mapped.RowPitch);
+        for (UINT y = 0; y < height; ++y) {
+            auto* dst = out.bgra.data() + static_cast<size_t>(y) * width * 4;
+            const auto* yRow = src + static_cast<size_t>(y) * rowPitch;
+            const auto* uvRow = uv + (static_cast<size_t>(y) / 2) * rowPitch;
+            for (UINT x = 0; x < width; ++x) {
+                const float yv = (static_cast<float>(yRow[x]) - 16.0f) * (255.0f / 219.0f);
+                const float cb =
+                    (static_cast<float>(uvRow[static_cast<size_t>(x / 2) * 2]) - 128.0f) *
+                    (255.0f / 224.0f);
+                const float cr =
+                    (static_cast<float>(uvRow[static_cast<size_t>(x / 2) * 2 + 1]) - 128.0f) *
+                    (255.0f / 224.0f);
+                const float r = yv + 1.5748f * cr;
+                const float g = yv - 0.1873f * cb - 0.4681f * cr;
+                const float b = yv + 1.8556f * cb;
+                dst[x * 4 + 0] = static_cast<BYTE>(std::clamp(b, 0.0f, 255.0f) + 0.5f);
+                dst[x * 4 + 1] = static_cast<BYTE>(std::clamp(g, 0.0f, 255.0f) + 0.5f);
+                dst[x * 4 + 2] = static_cast<BYTE>(std::clamp(r, 0.0f, 255.0f) + 0.5f);
+                dst[x * 4 + 3] = 0xFF;
+            }
+        }
+    } else {
+        for (UINT y = 0; y < height; ++y) {
+            std::memcpy(out.bgra.data() + static_cast<size_t>(y) * width * 4,
+                        src + static_cast<size_t>(y) * mapped.RowPitch,
+                        static_cast<size_t>(width) * 4);
+        }
     }
     ctx->Unmap(staging.Get(), 0);
     return out;

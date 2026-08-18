@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cwchar>
+#include <filesystem>
 
 namespace vw::ui {
 
@@ -85,22 +86,29 @@ void PlaylistsPanel::rebuildItems() {
     int row = 0;
     for (const auto& item : items_) {
         wchar_t buf[64];
-        std::swprintf(buf, 64, L"%d", row + 1);
         LVITEMW lv{};
         lv.mask = LVIF_TEXT | LVIF_PARAM;
         lv.iItem = row;
-        lv.pszText = const_cast<wchar_t*>(item.path.c_str());
+        // Name column (1) shows the video's FILE NAME (the full path is too
+        // wide for the column and is what the row's tooltip would need — not
+        // the display text). Column 0 (#) is set right after via setSub(0).
+        const std::wstring name = std::filesystem::path(item.path).filename().wstring();
+        lv.pszText = const_cast<wchar_t*>(name.c_str());
         lv.lParam = row;
         ::SendMessageW(list_, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&lv));
         LVITEMW sub{};
         sub.pszText = buf;
         const auto setSub = [&](int col, const wchar_t* text) {
-            ::wcscpy_s(buf, 64, text);
+            // Truncate (never fail-empty): filenames can exceed the 64-char
+            // buffer and wcscpy_s would leave the cell blank on overflow.
+            ::wcsncpy_s(buf, 64, text, _TRUNCATE);
             sub.iSubItem = col;
             ::SendMessageW(list_, LVM_SETITEMTEXTW, static_cast<WPARAM>(row),
                            reinterpret_cast<LPARAM>(&sub));
         };
+        std::swprintf(buf, 64, L"%d", row + 1);
         setSub(0, buf);
+        setSub(1, name.c_str()); // was never populated — the list showed an empty Name column
         std::swprintf(buf, 64, L"%ls", item.start100ns > 0 ? L"trim" : L"-");
         setSub(2, buf);
         std::swprintf(buf, 64, L"%ls", item.end100ns > 0 ? L"trim" : L"-");
