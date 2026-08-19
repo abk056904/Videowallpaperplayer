@@ -154,6 +154,7 @@ struct ConfigSnapshot {
     PlaylistMode playbackMode = PlaylistMode::Loop;
     bool loop = true;
     ScalingMode scaling = ScalingMode::Fill;
+    double playbackSpeed = 1.0; // playback speed multiplier (0.25–4.0)
     bool clone = false; // wallpaper mode: true = Clone, false = Independent
     bool startWithWindows = false, minimizeToTray = true, startMinimized = false;
     std::wstring logLevel = L"info";

@@ -28,4 +28,13 @@ Result<std::wstring> utf8ToWide(const std::string& s) {
     return out;
 }
 
+std::wstring utf8ToWide(const char* s) {
+    if (!s || !*s) return {};
+    const int needed = ::MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (needed <= 0) return {};
+    std::wstring out(static_cast<size_t>(needed - 1), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, s, -1, out.data(), needed);
+    return out;
+}
+
 } // namespace vw::util

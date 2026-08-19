@@ -28,7 +28,7 @@ TEST_CASE("utf8: non-ASCII round-trip") {
 
 TEST_CASE("utf8: empty strings") {
     CHECK(wideToUtf8(L"") == "");
-    auto back = utf8ToWide("");
+    auto back = utf8ToWide(std::string(""));
     REQUIRE(back);
     CHECK(back->empty());
 }

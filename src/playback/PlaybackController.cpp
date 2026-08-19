@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "audio/AudioPipeline.h"
 #include "logging/Logger.h"
 #include "util/clock.h"
 #include "video/DecodedFrame.h"
@@ -44,6 +45,17 @@ Result<void> PlaybackController::open(const std::wstring& path, ID3D11Device* d3
     scheduler_.setSourceFps(player->metadata().fps);
     player_ = std::move(player);
     stats_ = {};
+
+    // Initialize audio pipeline if audio is present
+    if (player_->metadata().hasAudio) {
+        audioPipeline_ = std::make_unique<audio::AudioPipeline>();
+        auto audioResult = audioPipeline_->init(path);
+        if (!audioResult) {
+            log::Logger::instance().warn(L"audio init failed: {}", audioResult.error());
+            audioPipeline_.reset(); // Continue without audio
+        }
+    }
+
     return {};
 }
 
@@ -63,6 +75,13 @@ Result<void> PlaybackController::start() {
     if (!result) {
         return result;
     }
+    // Start audio if available
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        auto audioResult = audioPipeline_->start();
+        if (!audioResult) {
+            log::Logger::instance().warn(L"audio start failed: {}", audioResult.error());
+        }
+    }
     state_ = State::Playing;
     statsWindowStart_ = util::Clock::instance().now100ns();
     decodedAtWindowStart_ = player_->decodedFrames();
@@ -76,6 +95,9 @@ void PlaybackController::pause() {
         return;
     }
     cancelTimer();
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        audioPipeline_->pause();
+    }
     player_->pause(); // joins the worker; keeps position for resume
     state_ = State::Paused;
     logStatsSummary(); // DEBUG detail at pause boundaries
@@ -97,6 +119,10 @@ Result<void> PlaybackController::resume() {
     if (!result) {
         return result;
     }
+    // Resume audio
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        audioPipeline_->resume();
+    }
     state_ = State::Playing;
     statsWindowStart_ = util::Clock::instance().now100ns();
     decodedAtWindowStart_ = player_->decodedFrames();
@@ -107,10 +133,14 @@ Result<void> PlaybackController::resume() {
 
 void PlaybackController::stop() {
     cancelTimer();
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        audioPipeline_->stop();
+    }
     if (player_) {
         player_->stop();
         player_.reset();
     }
+    audioPipeline_.reset();
     if (state_ != State::Stopped) {
         logStatsSummary();
     }
@@ -231,6 +261,18 @@ void PlaybackController::armTimer() {
 void PlaybackController::cancelTimer() {
     if (timer_) {
         ::CancelWaitableTimer(timer_);
+    }
+}
+
+void PlaybackController::setPlaybackSpeed(double speed) {
+    // Clamp to a sensible range: 0.25× – 4×.
+    if (speed < 0.25) speed = 0.25;
+    if (speed > 4.0) speed = 4.0;
+    scheduler_.setSpeed(speed);
+    // Re-arm the timer immediately so the new speed takes effect on the
+    // next wake without waiting for the old deadline to expire.
+    if (state_ == State::Playing) {
+        armTimer();
     }
 }
 

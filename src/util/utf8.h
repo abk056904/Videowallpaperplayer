@@ -21,4 +21,9 @@ std::string wideToUtf8(const std::wstring& s);
 // corrupt-file recovery input, matching the strict-validation policy).
 Result<std::wstring> utf8ToWide(const std::string& s);
 
+// Trusted UTF-8 C-string -> wide string (no error path).
+// Use only for data known to be valid UTF-8 (e.g. FFmpeg codec names).
+// Returns empty string on any conversion failure.
+std::wstring utf8ToWide(const char* s);
+
 } // namespace vw::util

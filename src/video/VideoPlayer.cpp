@@ -3,96 +3,71 @@
 #include <utility>
 
 #include "logging/Logger.h"
+#include "video/DecoderFactory.h"
 
 namespace vw::video {
 
-VideoPlayer::~VideoPlayer() {
-    stop();
-}
+VideoPlayer::~VideoPlayer() { stop(); }
 
 Result<void> VideoPlayer::open(const std::wstring& path) {
     stop();
-    auto result = decoder_.open(path);
-    if (!result) {
-        return result;
+
+    // Use factory to select best decoder backend
+    AdapterInfo adapterInfo;
+    decoder_ = CreateBestDecoder(d3dDevice_, path, &adapterInfo);
+    if (!decoder_) {
+        return std::unexpected(std::wstring(L"VideoPlayer::open: no decoder available"));
     }
+
     opened_ = true;
     position_ = 0;
     auto& log = log::Logger::instance();
     const auto& m = metadata();
-    log.info(L"video opened: {} | {}x{} @ {:.2f} fps, {} ms, codec {}, {}-bit{}, audio={}"
-             L" | SAR {}:{}, display aspect {:.4f}",
+    log.info(L"video opened: {} | {}x{} @ {:.2f} fps, {} ms, codec {}, {}-bit{}, audio={} | decoder: {}",
              path, m.width, m.height, m.fps, m.duration100ns / 10000, m.codec, m.bitDepth,
-             m.hdr ? L" HDR" : L"", m.hasAudio ? L"yes" : L"no", m.sarNum, m.sarDen,
-             m.displayAspect);
+             m.hdr ? L" HDR" : L"", m.hasAudio ? L"yes" : L"no", decoderName());
     return {};
 }
 
 Result<void> VideoPlayer::start() {
-    if (!opened_) {
-        return std::unexpected(L"VideoPlayer::start: no file opened");
-    }
-    if (state_ == State::Playing) {
-        return {};
-    }
+    if (!opened_) return std::unexpected(L"VideoPlayer::start: no file opened");
+    if (state_ == State::Playing) return {};
+
     queue_ = std::make_unique<FrameQueue>(queueCapacity_);
-    auto result = decoder_.start(queue_.get(), position_);
-    if (!result) {
-        return result;
-    }
+    auto result = decoder_->start(queue_.get(), position_);
+    if (!result) return result;
+
     state_ = State::Playing;
-    log::Logger::instance().info(L"playback started (position {} ms)",
-                                 position_ / 10000);
+    log::Logger::instance().info(L"playback started (position {} ms)", position_ / 10000);
     return {};
 }
 
 Result<void> VideoPlayer::replay() {
-    if (!opened_) {
-        return std::unexpected(L"VideoPlayer::replay: no file opened");
-    }
-    // The worker has already exited at EOS — join it and drop the old queue,
-    // but KEEP the reader (decoder_.stop(), not close()): the loop reuses the
-    // decoder/reader and only resets the playback position (start() seeks the
-    // reader to 0 via DecoderManager). stop() FIRST: DecoderManager holds a
-    // raw pointer to this queue and closes it inside stop() — resetting the
-    // queue first would leave stop() closing a destroyed FrameQueue
-    // (use-after-free hang, seen live at EOS in M7).
-    decoder_.stop();
-    if (queue_) {
-        queue_.reset();
-    }
+    if (!opened_) return std::unexpected(L"VideoPlayer::replay: no open file");
+    decoder_->stop();
+    if (queue_) queue_.reset();
     position_ = 0;
     state_ = State::Stopped;
     return start();
 }
 
 void VideoPlayer::pause() {
-    if (state_ != State::Playing) {
-        return;
-    }
-    decoder_.stop(); // joins the worker; keeps the reader for resume
-    if (queue_) {
-        queue_->close();
-        queue_.reset();
-    }
+    if (state_ != State::Playing) return;
+    decoder_->stop();
+    if (queue_) { queue_->close(); queue_.reset(); }
     state_ = State::Paused;
-    // (PlaybackController logs the pause position — it is the integration
-    // owner and keeps the position in sync; this layer stays quiet.)
 }
 
 Result<void> VideoPlayer::resume() {
-    if (state_ != State::Paused) {
+    if (state_ != State::Paused)
         return state_ == State::Stopped
                    ? std::unexpected(L"VideoPlayer::resume: not paused (stopped)")
                    : Result<void>{};
-    }
-    return start(); // fresh queue + worker; start() seeks to position_
+    return start();
 }
 
 void VideoPlayer::stop() {
-    if (!opened_ && state_ == State::Stopped) {
-        return;
-    }
+    if (!opened_ && state_ == State::Stopped) return;
     tearDown();
     state_ = State::Stopped;
     position_ = 0;
@@ -100,30 +75,35 @@ void VideoPlayer::stop() {
 }
 
 bool VideoPlayer::pollFrame(DecodedFrame& out) {
-    if (state_ != State::Playing || !queue_) {
-        return false;
-    }
-    if (!queue_->tryPop(out)) {
-        return false;
-    }
-    if (out.endOfStream) {
-        // Consumed the sentinel: the stream is done. Keep state Playing until
-        // the caller stops (so the caller can distinguish eos from empty).
-        return true;
-    }
+    if (state_ != State::Playing || !queue_) return false;
+    if (!queue_->tryPop(out)) return false;
+    if (out.endOfStream) return true;
     position_ = out.timestamp;
     return true;
 }
 
 void VideoPlayer::tearDown() {
-    if (queue_) {
-        queue_->close(); // unblocks a worker blocked on a full queue
-    }
-    // Join the worker BEFORE destroying the queue: the worker holds a raw
-    // pointer and may still be inside push() when it wakes from close() —
-    // destroying the queue first destroys the mutex/CV under it (hang).
-    decoder_.close(); // join worker + release the reader entirely
+    if (queue_) queue_->close();
+    decoder_->close();
     queue_.reset();
+}
+
+const VideoMetadata& VideoPlayer::metadata() const {
+    static const VideoMetadata empty;
+    return decoder_ ? decoder_->metadata() : empty;
+}
+
+uint64_t VideoPlayer::decodedFrames() const {
+    return decoder_ ? decoder_->decodedFrames() : 0;
+}
+
+bool VideoPlayer::hardwareDecoding() const {
+    return decoder_ ? decoder_->isHardwareDecoding() : false;
+}
+
+const std::wstring& VideoPlayer::decoderName() const {
+    static const std::wstring empty;
+    return decoder_ ? decoder_->decoderName() : empty;
 }
 
 } // namespace vw::video

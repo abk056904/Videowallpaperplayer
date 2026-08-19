@@ -6,15 +6,12 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mftransform.h>
-// MR_VIDEO_ACCELERATION_SERVICE is DEFINE_GUID'd in evr.h but not exported by
-// any SDK import lib — initguid.h materializes the definition in this TU.
 #include <initguid.h>
 #include <evr.h>
 
 #include "logging/Logger.h"
 #include "util/HrToString.h"
 #include "util/clock.h"
-#include "util/HrToString.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -22,25 +19,41 @@ namespace vw::video {
 
 namespace {
 
-// MF_SOURCE_READER_* are signed enum constants in the SDK headers; DWORD
-// parameters need an explicit cast (C4245-safe). MF_SOURCE_READER_MEDIASOURCE
-// is a stream-index sentinel for GetServiceForStream, not a service GUID.
 constexpr DWORD kFirstVideoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 constexpr DWORD kAllStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
 constexpr DWORD kMediaSourceStream = static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE);
 
-// Source Reader -> RGB32: conversion through the Video Processor MFT (the
-// documented path) + an explicit stride, exactly as proven by the M5-preview
-// harness (MF_E_INVALIDMEDIATYPE without these).
+Result<void> negotiateNv12Output(IMFSourceReader* reader) {
+    ComPtr<IMFMediaType> native;
+    if (FAILED(reader->GetCurrentMediaType(kFirstVideoStream, &native)))
+        return std::unexpected(L"no video stream in file");
+
+    UINT32 w = 0, h = 0;
+    if (FAILED(::MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0)
+        return std::unexpected(L"could not read frame size");
+
+    ComPtr<IMFMediaType> nv12;
+    HRESULT hr = ::MFCreateMediaType(&nv12);
+    if (SUCCEEDED(hr)) hr = nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    if (SUCCEEDED(hr)) hr = nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+    if (SUCCEEDED(hr)) hr = nv12->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(nv12.Get(), MF_MT_FRAME_SIZE, w, h);
+    if (FAILED(hr)) return std::unexpected(L"could not build NV12 media type");
+
+    hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, nv12.Get());
+    if (FAILED(hr))
+        return std::unexpected(L"NV12 output unsupported: hr=0x" + std::format(L"{:08X}", static_cast<unsigned>(hr)));
+    return {};
+}
+
 Result<void> negotiateRgb32Output(IMFSourceReader* reader) {
     ComPtr<IMFMediaType> native;
-    if (FAILED(reader->GetCurrentMediaType(kFirstVideoStream, &native))) {
+    if (FAILED(reader->GetCurrentMediaType(kFirstVideoStream, &native)))
         return std::unexpected(L"no video stream in file");
-    }
+
     UINT32 w = 0, h = 0;
-    if (FAILED(::MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0) {
+    if (FAILED(::MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0)
         return std::unexpected(L"could not read frame size");
-    }
 
     ComPtr<IMFMediaType> rgb;
     HRESULT hr = ::MFCreateMediaType(&rgb);
@@ -52,96 +65,43 @@ Result<void> negotiateRgb32Output(IMFSourceReader* reader) {
     if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(rgb.Get(), MF_MT_FRAME_SIZE, w, h);
     if (SUCCEEDED(hr)) {
         LONG stride = 0;
-        if (SUCCEEDED(::MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, w, &stride)) &&
-            stride > 0) {
+        if (SUCCEEDED(::MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, w, &stride)) && stride > 0)
             hr = rgb->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(stride));
-        }
     }
-    if (FAILED(hr)) {
-        return std::unexpected(L"could not build RGB32 media type");
-    }
+    if (FAILED(hr)) return std::unexpected(L"could not build RGB32 media type");
+
     hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, rgb.Get());
-    if (FAILED(hr)) {
-        return std::unexpected(L"RGB32 output unsupported for this file (codec/color "
-                               L"converter): hr=0x" +
-                               std::format(L"{:08X}", static_cast<unsigned>(hr)));
-    }
+    if (FAILED(hr))
+        return std::unexpected(L"RGB32 output unsupported: hr=0x" + std::format(L"{:08X}", static_cast<unsigned>(hr)));
     return {};
 }
 
-// Source Reader -> NV12 GPU surfaces (docs/03 §3.7): the DXGI device manager
-// was set on the reader attributes, so this output type routes the decode
-// through the hardware MFT. Same stride discipline as RGB32.
-Result<void> negotiateNv12Output(IMFSourceReader* reader) {
-    ComPtr<IMFMediaType> native;
-    if (FAILED(reader->GetCurrentMediaType(kFirstVideoStream, &native))) {
-        return std::unexpected(L"no video stream in file");
-    }
-    UINT32 w = 0, h = 0;
-    if (FAILED(::MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0) {
-        return std::unexpected(L"could not read frame size");
-    }
-
-    ComPtr<IMFMediaType> nv12;
-    HRESULT hr = ::MFCreateMediaType(&nv12);
-    if (SUCCEEDED(hr)) hr = nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (SUCCEEDED(hr)) hr = nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    if (SUCCEEDED(hr)) hr = nv12->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(nv12.Get(), MF_MT_FRAME_SIZE, w, h);
-    if (SUCCEEDED(hr)) {
-        LONG stride = 0;
-        if (SUCCEEDED(::MFGetStrideForBitmapInfoHeader(MFVideoFormat_NV12.Data1, w, &stride)) &&
-            stride > 0) {
-            hr = nv12->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(stride));
-        }
-    }
-    if (FAILED(hr)) {
-        return std::unexpected(L"could not build NV12 media type");
-    }
-    hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, nv12.Get());
-    if (FAILED(hr)) {
-        return std::unexpected(L"NV12 output unsupported: hr=0x" +
-                               std::format(L"{:08X}", static_cast<unsigned>(hr)));
-    }
-    return {};
-}
-
-// Registry friendly name for an MFT CLSID (docs/03 §3.7 — never fabricate
-// decoder/vendor names; read what Windows actually registered). Falls back to
-// the MFT DLL filename, then "unknown MFT".
 std::wstring clsidFriendlyName(const GUID& clsid) {
     wchar_t key[64]{};
-    ::swprintf(key, 64,
-               L"CLSID\\{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
-               static_cast<unsigned>(clsid.Data1), clsid.Data2, clsid.Data3, clsid.Data4[0],
-               clsid.Data4[1], clsid.Data4[2], clsid.Data4[3], clsid.Data4[4], clsid.Data4[5],
-               clsid.Data4[6], clsid.Data4[7]);
+    ::swprintf(key, 64, L"CLSID\\{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+               static_cast<unsigned>(clsid.Data1), clsid.Data2, clsid.Data3,
+               clsid.Data4[0], clsid.Data4[1], clsid.Data4[2], clsid.Data4[3],
+               clsid.Data4[4], clsid.Data4[5], clsid.Data4[6], clsid.Data4[7]);
     HKEY hk = nullptr;
-    if (::RegOpenKeyExW(HKEY_CLASSES_ROOT, key, 0, KEY_READ, &hk) != ERROR_SUCCESS) {
+    if (::RegOpenKeyExW(HKEY_CLASSES_ROOT, key, 0, KEY_READ, &hk) != ERROR_SUCCESS)
         return L"unknown MFT";
-    }
     wchar_t buf[256]{};
-    DWORD size = static_cast<DWORD>(sizeof(buf));
+    DWORD size = sizeof(buf);
     std::wstring name;
-    if (::RegQueryValueExW(hk, L"FriendlyName", nullptr, nullptr, reinterpret_cast<LPBYTE>(buf),
-                           &size) == ERROR_SUCCESS) {
+    if (::RegQueryValueExW(hk, L"FriendlyName", nullptr, nullptr, reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS)
         name = buf;
-    } else {
-        // Fall back to the DLL name (unambiguous evidence of the vendor).
+    else {
         HKEY hkDll = nullptr;
         if (::RegOpenKeyExW(hk, L"InprocServer32", 0, KEY_READ, &hkDll) == ERROR_SUCCESS) {
-            size = static_cast<DWORD>(sizeof(buf));
-            if (::RegQueryValueExW(hkDll, nullptr, nullptr, nullptr,
-                                   reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS) {
-                const std::wstring dll = buf;
-                const size_t slash = dll.find_last_of(L"\\");
+            size = sizeof(buf);
+            if (::RegQueryValueExW(hkDll, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS) {
+                std::wstring dll = buf;
+                auto slash = dll.find_last_of(L'\\');
                 name = slash == std::wstring::npos ? dll : dll.substr(slash + 1);
             }
             ::RegCloseKey(hkDll);
         }
-        if (name.empty()) {
-            name = L"unknown MFT";
-        }
+        if (name.empty()) name = L"unknown MFT";
     }
     ::RegCloseKey(hk);
     return name;
@@ -149,9 +109,7 @@ std::wstring clsidFriendlyName(const GUID& clsid) {
 
 } // namespace
 
-DecoderManager::~DecoderManager() {
-    close();
-}
+DecoderManager::~DecoderManager() { close(); }
 
 using vw::util::formatHr;
 
@@ -160,39 +118,19 @@ Result<void> DecoderManager::open(const std::wstring& path) {
     hardware_ = false;
     decoderName_.clear();
 
-    // Hardware first when a D3D device is available (docs/03 §3.7). The
-    // hardware path PROBES the first sample: on machines where NV12
-    // negotiates but the decoder hands back system-memory samples (no
-    // hardware MFT active), it fails cleanly and open() retries through the
-    // M4 software path — never a crash, never silent frame drops.
     if (d3dDevice_) {
         auto result = openHardware(path);
-        if (result) {
-            return {};
-        }
-        log::Logger::instance().warn(L"hardware decode unavailable ({}); retrying "
-                                     L"with the software RGB32 path",
-                                     result.error());
-        close(); // release the NV12-committed reader entirely
-        hardware_ = false;
-        decoderName_.clear();
+        if (result) return {};
+        log::Logger::instance().warn(L"hardware decode unavailable ({}); retrying software", result.error());
+        close();
     }
     return openSoftware(path);
 }
 
 Result<void> DecoderManager::openHardware(const std::wstring& path) {
-    // Try the supplied render device first, then fall back to probing every
-    // other DXGI adapter. On hybrid-GPU laptops the render device is the
-    // display adapter (e.g. AMD iGPU) but the hardware decoder (NVDEC) may
-    // live on the discrete GPU (e.g. NVIDIA). Each adapter gets a temporary
-    // D3D11 device with VIDEO_SUPPORT; the first one that produces GPU
-    // surfaces wins.
-    std::vector<ComPtr<ID3D11Device>> candidates;
-    if (d3dDevice_) {
-        candidates.push_back(d3dDevice_);
-    }
-    // Enumerate additional adapters (skip the one matching the render
-    // device's LUID — already tried above).
+    auto& log = log::Logger::instance();
+
+    // Determine the render device's LUID so we can identify it among adapters.
     LUID renderLuid{};
     if (d3dDevice_) {
         ComPtr<IDXGIDevice> dxgiDev;
@@ -200,136 +138,108 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
             ComPtr<IDXGIAdapter> adap;
             if (SUCCEEDED(dxgiDev->GetAdapter(&adap))) {
                 DXGI_ADAPTER_DESC desc{};
-                if (SUCCEEDED(adap->GetDesc(&desc))) {
-                    renderLuid = desc.AdapterLuid;
-                }
+                if (SUCCEEDED(adap->GetDesc(&desc))) renderLuid = desc.AdapterLuid;
             }
         }
     }
-    auto& log = log::Logger::instance();
+
+    // Enumerate all adapters. NVIDIA (VendorId 0x10DE) is prioritized because
+    // its MFT produces GPU-resident DXGI surfaces; AMD iGPU typically falls
+    // back to system-memory even with D3D11_CREATE_DEVICE_VIDEO_SUPPORT.
+    std::vector<ComPtr<ID3D11Device>> nvidiaCandidates;
+    std::vector<ComPtr<ID3D11Device>> otherCandidates;
+    constexpr UINT kNvidiaVendorId = 0x10DE;
+
     auto adapters = gfx::D3D11DeviceManager::enumerateAdapters();
     if (adapters) {
-        log.debug(L"hardware probe: {} DXGI adapter(s) found", adapters->size());
         for (UINT i = 0; i < adapters->size(); ++i) {
             const auto& info = (*adapters)[i];
+
             bool isRender = (info.luid.LowPart == renderLuid.LowPart &&
                              info.luid.HighPart == renderLuid.HighPart);
-            log.debug(L"  adapter {}: {} (LUID {}.{}{})", i, info.description,
-                     info.luid.HighPart, info.luid.LowPart,
-                     isRender ? L" [render device]" : L"");
-            if (isRender) {
-                continue; // already tried
-            }
+            // Skip the render adapter — we'll try it last as fallback.
+            if (isRender) continue;
+
             auto adapter = gfx::D3D11DeviceManager::getAdapter(i);
-            if (!adapter) {
-                log.debug(L"  adapter {}: getAdapter failed", i);
-                continue;
-            }
+            if (!adapter) continue;
+
             ComPtr<ID3D11Device> dev;
             D3D_FEATURE_LEVEL fl{};
-            const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
-                                                D3D_FEATURE_LEVEL_11_0};
-            HRESULT hr = ::D3D11CreateDevice(
-                adapter->Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+            const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+            HRESULT hr = ::D3D11CreateDevice(adapter->Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 levels, 2, D3D11_SDK_VERSION, &dev, &fl, nullptr);
-            if (SUCCEEDED(hr)) {
-                log.debug(L"  adapter {}: device created (feature level 0x{:04X})",
-                         i, static_cast<unsigned>(fl));
-                candidates.push_back(std::move(dev));
+            if (FAILED(hr)) continue;
+
+            if (info.vendor == kNvidiaVendorId) {
+                log.info(L"MF hardware: NVIDIA adapter found ({}), prioritized", info.description);
+                nvidiaCandidates.push_back(std::move(dev));
             } else {
-                log.debug(L"  adapter {}: D3D11CreateDevice failed (0x{:08X})",
-                         i, static_cast<unsigned>(hr));
+                otherCandidates.push_back(std::move(dev));
             }
         }
-    } else {
-        log.debug(L"hardware probe: enumerateAdapters failed");
     }
 
-    log.debug(L"hardware probe: {} candidate device(s)", candidates.size());
+    // Build priority order: NVIDIA first, then other non-render adapters, render last.
+    std::vector<ComPtr<ID3D11Device>> candidates;
+    candidates.reserve(nvidiaCandidates.size() + otherCandidates.size() + 1);
+    for (auto& dev : nvidiaCandidates) candidates.push_back(std::move(dev));
+    for (auto& dev : otherCandidates) candidates.push_back(std::move(dev));
+    if (d3dDevice_) candidates.push_back(d3dDevice_);
+
     for (auto& dev : candidates) {
         auto result = tryHardwareWithDevice(path, dev.Get());
-        if (result) {
-            decodeDevice_ = dev; // may differ from d3dDevice_ (cross-adapter)
-            return {};
-        }
-        log.debug(L"hardware probe failed on this adapter; trying next",
-                 result.error());
+        if (result) { decodeDevice_ = dev; return {}; }
     }
-    return std::unexpected(
-        std::wstring(L"no adapter produced GPU surfaces"));
+    return std::unexpected(std::wstring(L"no adapter produced GPU surfaces"));
 }
 
-Result<void> DecoderManager::tryHardwareWithDevice(const std::wstring& path,
-                                                   ID3D11Device* device) {
+Result<void> DecoderManager::tryHardwareWithDevice(const std::wstring& path, ID3D11Device* device) {
     ComPtr<IMFAttributes> attrs;
     HRESULT hr = ::MFCreateAttributes(&attrs, 4);
-    if (FAILED(hr)) {
-        return std::unexpected(L"MFCreateAttributes failed: " + formatHr(hr));
-    }
+    if (FAILED(hr)) return std::unexpected(L"MFCreateAttributes failed");
 
-    // NOTE: MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING must NOT be combined
-    // with the D3D manager attributes — the reader rejects the combo with
-    // E_INVALIDARG (probed on this machine). The VP flag is only for the
-    // software RGB32 path.
     UINT resetToken = 0;
     ComPtr<IMFDXGIDeviceManager> dxgiManager;
-    if (FAILED(::MFCreateDXGIDeviceManager(&resetToken, &dxgiManager))) {
+    if (FAILED(::MFCreateDXGIDeviceManager(&resetToken, &dxgiManager)))
         return std::unexpected(L"MFCreateDXGIDeviceManager failed");
-    }
-    if (FAILED(dxgiManager->ResetDevice(device, resetToken))) {
+    if (FAILED(dxgiManager->ResetDevice(device, resetToken)))
         return std::unexpected(L"DXGI manager ResetDevice failed");
-    }
     if (FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, dxgiManager.Get())) ||
-        FAILED(attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE))) {
+        FAILED(attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE)))
         return std::unexpected(L"could not set hardware reader attributes");
-    }
 
     VideoMetadata meta;
     ComPtr<IMFSourceReader> reader;
     auto prep = prepareReader(path, attrs.Get(), reader, meta);
-    if (!prep) {
-        return prep;
-    }
+    if (!prep) return prep;
 
     auto nv12 = negotiateNv12Output(reader.Get());
-    if (!nv12) {
-        return nv12;
-    }
+    if (!nv12) return nv12;
 
-    // Runtime probe (the whole point of the split): NV12 negotiation
-    // succeeding does NOT prove GPU surfaces. Read one sample — the active
-    // decoder must hand back a DXGI buffer, else this machine's MF stack
-    // has no working hardware path and the caller retries in software.
     DWORD streamIndex = 0, flags = 0;
     ComPtr<IMFSample> sample;
     hr = reader->ReadSample(kFirstVideoStream, 0, &streamIndex, &flags, nullptr, &sample);
-    if (FAILED(hr) || !sample) {
-        return std::unexpected(L"hardware probe: no first sample (" + formatHr(hr) + L")");
-    }
+    if (FAILED(hr) || !sample)
+        return std::unexpected(L"hardware probe: no first sample");
+
     ComPtr<IMFMediaBuffer> buffer;
-    if (FAILED(sample->GetBufferByIndex(0, &buffer))) {
+    if (FAILED(sample->GetBufferByIndex(0, &buffer)))
         return std::unexpected(L"hardware probe: no media buffer");
-    }
+
     ComPtr<IMFDXGIBuffer> dxgiBuffer;
     hr = ::MFGetService(buffer.Get(), MR_VIDEO_ACCELERATION_SERVICE, IID_PPV_ARGS(&dxgiBuffer));
-    if (FAILED(hr)) {
-        return std::unexpected(L"hardware probe: decoder produced system-memory samples "
-                               L"(no hardware MFT active)");
-    }
+    if (FAILED(hr))
+        return std::unexpected(L"hardware probe: decoder produced system-memory samples");
 
-    // The probe consumed the first frame — rewind so the worker starts at it.
     PROPVARIANT zero{};
     zero.vt = VT_I8;
     zero.hVal.QuadPart = 0;
-    if (FAILED(reader->SetCurrentPosition(GUID_NULL, zero))) {
-        log::Logger::instance().warn(L"hardware probe: could not rewind to first frame");
-    }
+    reader->SetCurrentPosition(GUID_NULL, zero);
 
     hardware_ = true;
     dxgiManager_ = std::move(dxgiManager);
     detectDecoder(reader.Get());
-    log::Logger::instance().info(L"hardware decode active: NV12 GPU surfaces");
     reader_ = std::move(reader);
     metadata_ = std::move(meta);
     opened_ = true;
@@ -337,40 +247,22 @@ Result<void> DecoderManager::tryHardwareWithDevice(const std::wstring& path,
 }
 
 Result<void> DecoderManager::openSoftware(const std::wstring& path) {
-    // NV12 first (spec §9/§10: keep the native decoded representation; the GPU
-    // YUV shader converts + scales — no CPU color conversion, 1.5 vs 4 B/px
-    // upload). The decoder's NATIVE output is NV12, so negotiating it needs no
-    // video processing at all. Per-file fallback to RGB32 (below) when the
-    // decoder cannot output NV12 (e.g. codecs whose native output differs).
     auto nv12 = openSoftwareNv12(path);
-    if (nv12) {
-        return {};
-    }
-    log::Logger::instance().warn(L"software NV12 unavailable ({}); falling back "
-                                 L"to the RGB32 path",
-                                 nv12.error());
+    if (nv12) return {};
+    log::Logger::instance().warn(L"software NV12 unavailable ({}); falling back to RGB32", nv12.error());
     return openSoftwareRgb32(path);
 }
 
 Result<void> DecoderManager::openSoftwareNv12(const std::wstring& path) {
-    // No attributes: without MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING the
-    // reader outputs the decoder's native type; NV12 is native for the H.264/
-    // HEVC software decoders, so SetCurrentMediaType(NV12) succeeds with NO
-    // conversion stage (no VP MFT in the chain at all).
     VideoMetadata meta;
     ComPtr<IMFSourceReader> reader;
     auto prep = prepareReader(path, nullptr, reader, meta);
-    if (!prep) {
-        return prep;
-    }
+    if (!prep) return prep;
     auto negotiated = negotiateNv12Output(reader.Get());
-    if (!negotiated) {
-        return negotiated;
-    }
+    if (!negotiated) return negotiated;
 
     softwareNv12_ = true;
     decoderName_ = L"software (NV12 output)";
-    log::Logger::instance().info(L"decoder: software (NV12 output)");
     reader_ = std::move(reader);
     metadata_ = std::move(meta);
     opened_ = true;
@@ -378,68 +270,42 @@ Result<void> DecoderManager::openSoftwareNv12(const std::wstring& path) {
 }
 
 Result<void> DecoderManager::openSoftwareRgb32(const std::wstring& path) {
-    // RGB32 through the Video Processor MFT (documented YUV->RGB32 path; the
-    // decoder's own converter rejects RGB32). Without this the reader yields
-    // COMPRESSED samples at the native type and copySampleToFrame would read
-    // past the buffer.
     ComPtr<IMFAttributes> attrs;
     HRESULT hr = ::MFCreateAttributes(&attrs, 4);
-    if (FAILED(hr)) {
-        return std::unexpected(L"MFCreateAttributes failed: " + formatHr(hr));
-    }
-    if (FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE))) {
+    if (FAILED(hr)) return std::unexpected(L"MFCreateAttributes failed");
+    if (FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE)))
         return std::unexpected(L"could not set video-processing attribute");
-    }
 
     VideoMetadata meta;
     ComPtr<IMFSourceReader> reader;
     auto prep = prepareReader(path, attrs.Get(), reader, meta);
-    if (!prep) {
-        return prep;
-    }
-
+    if (!prep) return prep;
     auto negotiated = negotiateRgb32Output(reader.Get());
-    if (!negotiated) {
-        return negotiated;
-    }
+    if (!negotiated) return negotiated;
 
     softwareNv12_ = false;
     decoderName_ = L"software (RGB32 output)";
-    log::Logger::instance().info(L"decoder: software (RGB32 output)");
     reader_ = std::move(reader);
     metadata_ = std::move(meta);
     opened_ = true;
     return {};
 }
 
-// Shared reader setup: create the Source Reader with the given attributes,
-// deselect all streams (audio is out of scope for v1 — its pipeline is never
-// initialized), select only the first video stream, and read metadata from
-// the native media type + presentation descriptor (never the file extension).
 Result<void> DecoderManager::prepareReader(const std::wstring& path, IMFAttributes* attrs,
-                                           ComPtr<IMFSourceReader>& reader,
-                                           VideoMetadata& meta) {
+                                           ComPtr<IMFSourceReader>& reader, VideoMetadata& meta) {
     HRESULT hr = ::MFCreateSourceReaderFromURL(path.c_str(), attrs, &reader);
-    if (FAILED(hr)) {
-        return std::unexpected(L"MFCreateSourceReaderFromURL failed: " + formatHr(hr));
-    }
-    if (FAILED(reader->SetStreamSelection(kAllStreams, FALSE))) {
+    if (FAILED(hr)) return std::unexpected(L"MFCreateSourceReaderFromURL failed: " + formatHr(hr));
+    if (FAILED(reader->SetStreamSelection(kAllStreams, FALSE)))
         return std::unexpected(L"could not deselect streams");
-    }
-    if (FAILED(reader->SetStreamSelection(kFirstVideoStream, TRUE))) {
+    if (FAILED(reader->SetStreamSelection(kFirstVideoStream, TRUE)))
         return std::unexpected(L"no video stream in file");
-    }
 
     meta.path = path;
     ComPtr<IMFMediaType> native;
     hr = reader->GetCurrentMediaType(kFirstVideoStream, &native);
-    if (FAILED(hr)) {
-        return std::unexpected(L"no video stream in file");
-    }
+    if (FAILED(hr)) return std::unexpected(L"no video stream in file");
     auto fill = VideoMetadata::fillFromMediaType(native.Get(), meta);
-    if (!fill) {
-        return fill;
-    }
+    if (!fill) return fill;
 
     ComPtr<IMFMediaSource> source;
     hr = reader->GetServiceForStream(kMediaSourceStream, GUID_NULL, IID_PPV_ARGS(&source));
@@ -453,16 +319,11 @@ Result<void> DecoderManager::prepareReader(const std::wstring& path, IMFAttribut
                     ComPtr<IMFStreamDescriptor> sd;
                     BOOL selected = FALSE;
                     if (SUCCEEDED(pd->GetStreamDescriptorByIndex(i, &selected, &sd))) {
-                        // Major type via the media-type handler (the
-                        // MF_SD_STREAM_MAJOR_TYPE constant is absent from the
-                        // 26100 SDK headers).
                         ComPtr<IMFMediaTypeHandler> handler;
                         GUID major{};
                         if (SUCCEEDED(sd->GetMediaTypeHandler(&handler)) &&
-                            SUCCEEDED(handler->GetMajorType(&major)) &&
-                            major == MFMediaType_Audio) {
+                            SUCCEEDED(handler->GetMajorType(&major)) && major == MFMediaType_Audio)
                             meta.hasAudio = true;
-                        }
                     }
                 }
             }
@@ -472,54 +333,25 @@ Result<void> DecoderManager::prepareReader(const std::wstring& path, IMFAttribut
 }
 
 Result<void> DecoderManager::start(FrameQueue* queue, LONGLONG position100ns) {
-    if (!opened_ || !reader_) {
-        return std::unexpected(L"DecoderManager::start: not opened");
-    }
-    if (worker_.joinable()) {
-        return std::unexpected(L"DecoderManager::start: already running");
-    }
-    if (!queue) {
-        return std::unexpected(L"DecoderManager::start: null queue");
-    }
-    queue_ = queue;
+    if (!opened_ || !reader_) return std::unexpected(L"DecoderManager::start: not opened");
+    if (worker_.joinable()) return std::unexpected(L"DecoderManager::start: already running");
+    if (!queue) return std::unexpected(L"DecoderManager::start: null queue");
 
-    // Always reposition the reader: initial start (0), resume (saved
-    // position), and M7 loop replay (0, after the reader was left at EOS by a
-    // completed stream). Seeking a fresh reader to 0 is harmless; skipping the
-    // seek would make a replay immediately hit EOS again.
-    {
-        PROPVARIANT var{};
-        var.vt = VT_I8;
-        var.hVal.QuadPart = position100ns;
-        HRESULT hr = reader_->SetCurrentPosition(GUID_NULL, var);
-        if (FAILED(hr)) {
-            log::Logger::instance().warn(L"seek to {} failed: {}", position100ns, formatHr(hr));
-        }
-    }
+    queue_ = queue;
+    { PROPVARIANT var{}; var.vt = VT_I8; var.hVal.QuadPart = position100ns;
+      reader_->SetCurrentPosition(GUID_NULL, var); }
 
     stopRequested_.store(false);
-    decodedFrames_.store(0); // M6 stats: counts since this start
-    log::Logger::instance().debug(L"starting decode worker (hardware={})", hardware_);
-    // The worker uses a LOCAL copy of the queue pointer: stop() closes the
-    // queue then joins BEFORE nulling queue_, so the worker can never see a
-    // nulled member (race that SIGSEGV'd in Release builds).
+    decodedFrames_.store(0);
     worker_ = std::thread([this, queue] { workerLoop(queue); });
     return {};
 }
 
 void DecoderManager::stop() {
     stopRequested_.store(true);
-    // Unblock a worker stuck pushing into a full queue, THEN join, THEN drop
-    // the pointer — the worker holds its own copy and may still push during
-    // the join window.
-    if (queue_) {
-        queue_->close();
-    }
-    if (worker_.joinable()) {
-        worker_.join();
-    }
+    if (queue_) queue_->close();
+    if (worker_.joinable()) worker_.join();
     queue_ = nullptr;
-    // reader_ + opened_ are kept: a paused session resumes via start().
 }
 
 void DecoderManager::close() {
@@ -529,31 +361,15 @@ void DecoderManager::close() {
 }
 
 void DecoderManager::detectDecoder(IMFSourceReader* reader) {
-    // The active MFT (docs/03 §3.7): read its CLSID + hardware marker, then
-    // resolve the registered friendly name — never fabricate the vendor.
-    // GetServiceForStream(MR_VIDEO_ACCELERATION_SERVICE) hard-crashes inside
-    // mfreadwrite on this SDK — use the documented IMFGetService route.
-    // NOTE: takes the reader (the member is still null during open()).
     ComPtr<IMFGetService> svc;
-    if (!reader || FAILED(reinterpret_cast<IUnknown*>(reader)->QueryInterface(
-                         IID_PPV_ARGS(&svc)))) {
-        return;
-    }
+    if (!reader || FAILED(reinterpret_cast<IUnknown*>(reader)->QueryInterface(IID_PPV_ARGS(&svc)))) return;
     ComPtr<IMFTransform> transform;
-    if (FAILED(svc->GetService(MR_VIDEO_ACCELERATION_SERVICE, IID_PPV_ARGS(&transform)))) {
-        return;
-    }
+    if (FAILED(svc->GetService(MR_VIDEO_ACCELERATION_SERVICE, IID_PPV_ARGS(&transform)))) return;
     ComPtr<IMFAttributes> attrs;
-    if (FAILED(transform->GetAttributes(&attrs))) {
-        return;
-    }
-    wchar_t hwUrl[128]{};
-    UINT32 len = 0;
-    const bool isHw =
-        SUCCEEDED(attrs->GetString(MFT_ENUM_HARDWARE_URL_Attribute, hwUrl, 128, &len)) && len > 0;
+    if (FAILED(transform->GetAttributes(&attrs))) return;
+    wchar_t hwUrl[128]{}; UINT32 len = 0;
+    const bool isHw = SUCCEEDED(attrs->GetString(MFT_ENUM_HARDWARE_URL_Attribute, hwUrl, 128, &len)) && len > 0;
     GUID clsid{};
-    // MFT_TRANSFORM_CLSID_Attribute is this SDK's name for the documented
-    // MF_TRANSFORM_ATTRIBUTE_MFT_TRANSFORM_CLSID.
     attrs->GetGUID(MFT_TRANSFORM_CLSID_Attribute, &clsid);
     decoderName_ = clsidFriendlyName(clsid);
     log::Logger::instance().info(L"decoder: {} ({})", decoderName_, isHw ? L"hardware" : L"software");
@@ -562,173 +378,53 @@ void DecoderManager::detectDecoder(IMFSourceReader* reader) {
 void DecoderManager::workerLoop(FrameQueue* queue) {
     const HRESULT comHr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     auto& log = log::Logger::instance();
-    log.debug(L"decode worker started ({}x{} @ {:.2f} fps, {})", metadata_.width, metadata_.height,
-              metadata_.fps, hardware_ ? L"hardware" : L"software");
 
     while (!stopRequested_.load()) {
         DWORD streamIndex = 0, flags = 0;
         ComPtr<IMFSample> sample;
-        HRESULT hr = reader_->ReadSample(kFirstVideoStream, 0, &streamIndex, &flags, nullptr,
-                                         &sample);
-        if (FAILED(hr)) {
-            log.warn(L"decode ReadSample failed: {}", formatHr(hr));
-            DecodedFrame end;
-            end.endOfStream = true;
-            queue->push(std::move(end));
-            break;
-        }
-        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-            log.debug(L"decode end of stream");
-            DecodedFrame end;
-            end.endOfStream = true;
-            queue->push(std::move(end));
-            break;
-        }
-        if (!sample) {
-            continue; // no sample this call — keep reading
-        }
+        HRESULT hr = reader_->ReadSample(kFirstVideoStream, 0, &streamIndex, &flags, nullptr, &sample);
+        if (FAILED(hr)) { DecodedFrame end; end.endOfStream = true; queue->push(std::move(end)); break; }
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) { DecodedFrame end; end.endOfStream = true; queue->push(std::move(end)); break; }
+        if (!sample) continue;
 
-        // M13: reuse a recycled frame buffer when one is available (the 14 MB
-        // RGB32 block costs VirtualAlloc + demand-zero page faults if
-        // reallocated fresh every frame — measured 4.5 ms/f of zeroing vs
-        // ~0 with reuse). The consumer returns buffers after the GPU upload.
-        // Software path only: copySampleToTexture is a GPU-surface extraction
-        // that never touches frame.bytes, so a spare would ride the queue
-        // unused (capacity_ x 14 MB in flight on the HW path).
         DecodedFrame frame;
         std::wstring copyErr;
         if (hardware_) {
-            if (!copySampleToTexture(sample.Get(), frame, copyErr)) {
-                log.warn(L"frame surface copy failed: {}", copyErr);
-                continue;
-            }
+            if (!copySampleToTexture(sample.Get(), frame, copyErr)) { log.warn(L"frame surface copy failed: {}", copyErr); continue; }
         } else {
-            queue->takeSpareBuffer(frame.bytes);
-            // Current output type (RGB32) carries the frame size for copying.
             ComPtr<IMFMediaType> current;
-            if (FAILED(reader_->GetCurrentMediaType(kFirstVideoStream, &current))) {
-                log.warn(L"decode: could not read current media type");
-                continue;
-            }
+            if (FAILED(reader_->GetCurrentMediaType(kFirstVideoStream, &current))) continue;
             UINT w = 0, h = 0;
             ::MFGetAttributeSize(current.Get(), MF_MT_FRAME_SIZE, &w, &h);
-            if (w == 0 || h == 0) {
-                log.warn(L"decode: current media type has no frame size");
-                continue;
-            }
+            if (w == 0 || h == 0) continue;
             if (softwareNv12_) {
-                if (!copySampleToNv12(sample.Get(), w, h, frame, copyErr)) {
-                    log.warn(L"frame copy failed: {}", copyErr);
-                    continue;
-                }
-            } else if (!copySampleToFrame(sample.Get(), w, h, frame, copyErr)) {
-                log.warn(L"frame copy failed: {}", copyErr);
-                continue;
-            }
+                if (!copySampleToNv12(sample.Get(), w, h, frame, copyErr)) { log.warn(L"frame copy failed: {}", copyErr); continue; }
+            } else if (!copySampleToFrame(sample.Get(), w, h, frame, copyErr)) { log.warn(L"frame copy failed: {}", copyErr); continue; }
         }
-        // Anamorphic correction: the scaling math consumes the SAR-corrected
-        // display aspect, not the raw pixel dims (docs/02 §2.4). Constant per
-        // stream, so it is copied from the metadata on every frame.
-        if (metadata_.displayAspect > 0.0) {
-            frame.displayAspect = static_cast<float>(metadata_.displayAspect);
-        }
-        frame.decodeTime100ns = util::Clock::instance().now100ns(); // M6 latency stats
-        if (!queue->push(std::move(frame))) {
-            break; // queue closed (stop requested)
-        }
+
+        if (metadata_.displayAspect > 0.0) frame.displayAspect = static_cast<float>(metadata_.displayAspect);
+        frame.decodeTime100ns = util::Clock::instance().now100ns();
+        if (!queue->push(std::move(frame))) break;
         decodedFrames_.fetch_add(1);
     }
 
-    if (SUCCEEDED(comHr)) {
-        ::CoUninitialize();
-    }
-    log.debug(L"decode worker exited");
+    if (SUCCEEDED(comHr)) ::CoUninitialize();
 }
 
-bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height,
-                                      DecodedFrame& out, std::wstring& err) {
+bool DecoderManager::copySampleToTexture(IMFSample* sample, DecodedFrame& out, std::wstring& err) {
     ComPtr<IMFMediaBuffer> buffer;
     HRESULT hr = sample->GetBufferByIndex(0, &buffer);
-    if (FAILED(hr)) {
-        err = L"GetBufferByIndex failed: " + formatHr(hr);
-        return false;
-    }
-    sample->GetSampleTime(&out.timestamp);
-
-    ComPtr<IMF2DBuffer> buffer2d;
-    BYTE* scanline0 = nullptr;
-    LONG pitch = 0;
-    if (SUCCEEDED(buffer.As(&buffer2d))) {
-        hr = buffer2d->Lock2D(&scanline0, &pitch);
-        if (FAILED(hr)) {
-            err = L"Lock2D failed: " + formatHr(hr);
-            return false;
-        }
-    } else {
-        DWORD len = 0;
-        hr = buffer->Lock(&scanline0, nullptr, &len);
-        if (FAILED(hr)) {
-            err = L"media buffer Lock failed: " + formatHr(hr);
-            return false;
-        }
-        pitch = 0; // tight packing assumed
-    }
-
-    // NV12 layout in the 2D buffer: the Y plane (height rows of `pitch`
-    // bytes) followed immediately by the interleaved UV plane (height/2 rows
-    // of `pitch` bytes). Copy TIGHTLY packed (width per row) into frame.bytes
-    // — the uploader applies the D3D RowPitch. Odd widths (the 1916 px clip)
-    // work: only `width` bytes are copied per row.
-    out.width = width;
-    out.height = height;
-    out.nv12 = true;
-    const size_t srcPitch = pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width);
-    const size_t rowBytes = static_cast<size_t>(width);
-    out.bytes.resize(rowBytes * static_cast<size_t>(height) * 3 / 2);
-    BYTE* dst = out.bytes.data();
-    for (UINT y = 0; y < height; ++y) {
-        std::memcpy(dst + static_cast<size_t>(y) * rowBytes,
-                    scanline0 + static_cast<size_t>(y) * srcPitch, rowBytes);
-    }
-    const BYTE* uv = scanline0 + srcPitch * static_cast<size_t>(height);
-    const size_t ySize = rowBytes * static_cast<size_t>(height);
-    for (UINT y = 0; y < height / 2; ++y) {
-        std::memcpy(dst + ySize + static_cast<size_t>(y) * rowBytes,
-                    uv + static_cast<size_t>(y) * srcPitch, rowBytes);
-    }
-
-    if (buffer2d) {
-        buffer2d->Unlock2D();
-    } else {
-        buffer->Unlock();
-    }
-    return true;
-}
-
-bool DecoderManager::copySampleToTexture(IMFSample* sample, DecodedFrame& out,
-                                         std::wstring& err) {
-    // GPU surface extraction (docs/03 §3.7): the media buffer is a DXGI
-    // buffer; the texture is the decoder's NV12 surface — no CPU copy.
-    ComPtr<IMFMediaBuffer> buffer;
-    HRESULT hr = sample->GetBufferByIndex(0, &buffer);
-    if (FAILED(hr)) {
-        err = L"GetBufferByIndex failed: " + formatHr(hr);
-        return false;
-    }
+    if (FAILED(hr)) { err = L"GetBufferByIndex failed"; return false; }
     sample->GetSampleTime(&out.timestamp);
 
     ComPtr<IMFDXGIBuffer> dxgiBuffer;
     hr = ::MFGetService(buffer.Get(), MR_VIDEO_ACCELERATION_SERVICE, IID_PPV_ARGS(&dxgiBuffer));
-    if (FAILED(hr)) {
-        err = L"not a DXGI buffer (no hardware surface): " + formatHr(hr);
-        return false;
-    }
+    if (FAILED(hr)) { err = L"not a DXGI buffer"; return false; }
+
     ComPtr<ID3D11Texture2D> texture;
     hr = dxgiBuffer->GetResource(IID_PPV_ARGS(&texture));
-    if (FAILED(hr)) {
-        err = L"GetResource failed: " + formatHr(hr);
-        return false;
-    }
+    if (FAILED(hr)) { err = L"GetResource failed"; return false; }
+
     D3D11_TEXTURE2D_DESC desc{};
     texture->GetDesc(&desc);
     out.texture = std::move(texture);
@@ -738,66 +434,76 @@ bool DecoderManager::copySampleToTexture(IMFSample* sample, DecodedFrame& out,
     return true;
 }
 
+bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height,
+                                      DecodedFrame& out, std::wstring& err) {
+    ComPtr<IMFMediaBuffer> buffer;
+    HRESULT hr = sample->GetBufferByIndex(0, &buffer);
+    if (FAILED(hr)) { err = L"GetBufferByIndex failed"; return false; }
+    sample->GetSampleTime(&out.timestamp);
+
+    ComPtr<IMF2DBuffer> buffer2d;
+    BYTE* scanline0 = nullptr; LONG pitch = 0;
+    if (SUCCEEDED(buffer.As(&buffer2d))) {
+        hr = buffer2d->Lock2D(&scanline0, &pitch);
+        if (FAILED(hr)) { err = L"Lock2D failed"; return false; }
+    } else {
+        DWORD len = 0;
+        hr = buffer->Lock(&scanline0, nullptr, &len);
+        if (FAILED(hr)) { err = L"Lock failed"; return false; }
+        pitch = 0;
+    }
+
+    out.width = width; out.height = height; out.nv12 = true;
+    const size_t srcPitch = pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width);
+    const size_t rowBytes = static_cast<size_t>(width);
+    out.bytes.resize(rowBytes * static_cast<size_t>(height) * 3 / 2);
+    BYTE* dst = out.bytes.data();
+    for (UINT y = 0; y < height; ++y)
+        std::memcpy(dst + static_cast<size_t>(y) * rowBytes, scanline0 + static_cast<size_t>(y) * srcPitch, rowBytes);
+    const BYTE* uv = scanline0 + srcPitch * static_cast<size_t>(height);
+    const size_t ySize = rowBytes * static_cast<size_t>(height);
+    for (UINT y = 0; y < height / 2; ++y)
+        std::memcpy(dst + ySize + static_cast<size_t>(y) * rowBytes, uv + static_cast<size_t>(y) * srcPitch, rowBytes);
+
+    if (buffer2d) buffer2d->Unlock2D(); else buffer->Unlock();
+    return true;
+}
+
 bool DecoderManager::copySampleToFrame(IMFSample* sample, UINT width, UINT height,
                                        DecodedFrame& out, std::wstring& err) {
     ComPtr<IMFMediaBuffer> buffer;
     HRESULT hr = sample->GetBufferByIndex(0, &buffer);
-    if (FAILED(hr)) {
-        err = L"GetBufferByIndex failed: " + formatHr(hr);
-        return false;
-    }
+    if (FAILED(hr)) { err = L"GetBufferByIndex failed"; return false; }
     sample->GetSampleTime(&out.timestamp);
 
     ComPtr<IMF2DBuffer> buffer2d;
-    BYTE* scanline0 = nullptr;
-    LONG pitch = 0;
+    BYTE* scanline0 = nullptr; LONG pitch = 0;
     if (SUCCEEDED(buffer.As(&buffer2d))) {
         hr = buffer2d->Lock2D(&scanline0, &pitch);
-        if (FAILED(hr)) {
-            err = L"Lock2D failed: " + formatHr(hr);
-            return false;
-        }
+        if (FAILED(hr)) { err = L"Lock2D failed"; return false; }
     } else {
         DWORD len = 0;
         hr = buffer->Lock(&scanline0, nullptr, &len);
-        if (FAILED(hr)) {
-            err = L"media buffer Lock failed: " + formatHr(hr);
-            return false;
-        }
-        pitch = 0; // tight packing assumed
+        if (FAILED(hr)) { err = L"Lock failed"; return false; }
+        pitch = 0;
     }
 
-    out.width = width;
-    out.height = height;
-    const size_t srcPitch =
-        (pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width) * 4);
-    // M13: with a recycled buffer this resize is a no-op (size already set);
-    // with a fresh buffer it zero-inits once (the cost we removed).
+    out.width = width; out.height = height;
+    const size_t srcPitch = pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width) * 4;
     out.bytes.resize(static_cast<size_t>(height) * static_cast<size_t>(width) * 4);
-    for (UINT y = 0; y < height; ++y) {
+    for (UINT y = 0; y < height; ++y)
         std::memcpy(out.bytes.data() + static_cast<size_t>(y) * width * 4,
                     scanline0 + static_cast<size_t>(y) * srcPitch, static_cast<size_t>(width) * 4);
-    }
 
-    if (buffer2d) {
-        buffer2d->Unlock2D();
-    } else {
-        buffer->Unlock();
-    }
+    if (buffer2d) buffer2d->Unlock2D(); else buffer->Unlock();
     return true;
 }
 
 Result<VideoMetadata> DecoderManager::probeMetadata(const std::wstring& path) {
-    // Metadata-only probe (M11 library panel): no attributes (no hardware
-    // path, no video processing), select the first video stream, read the
-    // native media type + duration, release. The reader's destructor tears
-    // down the media source.
     ComPtr<IMFSourceReader> reader;
     VideoMetadata meta;
     auto prepared = prepareReader(path, nullptr, reader, meta);
-    if (!prepared) {
-        return std::unexpected(prepared.error());
-    }
+    if (!prepared) return std::unexpected(prepared.error());
     return meta;
 }
 

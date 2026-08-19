@@ -13,6 +13,10 @@
 
 struct ID3D11Device; // d3d11 interface, forward-declared (pointers only)
 
+namespace vw::audio {
+class AudioPipeline;
+} // namespace vw::audio
+
 namespace vw::video {
 class VideoPlayer;
 struct DecodedFrame;
@@ -79,6 +83,11 @@ public:
     bool hardwareDecoding() const;
     const std::wstring& decoderName() const;
 
+    // Playback speed: 1.0 = normal, 2.0 = double speed, 0.5 = half speed.
+    // Valid range: 0.25 – 4.0. Clamped on set.
+    void setPlaybackSpeed(double speed);
+    double playbackSpeed() const { return scheduler_.speed(); }
+
     // ---- message-loop integration (M6) ----
     // Waitable timer armed to the next presentation deadline (valid while
     // Playing). New-frame event from the decoder's queue (valid while Playing;
@@ -117,6 +126,7 @@ private:
     void logStatsSummary() const;
 
     std::unique_ptr<video::VideoPlayer> player_;
+    std::unique_ptr<audio::AudioPipeline> audioPipeline_;
     FrameScheduler scheduler_;
     State state_ = State::Stopped;
     HANDLE timer_ = nullptr;

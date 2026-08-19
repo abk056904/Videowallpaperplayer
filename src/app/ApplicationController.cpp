@@ -18,6 +18,7 @@
 #include "playback/PlaybackController.h"
 #include "playlist/PlaylistStore.h"
 #include "util/clock.h"
+#include "util/utf8.h"
 #include "video/DecodedFrame.h"
 
 namespace vw::app {
@@ -250,6 +251,19 @@ int ApplicationController::run() {
                             c.id = ui::CommandId::Previous;
                             postCommand(std::move(c));
                             break;
+                        case ui::TrayController::kMenuSpeed05:
+                        case ui::TrayController::kMenuSpeed10:
+                        case ui::TrayController::kMenuSpeed15:
+                        case ui::TrayController::kMenuSpeed20: {
+                            static constexpr double kSpeeds[] = {0.5, 1.0, 1.5, 2.0};
+                            const int idx = static_cast<int>(menuId - ui::TrayController::kMenuSpeed05);
+                            c.id = ui::CommandId::ConfigSet;
+                            c.s1 = L"playbackSpeed";
+                            if (kSpeeds[idx] == 1.0) { c.s2 = L"1"; }
+                            else { wchar_t buf[8]; std::swprintf(buf, 8, L"%.1f", kSpeeds[idx]); c.s2 = buf; }
+                            postCommand(std::move(c));
+                            break;
+                        }
                         case ui::TrayController::kMenuOpen:
                             c.id = ui::CommandId::ShowUi;
                             postCommand(std::move(c));
@@ -607,6 +621,8 @@ bool ApplicationController::startPlaylistItem(size_t index) {
         playlist_->markUnavailable(index);
         return false;
     }
+    // Apply persisted playback speed.
+    playback_->setPlaybackSpeed(config_->config().playbackSpeed);
     const double openMs = static_cast<double>(util::Clock::instance().now100ns() - t0) / 10000.0;
     lastPlayedPath_ = item->path;
     log.info(L"transition to playlist item {} ('{}') in {:.1f} ms", index, item->path, openMs);
@@ -1109,7 +1125,7 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
             wchar_t path[MAX_PATH] = {};
             OPENFILENAMEW ofn{};
             ofn.lStructSize = sizeof(ofn);
-            ofn.hwndControl = ui_ ? ui_->hwnd() : control_.handle();
+            ofn.hwndOwner = ui_ ? ui_->hwnd() : control_.handle();
             ofn.lpstrFilter = L"JSON files\0*.json\0All files\0*.*\0";
             ofn.lpstrFile = path;
             ofn.nMaxFile = MAX_PATH;
@@ -1121,7 +1137,9 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
                 std::filesystem::copy_file(config_->configPath(), path,
                                            std::filesystem::copy_options::overwrite_existing, ec);
                 if (ec) {
-                    log.warn(L"config export failed: {}", ec.message());
+                    auto emsg = util::utf8ToWide(ec.message());
+                const std::wstring& errmsg = emsg ? *emsg : std::wstring(L"unknown error");
+                log.warn(L"config export failed: {}", errmsg);
                 } else {
                     log.info(L"config exported to {}", path);
                 }
@@ -1134,7 +1152,7 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
             wchar_t path[MAX_PATH] = {};
             OPENFILENAMEW ofn{};
             ofn.lStructSize = sizeof(ofn);
-            ofn.hwndControl = ui_ ? ui_->hwnd() : control_.handle();
+            ofn.hwndOwner = ui_ ? ui_->hwnd() : control_.handle();
             ofn.lpstrFilter = L"JSON files\0*.json\0All files\0*.*\0";
             ofn.lpstrFile = path;
             ofn.nMaxFile = MAX_PATH;
@@ -1145,7 +1163,9 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
                 std::filesystem::copy_file(path, config_->configPath(),
                                            std::filesystem::copy_options::overwrite_existing, ec);
                 if (ec) {
-                    log.warn(L"config import failed: {}", ec.message());
+                    auto emsg = util::utf8ToWide(ec.message());
+                const std::wstring& errmsg = emsg ? *emsg : std::wstring(L"unknown error");
+                log.warn(L"config import failed: {}", errmsg);
                 } else {
                     config_->load();
                     config_->markConfigChanged();
@@ -1323,6 +1343,10 @@ void ApplicationController::updateTrayFromState() {
         }
     }
     std::wstring tip = std::wstring(L"Video Wallpaper — ") + state;
+    // Show playback speed in tooltip when not 1x
+    if (playback_ && playback_->playbackSpeed() != 1.0) {
+        tip += std::format(L" \u2022 {:.1f}x", playback_->playbackSpeed());
+    }
     // #22: Show FPS in tray tooltip when playing
     if (statsCollector_ && governor_ && governor_->state() == governor::State::Active) {
         const auto snap = statsCollector_->snapshot();
@@ -1332,6 +1356,9 @@ void ApplicationController::updateTrayFromState() {
     }
     tray_->setTooltip(tip);
     tray_->setCurrentVideo(currentVideoName());
+    if (playback_) {
+        tray_->setCurrentSpeed(playback_->playbackSpeed());
+    }
 }
 
 // ---- M11: command helpers --------------------------------------------------
@@ -1490,6 +1517,11 @@ void ApplicationController::applyConfigSetLive(const std::wstring& key, const st
                                                               : (c.logLevel == L"error"
                                                                      ? log::Level::Error
                                                                      : log::Level::Info)));
+    } else if (key == L"playbackSpeed") {
+        if (playback_) {
+            playback_->setPlaybackSpeed(c.playbackSpeed);
+        }
+        updateTrayFromState();
     }
 }
 
@@ -1602,6 +1634,7 @@ vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
     s.config.playbackMode = static_cast<vw::ui::PlaylistMode>(c.mode);
     s.config.loop = c.loop;
     s.config.scaling = static_cast<vw::ui::ScalingMode>(c.scaling);
+    s.config.playbackSpeed = c.playbackSpeed;
     s.config.clone = c.wallpaperMode == config::WallpaperMode::Clone;
     s.config.startWithWindows = c.startWithWindows;
     s.config.minimizeToTray = c.minimizeToTray;

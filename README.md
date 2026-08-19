@@ -50,12 +50,12 @@ playlist you control — while staying out of the way:
 └──────┬──────────────────────────────────────────────────────────────────────────┘
        │
   ┌────┴─────────┐   ┌──────────────┐   ┌───────────────┐   ┌──────────────────┐
-  │  Win32 UI    │   │ TrayController│  │   Playlist    │   │  LibraryManager  │
+  │  Win32 UI    │   │TrayController│  │   Playlist    │   │  LibraryManager  │
   │  (6 panels)  │   └──────────────┘   │   Manager     │   │  (minimal v1)    │
   └──────────────┘                      └──────┬────────┘   └──────────────────┘
                                                │
   ┌────────────────── PlaybackController ───────┴───────────────────────────────┐
-  │  FrameScheduler (QPC deadlines, waitable timer) · VideoPlayer · FrameQueue   │
+  │  FrameScheduler (QPC deadlines, waitable timer) · VideoPlayer · FrameQueue  │
   └───────┬───────────────────────────────────────┬─────────────────────────────┘
           │                                       │
   ┌───────┴─────────┐                    ┌─────────┴──────────┐

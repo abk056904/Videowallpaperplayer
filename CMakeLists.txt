@@ -111,7 +111,13 @@ set(VW_VIDEO_SOURCES
     src/video/FrameQueue.cpp
     src/video/DecoderManager.cpp
     src/video/FFmpegDecoder.cpp
+    src/video/DecoderFactory.cpp
     src/video/VideoPlayer.cpp
+)
+
+# Audio module sources (WASAPI output + FFmpeg audio decode + swresample).
+set(VW_AUDIO_SOURCES
+    src/audio/AudioPipeline.cpp
 )
 
 # Playback module sources (M6: frame timing, queue & scheduling).
@@ -165,7 +171,7 @@ set(VW_UI_SOURCES
 set(VW_MF_LIBS mfplat mfreadwrite mfuuid mf evr)
 
 # FFmpeg shared libraries (NVDEC hardware decode via libavcodec/libavformat).
-set(FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/ext/ffmpeg/ffmpeg-N-126207-g21bbd98e7b-win64-gpl-shared")
+set(FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/ext/ffmpeg/minimal")
 set(FFMPEG_INCLUDE_DIR "${FFMPEG_ROOT}/include")
 set(FFMPEG_LIB_DIR "${FFMPEG_ROOT}/lib")
 set(FFMPEG_DLL_DIR "${FFMPEG_ROOT}/bin")
@@ -186,6 +192,7 @@ add_executable(VideoWallpaper WIN32
     src/util/utf8.cpp
     ${VW_GRAPHICS_SOURCES}
     ${VW_VIDEO_SOURCES}
+    ${VW_AUDIO_SOURCES}
     ${VW_PLAYBACK_SOURCES}
     ${VW_PERFORMANCE_SOURCES}
     ${VW_DETECTION_SOURCES}
@@ -197,7 +204,7 @@ add_executable(VideoWallpaper WIN32
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR} ${FFMPEG_INCLUDE_DIR})
 target_link_directories(VideoWallpaper PRIVATE ${FFMPEG_LIB_DIR})
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS} ${FFMPEG_LIBS})
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS} ${FFMPEG_LIBS} oleaut32)
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug
@@ -211,8 +218,8 @@ add_custom_command(TARGET VideoWallpaper POST_BUILD
 )
 
 if(MSVC)
-    # FFmpeg headers emit warnings we can't fix — disable /WX for that TU.
-    set_source_files_properties(src/video/FFmpegDecoder.cpp PROPERTIES COMPILE_FLAGS "/W0")
+    # FFmpeg headers emit warnings we can't fix — disable /WX for those TUs.
+    set_source_files_properties(src/video/FFmpegDecoder.cpp src/audio/AudioPipeline.cpp PROPERTIES COMPILE_FLAGS "/W0")
     target_compile_options(VideoWallpaper PRIVATE /WX /GR- # warnings-as-errors + no RTTI (saves ~50 KB)
         $<$<CONFIG:Release>:/O2;/GL;/Zi>
         $<$<CONFIG:Debug>:/Od;/Zi;/RTC1>
@@ -247,6 +254,7 @@ add_executable(vw_tests
     src/graphics/D3D11DeviceManager.cpp
     src/graphics/TextureManager.cpp
     ${VW_VIDEO_SOURCES}
+    ${VW_AUDIO_SOURCES}
     ${VW_PLAYBACK_SOURCES}
     ${VW_PERFORMANCE_SOURCES}
     ${VW_DETECTION_SOURCES}

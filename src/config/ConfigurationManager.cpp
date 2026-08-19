@@ -31,6 +31,19 @@ void readBool(const util::Json& obj, const wchar_t* key, bool def, F&& apply) {
     apply(v.isBool() ? v.asBool(def) : def);
 }
 
+template <typename F>
+void readDouble(const util::Json& obj, const wchar_t* key, double def, double lo, double hi, F&& apply) {
+    const auto& v = obj.get(key);
+    if (v.isNumber()) {
+        double n = v.asNumber(def);
+        if (n < lo) n = lo;
+        if (n > hi) n = hi;
+        apply(n);
+    } else {
+        apply(def);
+    }
+}
+
 void readStrings(const util::Json& obj, const wchar_t* key, std::vector<std::wstring>& out) {
     const auto& v = obj.get(key);
     if (!v.isArray()) return;
@@ -144,6 +157,7 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
         }
     }
 
+    readDouble(playback, L"playbackSpeed", cfg.playbackSpeed, 0.25, 4.0, [&](double v) { cfg.playbackSpeed = v; });
     readBool(playback, L"shuffle", cfg.shuffle, [&](bool v) { cfg.shuffle = v; });
     readBool(playback, L"loop", cfg.loop, [&](bool v) { cfg.loop = v; });
     readBool(playback, L"audio", cfg.audio, [&](bool v) { cfg.audio = v; });
@@ -248,6 +262,7 @@ bool ConfigurationManager::save() {
         {L"shuffle", util::Json::boolean(config_.shuffle)},
         {L"loop", util::Json::boolean(config_.loop)},
         {L"scaling", util::Json::string(scalingName(config_.scaling))},
+        {L"playbackSpeed", util::Json::number(config_.playbackSpeed)},
         {L"frameQueue", util::Json::number(static_cast<double>(config_.frameQueue))},
         {L"audio", util::Json::boolean(config_.audio)},
         {L"videoPath", util::Json::string(config_.videoPath)},
@@ -431,6 +446,17 @@ bool ConfigurationManager::applyConfigSet(Config& cfg, const std::wstring& key,
         else if (v == L"center") { m = 3; }
         else { error = L"unknown value '" + value + L"' for '" + key + L"'"; ok = false; }
         if (ok) { cfg.scaling = static_cast<ScalingMode>(m); }
+    }
+    else if (k == L"playbackspeed") {
+        try {
+            double spd = std::stod(value);
+            if (spd < 0.25) spd = 0.25;
+            if (spd > 4.0) spd = 4.0;
+            cfg.playbackSpeed = spd;
+        } catch (...) {
+            error = L"expected a number for '" + key + L"', got '" + value + L"'";
+            ok = false;
+        }
     }
     else if (k == L"wallpapermode") {
         if (v == L"clone") { cfg.wallpaperMode = WallpaperMode::Clone; }

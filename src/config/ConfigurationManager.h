@@ -32,6 +32,7 @@ struct Config {
     bool shuffle = false;
     bool loop = true;
     ScalingMode scaling = ScalingMode::Fill;
+    double playbackSpeed = 1.0; // playback speed multiplier (0.25–4.0)
     // Frame queue depth. Default 1: the decode worker is then consumer-paced
     // (blocks when the queue is full), so the queue can never hold two frames
     // that became due between two consumer wakes — stale-frame drops become

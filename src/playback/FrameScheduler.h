@@ -12,10 +12,10 @@ using SchedulerTime = std::int64_t; // 100 ns units (media + wall clock)
 // deadlines; the message loop wakes on {timer, new-frame event} and calls the
 // controller, which asks the scheduler for the due media time.
 //
-// Model: media time and wall time advance 1:1 from an anchor
+// Model: media time advances at speed × wall time from an anchor
 // (anchorWall_, anchorMedia_). A frame with media timestamp T is due when
-//   now >= anchorWall_ + (T - anchorMedia_)
-// i.e. dueMediaAt(now) = anchorMedia_ + (now - anchorWall_). The consumer
+//   now >= anchorWall_ + (T - anchorMedia_) / speed
+// i.e. dueMediaAt(now) = anchorMedia_ + speed × (now - anchorWall_). The consumer
 // presents the newest frame with timestamp <= dueMediaAt(now) and drops stale
 // ones. nextDeadline_ is only the ARMIN- target: after presenting, advance by
 // one frame interval (snapping forward when behind so deadlines never linger
@@ -29,6 +29,10 @@ public:
     // new-frame-event driven).
     void setSourceFps(double fps);
     double sourceFps() const { return sourceFps_; }
+
+    // Playback speed multiplier (1.0 = normal, 2.0 = double speed, etc.).
+    void setSpeed(double speed);
+    double speed() const { return speed_; }
 
     // One frame interval in 100 ns units; 0 when pacing is disabled.
     SchedulerTime interval100ns() const { return interval100ns_; }
@@ -61,6 +65,7 @@ public:
 
 private:
     double sourceFps_ = 0.0;
+    double speed_ = 1.0;              // playback speed multiplier
     SchedulerTime interval100ns_ = 0; // 10'000'000 / fps
     SchedulerTime anchorWall_ = 0;
     SchedulerTime anchorMedia_ = 0;

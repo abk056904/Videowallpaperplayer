@@ -42,8 +42,19 @@ bool SettingsPanel::create(HWND parent) {
 
     aboutText_ = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, L.x(0), L.y(4), ::MulDiv(420, L.u, 5),
                      3 * L.cy, nullptr);
+
+    // Playback speed selector (spec §23: Playback speed).
+    ctl(hwnd_, L"STATIC", L"Playback speed :", WS_VISIBLE, L.x(0), L.y(7),
+        ::MulDiv(140, L.u, 5), L.cy, nullptr);
+    speedCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
+                      L.x(0) + ::MulDiv(145, L.u, 5), L.y(7), ::MulDiv(80, L.u, 5), 200,
+                      reinterpret_cast<HMENU>(kCmSpeed));
+    for (const wchar_t* s : {L"0.5x", L"0.75x", L"1.0x", L"1.5x", L"2.0x"}) {
+        ::SendMessageW(speedCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
+    }
+
     btnReadme_ = ctl(hwnd_, L"BUTTON", L"Open README", WS_VISIBLE | BS_PUSHBUTTON,
-                     L.x(0), L.y(8), ::MulDiv(120, L.u, 5), L.cy,
+                     L.x(0), L.y(9), ::MulDiv(120, L.u, 5), L.cy,
                      reinterpret_cast<HMENU>(kBtnReadme));
     return true;
 }
@@ -74,6 +85,14 @@ void SettingsPanel::updateFromConfig(const ConfigSnapshot& c) {
 
 void SettingsPanel::refreshFromSnapshot(const UiSnapshot& s) {
     updateFromConfig(s.config);
+    // Playback speed: map 0.5/0.75/1.0/1.5/2.0 to combo index 0–4.
+    int spdIdx = 2; // default 1.0x
+    if (s.config.playbackSpeed <= 0.5) spdIdx = 0;
+    else if (s.config.playbackSpeed <= 0.75) spdIdx = 1;
+    else if (s.config.playbackSpeed <= 1.0) spdIdx = 2;
+    else if (s.config.playbackSpeed <= 1.5) spdIdx = 3;
+    else spdIdx = 4;
+    ::SendMessageW(speedCombo_, CB_SETCURSEL, spdIdx, 0);
 }
 
 LRESULT CALLBACK SettingsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -123,6 +142,28 @@ LRESULT CALLBACK SettingsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                         c.s1 = L"logLevel";
                         c.s2 = i == 1 ? L"debug" : (i == 2 ? L"warn" : (i == 3 ? L"error" : L"info"));
                         self->post_(c);
+                    }
+                    return 0;
+                case kCmSpeed:
+                    if (code == CBN_SELCHANGE) {
+                        static constexpr double kSpeeds[] = {0.5, 0.75, 1.0, 1.5, 2.0};
+                        const int i = static_cast<int>(
+                            ::SendMessageW(self->speedCombo_, CB_GETCURSEL, 0, 0));
+                        if (i >= 0 && i < 5) {
+                            Command c;
+                            c.id = CommandId::ConfigSet;
+                            c.s1 = L"playbackSpeed";
+                            // Format as string (e.g. "1" or "1.5")
+                            const double spd = kSpeeds[i];
+                            if (spd == static_cast<int>(spd)) {
+                                c.s2 = std::to_wstring(static_cast<int>(spd));
+                            } else {
+                                wchar_t buf[16];
+                                std::swprintf(buf, 16, L"%.2f", spd);
+                                c.s2 = buf;
+                            }
+                            self->post_(c);
+                        }
                     }
                     return 0;
                 case kBtnReadme: {

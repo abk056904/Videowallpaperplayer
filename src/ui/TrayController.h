@@ -24,6 +24,10 @@ public:
         kMenuNext,
         kMenuPrevious,
         kMenuCurrent, // read-only info item
+        kMenuSpeed05,
+        kMenuSpeed10,
+        kMenuSpeed15,
+        kMenuSpeed20,
         kMenuOpen,
         kMenuSettings,
         kMenuExit,
@@ -40,6 +44,7 @@ public:
 
     void setTooltip(const std::wstring& text);      // e.g. L"Video Wallpaper — Playing"
     void setCurrentVideo(const std::wstring& name); // read-only menu item text
+    void setCurrentSpeed(double speed); // speed submenu checkmark
 
     // Shows the context menu at the cursor. Returns the chosen MenuId
     // (kMenuNone when dismissed). Blocks while the menu is up.
@@ -50,6 +55,7 @@ private:
     bool added_ = false;
     std::wstring tooltip_ = L"Video Wallpaper";
     std::wstring currentVideo_; // empty = "no wallpaper"
+    double currentSpeed_ = 1.0; // for submenu checkmark
 };
 
 } // namespace vw::ui

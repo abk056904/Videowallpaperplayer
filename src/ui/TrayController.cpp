@@ -67,12 +67,28 @@ void TrayController::setCurrentVideo(const std::wstring& name) {
     currentVideo_ = name;
 }
 
+void TrayController::setCurrentSpeed(double speed) {
+    currentSpeed_ = speed;
+}
+
 TrayController::MenuId TrayController::showMenu() {
     HMENU menu = ::CreatePopupMenu();
     ::AppendMenuW(menu, MF_STRING, kMenuResume, L"Resume");
     ::AppendMenuW(menu, MF_STRING, kMenuPause, L"Pause");
     ::AppendMenuW(menu, MF_STRING, kMenuNext, L"Next");
     ::AppendMenuW(menu, MF_STRING, kMenuPrevious, L"Previous");
+    // Speed submenu
+    HMENU speedMenu = ::CreatePopupMenu();
+    auto speedCheck = [&](UINT_PTR id, const wchar_t* label, double target) {
+        UINT flags = MF_STRING;
+        if (currentSpeed_ == target) flags |= MF_CHECKED;
+        ::AppendMenuW(speedMenu, flags, id, label);
+    };
+    speedCheck(kMenuSpeed05, L"0.5x", 0.5);
+    speedCheck(kMenuSpeed10, L"1x (normal)", 1.0);
+    speedCheck(kMenuSpeed15, L"1.5x", 1.5);
+    speedCheck(kMenuSpeed20, L"2x", 2.0);
+    ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speedMenu), L"Playback Speed");
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     const std::wstring current =
         currentVideo_.empty() ? L"Current wallpaper: (none)" : L"Current wallpaper: " + currentVideo_;
