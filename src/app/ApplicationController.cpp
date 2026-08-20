@@ -1129,6 +1129,52 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
                 savePlaylistAndNotify();
             }
             break;
+        case vw::ui::CommandId::PlaylistExport: {
+            if (!playlist_) break;
+            wchar_t path[MAX_PATH] = {};
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = ui_ ? ui_->hwnd() : control_.handle();
+            ofn.lpstrFilter = L"JSON files\0*.json\0All files\0*.*\0";
+            ofn.lpstrFile = path;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrTitle = L"Export Playlist";
+            ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+            ofn.lpstrDefExt = L"json";
+            if (::GetSaveFileNameW(&ofn)) {
+                auto data = playlist_->data();
+                auto saved = playlist::PlaylistStore::save(path, data);
+                if (saved) {
+                    log.info(L"playlist exported to {}", path);
+                } else {
+                    log.warn(L"playlist export failed: {}", saved.error());
+                }
+            }
+            break;
+        }
+        case vw::ui::CommandId::PlaylistImport: {
+            wchar_t path[MAX_PATH] = {};
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = ui_ ? ui_->hwnd() : control_.handle();
+            ofn.lpstrFilter = L"JSON files\0*.json\0All files\0*.*\0";
+            ofn.lpstrFile = path;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrTitle = L"Import Playlist";
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+            if (::GetOpenFileNameW(&ofn)) {
+                auto loaded = playlist::PlaylistStore::load(path);
+                if (loaded) {
+                    // Replace the current playlist with the imported one.
+                    playlist_ = std::make_unique<playlist::PlaylistManager>(std::move(*loaded));
+                    savePlaylistAndNotify();
+                    log.info(L"playlist imported from {} ({} items)", path, playlist_->size());
+                } else {
+                    log.warn(L"playlist import failed: file could not be parsed");
+                }
+            }
+            break;
+        }
         case vw::ui::CommandId::LibraryAddFiles:
             if (library_) {
                 library_->addFiles(c.paths);

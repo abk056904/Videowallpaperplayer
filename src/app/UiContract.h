@@ -176,6 +176,7 @@ enum class CommandId : uint8_t {
     PlaylistCreate, PlaylistRename, PlaylistDelete, PlaylistDuplicate,
     PlaylistAddFiles, PlaylistAddLibraryItems, PlaylistRemoveItem, PlaylistMoveItem,
     PlaylistToggleItem, PlaylistSetItemTimes, PlaylistSetMode, PlaylistSetLoop,
+    PlaylistExport, PlaylistImport,
     LibraryAddFiles, LibraryAddFolder, LibraryRemove, LibraryRefresh,
     ConfigSet, ConfigExport, ConfigImport, SetAudioVolume,
     ShowUi, ToggleUi, Focus, Exit,

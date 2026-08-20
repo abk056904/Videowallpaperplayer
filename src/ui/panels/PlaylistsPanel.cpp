@@ -24,7 +24,8 @@ bool PlaylistsPanel::create(HWND parent) {
 
     makeButtons(hwnd_, font_,
                 {{kBtnAddFile, L"Add File..."}, {kBtnRemove, L"Remove"}, {kBtnUp, L"Up"},
-                 {kBtnDown, L"Down"}, {kBtnToggle, L"Enable/Disable"}},
+                 {kBtnDown, L"Down"}, {kBtnToggle, L"Enable/Disable"},
+                 {kBtnExport, L"Export..."}, {kBtnImport, L"Import..."}},
                 buttons_, 8, L.u, L.cy);
 
     // Items ListView: # / Name / Start / End / On.
@@ -220,6 +221,18 @@ void PlaylistsPanel::setModeFromCombo(int index) {
     post_(c);
 }
 
+void PlaylistsPanel::exportPlaylist() {
+    Command c;
+    c.id = CommandId::PlaylistExport;
+    post_(c);
+}
+
+void PlaylistsPanel::importPlaylist() {
+    Command c;
+    c.id = CommandId::PlaylistImport;
+    post_(c);
+}
+
 void PlaylistsPanel::setLoopFromCheck(bool on) {
     Command c;
     c.id = CommandId::PlaylistSetLoop;
@@ -254,6 +267,12 @@ LRESULT CALLBACK PlaylistsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     return 0;
                 case kBtnToggle:
                     self->toggleSelected();
+                    return 0;
+                case kBtnExport:
+                    self->exportPlaylist();
+                    return 0;
+                case kBtnImport:
+                    self->importPlaylist();
                     return 0;
                 case kCtlModeCombo:
                     if (HIWORD(wParam) == CBN_SELCHANGE) {

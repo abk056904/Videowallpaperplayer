@@ -36,6 +36,8 @@ private:
     RefreshFn refresh_;
     void updateBottom();
     void addFileDialog();
+    void exportPlaylist();
+    void importPlaylist();
     void removeSelected();
     void moveSelected(int delta);
     void toggleSelected();
@@ -44,7 +46,7 @@ private:
     int selectedRow() const;
 
     enum Btn : UINT { kBtnAddFile = 101, kBtnRemove = 102, kBtnUp = 103, kBtnDown = 104,
-                      kBtnToggle = 105 };
+                      kBtnToggle = 105, kBtnExport = 106, kBtnImport = 107 };
     enum Ctrl : UINT { kCtlModeCombo = 201, kCtlLoopCheck = 202 };
 
     std::vector<PlaylistItemView> items_;
