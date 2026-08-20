@@ -20,17 +20,20 @@ struct AdapterInfo {
 
 // Creates the best video decoder backend for the given file.
 //
-// Selection order (codec-aware):
-//   H.264/HEVC: MF hardware → NVDEC → FFmpeg software
-//   VP9/AV1:    NVDEC → FFmpeg software
+// Selection order (codec-aware, each step falls through on failure):
+//   H.264/HEVC: MF hardware → D3D11VA → CUDA → FFmpeg software
+//   VP9:        D3D11VA → CUDA → FFmpeg software
+//   AV1:        CUDA → FFmpeg software
 //   Other:      FFmpeg software
 //
 // The factory returns the first backend that successfully:
-//   1. Opens the stream
-//   2. Confirms codec compatibility
-//   3. Initializes hardware resources
+//   1. Probes the file to determine the codec
+//   2. Opens the stream with a HW-capable decoder
+//   3. Initializes hardware resources on the render device
 //
-// A failed hardware initialization never terminates playback.
+// A failed hardware initialization never terminates playback — the factory
+// falls back to the next backend, ending with pure software if nothing else
+// works. See FFmpegDecoder.h for the FFmpeg-specific details.
 std::unique_ptr<IVideoDecoder> CreateBestDecoder(
     ID3D11Device* renderDevice,
     const std::wstring& path,

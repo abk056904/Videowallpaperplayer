@@ -7,7 +7,9 @@ Built as a single native x64 C++23 executable (Win32 + Direct3D 11 + Media Found
 No .NET, no Electron, no Qt, no runtime frameworks, no bundled codecs: everything
 Windows already provides is used as-is.
 
-> **Status:** v1 complete (milestones M0–M14). The implementation plan lives in
+> **Status:** v1.1 complete — adds FFmpeg hardware decode (D3D11VA / CUDA / NVDEC)
+> with zero-copy GPU paths, full audio pipeline (WASAPI + FFmpeg + swresample),
+> and a codec-aware decoder factory. The v1 milestones (M0–M14) are in
 > [`docs/`](docs/), the execution contract in
 > [`implement-docs-plan-spec.md`](implement-docs-plan-spec.md), milestone progress in
 > [`docs/06-progress-checklist.md`](docs/06-progress-checklist.md), and the final
@@ -15,14 +17,12 @@ Windows already provides is used as-is.
 
 ## Download
 
-[**⬇ VideoWallpaper-d5f99ca.zip**](https://github.com/abk056904/Videowallpaperplayer/raw/main/dist/VideoWallpaper-d5f99ca.zip) (1.0 MB)
+Build from source (see [Build instructions](#build-instructions)) or use the
+distribution scripts:
 
-Portable ZIP — extract anywhere, run `VideoWallpaper.exe`. No installer, no admin
-rights needed. Includes the three MSVC runtime DLLs, `README.md`, and `LICENSE`.
-
-| File | Size | SHA256 |
-|---|---|---|
-| `VideoWallpaper-d5f99ca.zip` | 1,068,705 B | `4f50862f…081c` |
+```bat
+powershell -ExecutionPolicy Bypass -File package.ps1
+```
 
 **Requirements:** Windows 11 (or 10 21H2+), x64, GPU with Direct3D 11.1.
 
@@ -86,6 +86,9 @@ Key components (all under `src/`):
 | `wallpaper/WallpaperHost` | Per-monitor child window in the wallpaper layer (behind icons), swap chain |
 | `wallpaper/WallpaperManager` | Host lifecycle, monitor events, per-monitor frame routing, device-loss recreate |
 | `monitors/MonitorManager` | Enumeration, stable ids, add/remove/change events, adapter association |
+| `video/IVideoDecoder` | Abstract decoder interface — all backends (MF, NVDEC, FFmpeg SW) implement this |
+| `video/DecoderFactory` | Codec-aware factory: MF → NVDEC/CUDA → FFmpeg software; returns the best available decoder |
+| `video/FFmpegDecoder` | FFmpeg decode backend: D3D11VA (zero-copy), CUDA (→D3D11 map), or software (NV12/BGRA) |
 | `video/DecoderManager` | Media Foundation source reader; hardware (DXGI) path with honest software fallback |
 | `video/VideoPlayer` | Session lifecycle: open → decode → close; replay; metadata; EOS handling |
 | `video/FrameQueue` | Bounded queue (default 3), drop-oldest, buffer recycle pool |
@@ -124,7 +127,14 @@ Key components (all under `src/`):
 - Windows SDK 10.0.26100.0 (or newer; includes Media Foundation, D3D11, DXGI).
 - CMake ≥ 3.28 (verified 4.4.2).
 
-### Configure & build
+### Configure & build (CMake presets)
+
+```bat
+cmake --preset release
+cmake --build --preset release
+```
+
+Or without presets:
 
 ```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -137,6 +147,13 @@ Both configurations build warning-free (`/WX`). Debug enables the D3D11 debug la
 (`/O2`, LTCG) with PDBs.
 
 ### Tests
+
+```bat
+cmake --preset debug
+ctest --preset debug
+```
+
+Or without presets:
 
 ```bat
 ctest --test-dir build -C Debug --output-on-failure
@@ -172,30 +189,46 @@ the three MSVC runtime DLLs, `README.md`, and `LICENSE` — nothing else.
 
 ## Supported codecs & containers
 
-Decoding is provided entirely by **Media Foundation** (no bundled codecs):
+Decoding is handled by a **codec-aware factory** that selects the best available
+backend:
 
-| Codec | Support |
+| Codec | Backend priority |
 |---|---|
-| H.264 (AVC) | ✅ verified (hardware where the MF stack offers it, else software) |
-| HEVC (H.265) | ✅ hardware where the MF stack offers it; software fallback (decoder availability dependent) |
-| AV1 / VP9 | ✅ **where the OS/hardware provides an MFT** (Microsoft Store AV1/VP9 extensions, GPU vendor MFTs); otherwise `NOT MEASURED` on this dev machine |
-| Audio | ❌ intentionally never initialized (v1 is video-only) |
+| H.264 (AVC) | Media Foundation HW → D3D11VA → CUDA → FFmpeg software |
+| HEVC (H.265) | Media Foundation HW → D3D11VA → CUDA → FFmpeg software |
+| VP9 | D3D11VA → CUDA → FFmpeg software |
+| AV1 | CUDA → FFmpeg software |
+| Other | FFmpeg software |
 
-Containers: **MP4/MOV** (verified), **MKV/WebM/AVI** — anything the Media Foundation
-Source Resolver can open; the app validates by real media metadata, never by file
-extension.
+| Audio codec | Support |
+|---|---|
+| AAC, MP3, FLAC, Opus, Vorbis, etc. | ✅ decoded via FFmpeg, resampled to 48 kHz S16 stereo, output via WASAPI |
+
+Containers: **MP4/MOV** (verified), **MKV/WebM/AVI** — anything FFmpeg's libavformat
+can open; the app validates by real media metadata, never by file extension.
 
 ## Hardware acceleration
 
-- The app requests the **hardware path first**: `MF_SOURCE_READER_D3D_MANAGER` +
-  `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`, NV12/P010 GPU surfaces, and a shader
-  that converts YUV→RGB on the GPU — **zero CPU frame copies in the happy path**.
-- The actual decoder is **probed at runtime and reported honestly** (log line
-  `decoder: hardware (vendor)` or `decoder: software`). A one-sample DXGI-buffer
-  probe after negotiation verifies the decoder really hands out GPU surfaces; if it
-  does not, the reader is rebuilt on the proven software RGB32 path (with
-  diagnostics). On machines where MF hardware decode is unavailable (including this
-  dev machine — see *Known limitations*), the app plays in software automatically.
+The decoder factory (`CreateBestDecoder`) selects the best available backend:
+
+1. **H.264/HEVC**: tries Media Foundation first (proven zero-copy via `MF_SOURCE_READER_D3D_MANAGER`),
+   then falls through to FFmpeg D3D11VA, then CUDA, then software.
+2. **VP9/AV1**: tries FFmpeg D3D11VA, then CUDA (cuvid), then software.
+3. **Other codecs**: FFmpeg software directly.
+
+### Zero-copy GPU paths
+
+- **D3D11VA** (H.264/HEVC/VP9): frames arrive as `ID3D11Texture2D` directly from
+  the decoder — **zero CPU copies**.
+- **CUDA** (H.264/HEVC/VP9/AV1): decoded on the GPU, then mapped to D3D11 textures
+  via `av_hwframe_map()` — also zero-copy.
+- **Software**: frames are NV12 or BGRA on the CPU; NV12 is uploaded to the GPU
+  where the YUV shader converts + scales (62% less upload than RGB32).
+
+The actual decoder is **probed at runtime and reported honestly** (log line
+`decoder: hardware (vendor)` or `decoder: software`). A failed hardware initialization
+never terminates playback — the factory falls back automatically.
+
 - Scaling modes (Fill default / Fit / Stretch / Center) are applied in the shader;
   `Fill` crops overflow evenly on both sides to fill the screen with no bars and no
   distortion (any aspect ratio, including anamorphic content — sample aspect ratio
@@ -273,16 +306,15 @@ changes via a revision counter (no polling).
 |---|---|
 | Wallpaper not visible | Explorer's wallpaper layer may need a refresh (lock/unlock or `explorer.exe` restart); the app detects layer invalidation and rebuilds automatically. Check `%APPDATA%\VideoWallpaper\logs\` for `wallpaper layer` lines. |
 | Video doesn't play | Log shows `cannot open video …` — check the path, the file, and the container/codec. The app validates by real metadata; corrupt files are skipped gracefully (playlist advances). |
-| Software decode, high CPU | This machine's MF stack has no hardware MFT (log: `hardware decode unavailable … software RGB32 path`). Install hardware-video extensions / GPU drivers for HW decode; on HW-capable machines the app uses it automatically. |
+| Software decode, high CPU | The decoder factory tried all HW backends (MF, D3D11VA, CUDA) and fell back to software. Check GPU drivers are up to date; for NVIDIA, install the CUDA toolkit or update to a driver that includes NVDEC support. On HW-capable machines the app auto-selects the best path. |
 | Second instance won't start | It's not supposed to — a second launch activates the first (single instance). |
 | Config resets to defaults | Corrupt config was detected → `.bak` written next to it, defaults applied, app continues. |
 | No tray icon | The tray icon lives while the app runs; it can be hidden by Windows tray settings (show hidden icons). |
 
 Logs: `%APPDATA%\VideoWallpaper\logs\current.log` (rotates at 1 MB → `previous.log`).
 
-## Known limitations (v1)
+## Known limitations (v1.1)
 
-- **Audio is not played** (video-only by design; audio streams are never initialized).
 - **No thumbnails, drag & drop, or global hotkeys** (v2 items; the library is minimal).
 - **Shared-playlist mode across monitors** is v2; v1 has clone (decode-once shared
   frame) and independent (per-monitor) modes.
@@ -299,8 +331,9 @@ Logs: `%APPDATA%\VideoWallpaper\logs\current.log` (rotates at 1 MB → `previous
 
 - Layout: `src/` (per-domain modules), `tests/` (doctest, unit-test only),
   `harness/` (dev-only GPU/wallpaper harness), `shaders/` (HLSL, compiled at build
-  time and embedded — no runtime file lookups), `docs/` (plan + spec + report),
-  `build/<cfg>/generated/` (generated shader headers).
+  time and embedded — no runtime file lookups), `ext/ffmpeg/minimal/` (FFmpeg
+  shared libraries — minimal build: avcodec, avformat, avutil, swscale, swresample),
+  `docs/` (plan + spec + report), `build/<cfg>/generated/` (generated shader headers).
 - Conventions: C++23, RAII everywhere (no raw `new`/`malloc`), workers block on
   events/CVs (no busy loops, no `Sleep()`), no per-frame allocations or logging,
   `/WX` clean, everything unit-tested before a milestone advances.
@@ -330,10 +363,11 @@ The design principle is *"wake only when necessary"* (doc 2 §102):
   static frame is **never redrawn**.
 - **Decode only on demand**: the decode worker blocks when the bounded queue (3
   frames) is full — backpressure, no speculative decode.
-- **Paused ⇒ no video work**: decoder stopped, queue cleared, timer cancelled.
-- **Suspended (long pause) ⇒ release everything not needed**: decoder, next-video
-  prep, and temporary GPU resources are released; position/path/config are kept.
-  Measured: 0.0–0.8% CPU, ~124 MB RAM while suspended.
+- **Paused ⇒ no video/audio work**: decoder stopped, audio pipeline paused, queue cleared,
+  timer cancelled.
+- **Suspended (long pause) ⇒ release everything not needed**: decoder, audio pipeline,
+  next-video prep, and temporary GPU resources are released; position/path/config
+  are kept. Measured: 0.0–0.8% CPU, ~124 MB RAM while suspended.
 - **Hidden/covered ⇒ nothing renders**: per-host presents stop when the wallpaper
   can't be seen; lock/display-off are events, not polls.
 - **Monitor → no CPU**: workload sampling is 1–2 s; game/fullscreen/lock/power are
@@ -341,9 +375,11 @@ The design principle is *"wake only when necessary"* (doc 2 §102):
   `WM_POWERBROADCAST`).
 - **UI closed ⇒ zero UI cost**: closing the window destroys the UI and its timers;
   the tray keeps the engine running.
-- **No frameworks, no bundled codecs, no unnecessary assets** — the OS's own
-  decoders and a ~1.6 MB self-contained exe.
+- **No frameworks, no unnecessary assets** — a minimal FFmpeg build (~31 MB DLLs)
+  plus the OS's own decoders in a self-contained exe.
 
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE).
+
+freebuff --continue 2026-08-19T15-29-22.710Z

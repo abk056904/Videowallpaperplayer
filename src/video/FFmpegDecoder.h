@@ -20,14 +20,18 @@ struct AVBufferRef;
 
 namespace vw::video {
 
-// FFmpeg-based decode session supporting both NVDEC (CUDA) and D3D11VA
-// hardware acceleration, falling back to software when GPU decode is
-// unavailable. Implements IVideoDecoder for backend-agnostic use.
+// FFmpeg-based decode session supporting D3D11VA and CUDA hardware
+// acceleration, falling back to software when GPU decode is unavailable.
+// Implements IVideoDecoder for backend-agnostic use by VideoPlayer.
 //
-// Zero-copy paths:
-//   D3D11VA: frames arrive as ID3D11Texture2D (AV_PIX_FMT_D3D11)
-//   CUDA: frames are mapped to D3D11 via av_hwframe_map()
-//   Software: frames are uploaded to D3D11 via TextureManager
+// Open order (codec-aware, each path tries and falls through on failure):
+//   1. D3D11VA — zero-copy ID3D11Texture2D (H.264/HEVC/VP9)
+//   2. CUDA (cuvid) → D3D11 map via av_hwframe_map() (H.264/HEVC/VP9/AV1)
+//   3. Software — NV12 or BGRA on CPU, uploaded to GPU by TextureManager
+//
+// Dependencies: libavcodec, libavformat, libavutil (hwcontext_d3d11va,
+//   hwcontext_cuda), libswscale (software BGRA fallback only).
+// Minimal FFmpeg build in ext/ffmpeg/minimal/ (~31 MB total DLLs).
 class FFmpegDecoder : public IVideoDecoder {
 public:
     FFmpegDecoder() = default;

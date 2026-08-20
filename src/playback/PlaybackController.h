@@ -55,9 +55,10 @@ public:
 
     // Opens + validates the file (real media metadata) and configures the
     // scheduler from its FPS. `d3dDevice` enables the M5 hardware path
-    // (nullptr = software-only); `queueCapacity` is config.playback.frameQueue.
+    // (nullptr = software-only); `queueCapacity` is config.playback.frameQueue;
+    // `enableAudio` is config.playback.audio (default false per spec §1.8).
     Result<void> open(const std::wstring& path, ID3D11Device* d3dDevice,
-                      size_t queueCapacity);
+                      size_t queueCapacity, bool enableAudio = false);
 
     // Starts the decode worker + pacing. Idempotent while Playing.
     Result<void> start();

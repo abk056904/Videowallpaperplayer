@@ -24,7 +24,8 @@ struct AVFrame;
 
 namespace vw::audio {
 
-// Audio clock for A/V synchronization. The audio thread is the master clock.
+// Audio clock for A/V synchronization. The audio output thread is the master
+// clock — its WASAPI playback position drives the video scheduler.
 class AudioClock {
 public:
     // Get current playback position in 100ns units
@@ -142,7 +143,10 @@ private:
     static constexpr size_t kMaxQueueSize = 16;
 };
 
-// Complete audio pipeline: decode + resample + WASAPI output
+// Complete audio pipeline: FFmpeg decode + swresample conversion + WASAPI output.
+// The pipeline owns its own AVFormatContext (separate from the video decoder's)
+// and finds the audio stream automatically on init(). On files without audio,
+// init() returns success with hasAudio() == false — never an error.
 class AudioPipeline {
 public:
     AudioPipeline() = default;

@@ -12,7 +12,8 @@ namespace vw::video {
 
 // Playback session glue: owns the IVideoDecoder + FrameQueue and exposes
 // the UI-thread contract — open/start, pause/resume/stop, and pollFrame().
-// The decoder backend is selected automatically via CreateBestDecoder().
+// The decoder backend is selected automatically via CreateBestDecoder() in
+// DecoderFactory.h (MF → D3D11VA → CUDA → FFmpeg SW).
 class VideoPlayer {
 public:
     enum class State { Stopped, Playing, Paused };

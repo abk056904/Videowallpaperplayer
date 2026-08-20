@@ -12,9 +12,10 @@ namespace vw::video {
 
 class FrameQueue; // forward (defined in FrameQueue.h as class)
 
-// Abstract video decoder interface. All backends (MF, NVDEC, Software)
-// implement this. The renderer consumes DecodedFrame without knowing
-// which backend produced it.
+// Abstract video decoder interface. All backends (MF, NVDEC/CUDA/D3D11VA,
+// FFmpeg software) implement this. The renderer consumes DecodedFrame without
+// knowing which backend produced it. Selected at runtime by CreateBestDecoder()
+// in DecoderFactory.h.
 class IVideoDecoder {
 public:
     virtual ~IVideoDecoder() = default;

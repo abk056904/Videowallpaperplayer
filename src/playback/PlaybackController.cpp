@@ -31,7 +31,7 @@ PlaybackController::~PlaybackController() {
 }
 
 Result<void> PlaybackController::open(const std::wstring& path, ID3D11Device* d3dDevice,
-                                      size_t queueCapacity) {
+                                      size_t queueCapacity, bool enableAudio) {
     stop();
     auto player = std::make_unique<video::VideoPlayer>();
     if (d3dDevice) {
@@ -46,13 +46,16 @@ Result<void> PlaybackController::open(const std::wstring& path, ID3D11Device* d3
     player_ = std::move(player);
     stats_ = {};
 
-    // Initialize audio pipeline if audio is present
-    if (player_->metadata().hasAudio) {
+    // Initialize audio pipeline only if enabled in config AND the file has audio.
+    // Default is OFF per spec §1.8 ("audio = disabled").
+    if (enableAudio && player_->metadata().hasAudio) {
         audioPipeline_ = std::make_unique<audio::AudioPipeline>();
         auto audioResult = audioPipeline_->init(path);
         if (!audioResult) {
             log::Logger::instance().warn(L"audio init failed: {}", audioResult.error());
             audioPipeline_.reset(); // Continue without audio
+        } else {
+            log::Logger::instance().info(L"audio pipeline initialized (enabled by config)");
         }
     }
 
@@ -154,12 +157,22 @@ Result<void> PlaybackController::replay() {
     // Loop same video: reuse the reader/decoder + GPU resources; reset the
     // timeline to media time 0 and the per-session stats (fresh loop cycle).
     cancelTimer();
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        audioPipeline_->stop();
+    }
     scheduler_.reset(util::Clock::instance().now100ns(), 0);
     anchorPending_ = true;
     stats_ = {};
     auto result = player_->replay();
     if (!result) {
         return result;
+    }
+    // Restart audio from the beginning
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        auto audioResult = audioPipeline_->start();
+        if (!audioResult) {
+            log::Logger::instance().warn(L"audio replay start failed: {}", audioResult.error());
+        }
     }
     state_ = State::Playing;
     statsWindowStart_ = util::Clock::instance().now100ns();

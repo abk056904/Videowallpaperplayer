@@ -600,7 +600,8 @@ bool ApplicationController::startPlaylistItem(size_t index) {
     const LONGLONG t0 = util::Clock::instance().now100ns();
     auto opened =
         playback_->open(item->path, wallpaper_ ? wallpaper_->device() : nullptr,
-                        static_cast<size_t>(config_->config().frameQueue));
+                        static_cast<size_t>(config_->config().frameQueue),
+                        config_->config().audio);
     if (!opened) {
         log.warn(L"playlist item {} '{}' cannot be opened: {} — marking unavailable", index,
                  item->path, opened.error());
