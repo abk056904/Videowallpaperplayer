@@ -70,31 +70,32 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
 
     AVCodecParameters* par = fmtCtx->streams[vidIdx]->codecpar;
 
-    // Find a D3D11VA-capable decoder (h264, hevc, etc.)
-    const char* d3d11vaDecoders[] = {"h264_d3d11va", "hevc_d3d11va", "vp9_d3d11va"};
-    const AVCodec* codec = nullptr;
-    for (auto* name : d3d11vaDecoders) {
-        codec = avcodec_find_decoder_by_name(name);
-        if (codec && codec->id == par->codec_id) break;
-        codec = nullptr;
+    // Use the regular decoder — D3D11VA hwactivates via hw_device_ctx +
+    // get_format callback, NOT via a separate decoder name. The minimal
+    // FFmpeg build only enables software decoders; D3D11VA is a hwaccel
+    // that auto-activates when a D3D11VA device context is provided.
+    const AVCodec* codec = avcodec_find_decoder(par->codec_id);
+    if (!codec) {
+        log.info(L"FFmpeg: no decoder found for codec id {}", static_cast<int>(par->codec_id));
+        avformat_close_input(&fmtCtx);
+        return false;
     }
-    if (!codec) { avformat_close_input(&fmtCtx); return false; }
+    log.info(L"FFmpeg: using decoder {} for D3D11VA hwaccel", vw::util::utf8ToWide(codec->name));
 
-    // Create D3D11VA device context
+    // Create D3D11VA hardware device. We create our own device (not the
+    // render device) to avoid cross-device sharing and threading issues.
+    // Frames are transferred to CPU/uploaded by the caller if needed.
     AVBufferRef* hwDeviceCtx = nullptr;
-    if (d3dDevice_) {
-        // Wrap existing D3D11 device: alloc buffer, fill hwctx fields, NO init.
-        hwDeviceCtx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
-        if (!hwDeviceCtx) { avformat_close_input(&fmtCtx); return false; }
-        auto* hwctx = reinterpret_cast<AVHWDeviceContext*>(hwDeviceCtx->data);
-        auto* d3d11ctx = reinterpret_cast<AVD3D11VADeviceContext*>(hwctx->hwctx);
-        d3d11ctx->device = d3dDevice_;
-        // Do NOT call av_hwdevice_ctx_init — device already exists.
-    } else {
-        if (av_hwdevice_ctx_create(&hwDeviceCtx, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) < 0) {
-            avformat_close_input(&fmtCtx);
-            return false;
+    {
+        int err = av_hwdevice_ctx_create(&hwDeviceCtx, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
+        if (err < 0) {
+            char errbuf[128]{};
+            av_strerror(err, errbuf, sizeof(errbuf));
+            log.warn(L"FFmpeg: D3D11VA device create failed: {}",
+                     vw::util::utf8ToWide(errbuf));
+            avformat_close_input(&fmtCtx); return false;
         }
+        log.info(L"FFmpeg: D3D11VA device created");
     }
 
     AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
@@ -107,7 +108,7 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
     codecCtx->thread_count = 0;
 
     if (avcodec_open2(codecCtx, codec, nullptr) < 0) {
-        log.debug(L"FFmpeg: D3D11VA decoder open failed");
+        log.warn(L"FFmpeg: D3D11VA decoder open failed");
         avcodec_free_context(&codecCtx); av_buffer_unref(&hwDeviceCtx); avformat_close_input(&fmtCtx);
         return false;
     }
@@ -374,16 +375,35 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             }
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
-                // D3D11VA zero-copy: extract texture directly from the frame.
-                auto* desc = reinterpret_cast<AVD3D11FrameDescriptor*>(frame_->data[0]);
-                if (desc && desc->texture) {
-                    desc->texture->AddRef(); // ComPtr needs its own reference
-                    df.texture.Attach(desc->texture);
-                    df.hardware = true;
+                // D3D11VA: the GPU decoded the frame (fast), but the texture
+                // lives on FFmpeg's private D3D11 device.  Transfer to a
+                // software NV12 frame so the renderer can upload it.
+                // av_hwframe_transfer_data does a GPU→CPU copy of the decoded
+                // surface — still faster than pure SW decode because the GPU
+                // does the actual H.264/HEVC bitstream parsing.
+                AVFrame* swFrame = av_frame_alloc();
+                swFrame->format = AV_PIX_FMT_NV12;
+                if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
+                    df.nv12 = true;
+                    uint32_t w = swFrame->width;
+                    uint32_t h = swFrame->height;
+                    uint32_t ySize = w * h;
+                    uint32_t uvSize = w * (h / 2);
+                    df.bytes.resize(ySize + uvSize);
+                    for (uint32_t y = 0; y < h; ++y)
+                        std::memcpy(df.bytes.data() + y * w,
+                                    swFrame->data[0] + y * swFrame->linesize[0], w);
+                    uint8_t* uvDst = df.bytes.data() + ySize;
+                    for (uint32_t y = 0; y < h / 2; ++y)
+                        std::memcpy(uvDst + y * w,
+                                    swFrame->data[1] + y * swFrame->linesize[1], w);
                 } else {
+                    log.warn(L"FFmpeg: D3D11VA frame transfer failed");
+                    av_frame_free(&swFrame);
                     av_frame_unref(frame_);
                     continue;
                 }
+                av_frame_free(&swFrame);
             } else if (hardware_ && frame_->format == AV_PIX_FMT_CUDA) {
                 // CUDA → D3D11 zero-copy: map CUDA frame to D3D11 texture.
                 AVFrame* d3d11Frame = av_frame_alloc();
