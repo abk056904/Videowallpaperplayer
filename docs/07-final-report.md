@@ -72,7 +72,12 @@ per-milestone detail):
 - **D3D11VA hardware decode is active** via FFmpeg on this machine. Media Foundation
   HW is attempted first but unavailable (no working hardware MFT — see BUILD_NOTES).
   FFmpeg's D3D11VA path uses its own private D3D11 device for decode, with
-  DXGI shared handles + deferred context for zero-copy transfer to the render device.
+  DXGI shared handles + deferred context for GPU-to-GPU transfer to the render
+  device. There are zero CPU<->GPU copies on this path (the CopySubresourceRegion
+  is a GPU command, not a CPU memcpy). True zero-copy (no copies at all) would
+  require sharing the D3D11 immediate context between FFmpeg's decode thread and
+  our render thread, which is impossible because D3D11 immediate contexts are
+  not thread-safe.
 - Three bugs were fixed to enable D3D11VA (2026-08-20):
   1. DecoderFactory returned MF software too early (never tried FFmpeg HW).
   2. FFmpegDecoder searched for `h264_d3d11va` by name (D3D11VA activates via
@@ -110,11 +115,13 @@ per-milestone detail):
 - **Audio pipeline implemented but not wired into VideoPlayer** — AudioPipeline
   module exists with FFmpeg decode + WASAPI output, but `VideoPlayer` doesn't call
   it yet (config `playback.audio` defaults to OFF).
-- **D3D11VA zero-copy uses shared handles** — FFmpeg creates its own D3D11 device;
-  frames cross via `CreateSharedHandle` + `OpenSharedResource1`. True direct-texture
-  sharing would require DXGI shared handles with fence synchronization (deferred
-  context approach was attempted but D3D11 immediate context threading conflicts
-  prevent it).
+- **D3D11VA uses GPU-to-GPU shared handles, not true zero-copy** — FFmpeg creates
+  its own D3D11 device (required because D3D11 immediate contexts are not
+  thread-safe). Frames cross via `CopySubresourceRegion` (GPU-to-GPU copy on a
+  deferred context) + `CreateSharedHandle` + `OpenSharedResource1`. This means
+  zero CPU<->GPU copies (meets §1.2.9), but there is one GPU-to-GPU copy per
+  frame. Attempted sharing the render device directly with FFmpeg — crashed due
+  to immediate context threading conflicts.
 - **Single display** → real hot-plug / multi-monitor / mixed-refresh NOT MEASURED
   (simulated topologies + single-monitor e2e are the substitute).
 - **No AV1/VP9/HDR/4K decode rows** (no HW MFT; no HDR/AV1 sample verified).
@@ -201,9 +208,10 @@ harness/         vw_gfx_harness (dev-only)
     (1 per resolution). Software path: 1 dynamic upload texture + recycle pool.
 15. **Decoder count** — **1** active in clone mode (N monitors share it); N in
     independent mode for N distinct videos (M8). This machine: 1 (software).
-16. **CPU↔GPU copies** — D3D11VA zero-copy: shared texture + deferred context
-    GPU copy (no CPU transfer). CPU-transfer fallback: 1 upload per frame
-    (`av_hwframe_transfer_data` + `Map`/`Unmap`). No readbacks except the M11
+16. **CPU↔GPU copies** — D3D11VA path: zero CPU<->GPU copies; CopySubresourceRegion
+    is a GPU-to-GPU command on a deferred context (no CPU involvement). CPU-transfer
+    fallback: 1 upload per frame (`av_hwframe_transfer_data` + `Map`/`Unmap`).
+    MF HW path: true zero-copy (no copies at all). No readbacks except the M11
     preview grab (on demand).
 17. **Game detection behavior** — foreground-change **event** (`SetWinEventHook`);
     allow/deny lists; classified game → governor PAUSED (live-verified: notepad.exe

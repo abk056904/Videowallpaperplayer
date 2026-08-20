@@ -25,6 +25,10 @@ public:
     // Idempotent: destroys the window if present (deterministic shutdown).
     void destroy();
 
+    // Global hotkeys (RegisterHotKey). Call after create(); unregistered on destroy.
+    void registerHotkeys();
+    void unregisterHotkeys();
+
     // Post a quit to the message loop (deterministic shutdown).
     void requestShutdown();
 

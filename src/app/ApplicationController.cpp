@@ -10,6 +10,7 @@
 #include <cstring>
 #include <format>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "detection/FullscreenDetector.h"
@@ -104,6 +105,7 @@ void ApplicationController::initPaths() {
 }
 
 int ApplicationController::run() {
+    const auto t0 = std::chrono::steady_clock::now();
     // Per-monitor DPI awareness so monitor bounds are physical pixels.
     ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -305,6 +307,16 @@ int ApplicationController::run() {
             if (playback_) {
                 playback_->stop();
             }
+        } else if (msg == WM_HOTKEY) {
+            // Global hotkeys (Ctrl+Alt+V/Left/Right).
+            ui::Command c;
+            switch (wParam) {
+                case 1: c.id = ui::CommandId::PlayPauseToggle; break; // Ctrl+Alt+V
+                case 2: c.id = ui::CommandId::Next; break;           // Ctrl+Alt+Right
+                case 3: c.id = ui::CommandId::Previous; break;       // Ctrl+Alt+Left
+                default: return;
+            }
+            postCommand(std::move(c));
         } else if ((msg == WM_DISPLAYCHANGE || msg == WM_DEVICECHANGE) && wallpaper_) {
             wallpaper_->onDisplayChange();
             // Monitor bounds changed — a fullscreen window's classification
@@ -325,6 +337,10 @@ int ApplicationController::run() {
         shutdown();
         return 1;
     }
+
+    // Register global hotkeys (Ctrl+Alt+V/Left/Right).
+    control_.registerHotkeys();
+    log.info(L"global hotkeys registered: Ctrl+Alt+V (play/pause), Ctrl+Alt+Left/Right (prev/next)");
 
     // M9: foreground-window change events (EVENT_SYSTEM_FOREGROUND — no
     // polling). Out-of-context so the callback is dispatched by THIS thread's
@@ -353,7 +369,17 @@ int ApplicationController::run() {
 
     // M3: wallpaper behind desktop icons.
     wallpaper_ = std::make_unique<wallpaper::WallpaperManager>();
+
+    const auto tWallpaper = std::chrono::steady_clock::now();
+    // STARTUP OPT: MFStartup is independent of D3D11/wallpaper init —
+    // run it in a background thread to overlap two serial bottlenecks.
+    HRESULT mfResult = E_FAIL;
+    std::thread mfThread([&]() { mfResult = ::MFStartup(MF_VERSION); });
+
     const auto wallpaperResult = wallpaper_->start();
+    mfThread.join(); // MF init completed (or failed) in parallel with D3D11
+    const auto tMfDone = std::chrono::steady_clock::now();
+
     if (!wallpaperResult) {
         log.error(L"wallpaper start failed: {}", wallpaperResult.error());
     } else {
@@ -366,13 +392,16 @@ int ApplicationController::run() {
     ::SetTimer(control_.handle(), kWorkloadTimerId, 2000, nullptr);
 
     // M4: Media Foundation single-video playback (docs/03 §3.6).
-    const HRESULT mf = ::MFStartup(MF_VERSION);
-    if (FAILED(mf)) {
-        log.error(L"MFStartup failed: 0x{:08X}", static_cast<unsigned>(mf));
+    if (FAILED(mfResult)) {
+        log.error(L"MFStartup failed: 0x{:08X}", static_cast<unsigned>(mfResult));
     } else {
         mfStarted_ = true;
         startPlayback();
     }
+    const auto tDone = std::chrono::steady_clock::now();
+    log.info(L"startup: total {:.0f} ms (wallpaper+MF parallel {:.0f} ms)",
+             std::chrono::duration<double, std::milli>(tDone - t0).count(),
+             std::chrono::duration<double, std::milli>(tMfDone - tWallpaper).count());
 
     // M10: system-state notifications (lock/unlock, suspend/resume, monitor
     // power, battery) + the ResourceGovernor (sole authority over decode/
@@ -921,6 +950,7 @@ void ApplicationController::shutdown() {
         }
     }
     if (config_) config_->save();
+    control_.unregisterHotkeys();
     control_.destroy(); // destroys the window
     log::Logger::instance().flush();
     if (mutex_) {

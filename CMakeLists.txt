@@ -204,7 +204,7 @@ add_executable(VideoWallpaper WIN32
 )
 target_include_directories(VideoWallpaper PRIVATE src ${CMAKE_CURRENT_BINARY_DIR} ${FFMPEG_INCLUDE_DIR})
 target_link_directories(VideoWallpaper PRIVATE ${FFMPEG_LIB_DIR})
-target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi ${VW_MF_LIBS} ${FFMPEG_LIBS} oleaut32)
+target_link_libraries(VideoWallpaper PRIVATE user32 shell32 advapi32 psapi wtsapi32 comctl32 d3d11 dxgi shlwapi ${VW_MF_LIBS} ${FFMPEG_LIBS} oleaut32)
 target_compile_definitions(VideoWallpaper PRIVATE
     ${VW_PUBLIC_DEFS}
     $<$<CONFIG:Debug>:VW_DEBUG>   # debug layer / verbose logging only in Debug

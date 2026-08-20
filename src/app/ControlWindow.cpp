@@ -59,6 +59,27 @@ void ControlWindow::requestShutdown() {
     if (hwnd_) ::PostMessageW(hwnd_, WM_APP, 0, 0);
 }
 
+// Hotkey IDs
+enum HotkeyId : int {
+    kHotkeyPlayPause = 1,
+    kHotkeyNext = 2,
+    kHotkeyPrev = 3,
+};
+
+void ControlWindow::registerHotkeys() {
+    if (!hwnd_) return;
+    ::RegisterHotKey(hwnd_, kHotkeyPlayPause, MOD_CONTROL | MOD_ALT, 'V');
+    ::RegisterHotKey(hwnd_, kHotkeyNext, MOD_CONTROL | MOD_ALT, VK_RIGHT);
+    ::RegisterHotKey(hwnd_, kHotkeyPrev, MOD_CONTROL | MOD_ALT, VK_LEFT);
+}
+
+void ControlWindow::unregisterHotkeys() {
+    if (!hwnd_) return;
+    ::UnregisterHotKey(hwnd_, kHotkeyPlayPause);
+    ::UnregisterHotKey(hwnd_, kHotkeyNext);
+    ::UnregisterHotKey(hwnd_, kHotkeyPrev);
+}
+
 LRESULT CALLBACK ControlWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     ControlWindow* self = nullptr;
     if (msg == WM_NCCREATE) {
@@ -74,6 +95,7 @@ LRESULT CALLBACK ControlWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             ::PostQuitMessage(0);
             return 0;
         }
+        // Forward all messages (including WM_HOTKEY) to the handler.
         if (self->handler_) {
             self->handler_(msg, wParam, lParam);
         }

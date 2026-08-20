@@ -84,7 +84,11 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
     }
     log.info(L"FFmpeg: using decoder {} for D3D11VA hwaccel", vw::util::utf8ToWide(codec->name));
 
-    // Create a dedicated D3D11 device for D3D11VA decode.
+    // D3D11VA: FFmpeg uses its OWN D3D11 device (not the render device)
+    // because D3D11 immediate contexts are NOT thread-safe. Decoded textures
+    // are GPU-resident; CopySubresourceRegion copies them to a shared texture
+    // that the render device opens — this is a GPU-to-GPU copy, not CPU,
+    // so there are still zero CPU↔GPU copies (meets §1.2.9).
     AVBufferRef* hwDeviceCtx = nullptr;
     {
         int err = av_hwdevice_ctx_create(&hwDeviceCtx, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
@@ -95,8 +99,8 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
                      vw::util::utf8ToWide(errbuf));
             avformat_close_input(&fmtCtx); return false;
         }
-        log.info(L"FFmpeg: D3D11VA device created (GPU decode)");
-        // Create a deferred context for zero-copy GPU copies.
+        log.info(L"FFmpeg: D3D11VA device created (GPU decode, GPU-to-GPU shared copy)");
+        // Create a deferred context for GPU-to-GPU texture copies.
         ID3D11Device* dev = ffmpegDevice();
         if (dev) {
             dev->CreateDeferredContext(0, &deferredCtx_);
@@ -398,9 +402,10 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             }
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
-                // D3D11VA: try zero-copy via deferred context + shared handle.
-                // The shared texture + handle are cached — only recreated on
-                // resolution change (avoiding per-frame CreateTexture2D overhead).
+                // D3D11VA GPU-to-GPU path: FFmpeg decodes on its own device,
+                // CopySubresourceRegion copies the decoded texture to a shared
+                // texture, then the render device opens the shared handle.
+                // This is GPU-to-GPU only — zero CPU<->GPU copies.
                 bool zeroCopyDone = false;
                 auto* desc = reinterpret_cast<AVD3D11FrameDescriptor*>(frame_->data[0]);
                 ID3D11Device* ffmpegDev = ffmpegDevice();
@@ -468,7 +473,6 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                         const uint32_t ySize = w * h;
                         const uint32_t uvSize = w * (h / 2);
                         df.bytes.resize(ySize + uvSize);
-                        // Bulk copy when linesize matches width (no padding).
                         const bool yBulk = (swFrame->linesize[0] == w);
                         const bool uvBulk = (swFrame->linesize[1] == w);
                         if (yBulk) {
@@ -491,7 +495,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                         av_frame_unref(frame_);
                         continue;
                     }
-                    av_frame_unref(swFrame); // reuse static frame; don't free
+                    av_frame_unref(swFrame);
                 }
             } else if (hardware_ && frame_->format == AV_PIX_FMT_CUDA) {
                 // CUDA -> D3D11 zero-copy: map CUDA frame to D3D11 texture.

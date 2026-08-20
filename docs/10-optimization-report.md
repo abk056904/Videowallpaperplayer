@@ -87,11 +87,17 @@ Shared handle:  active (cached texture + deferred context GPU copy)
 | Dropped frames | ~3/s (stale) | **0** | **-100%** |
 | Present FPS | ~57 fps | **60 fps** | **+5%** |
 
-The D3D11VA zero-copy path uses DXGI shared handles across two D3D11 devices
-(FFmpeg's private device + render device) with a deferred context for the GPU
-copy. When the shared path fails (e.g., resolution change), it falls back to
+The D3D11VA path uses DXGI shared handles across two D3D11 devices (FFmpeg's
+private device + render device) with a deferred context for the GPU-to-GPU copy.
+CopySubresourceRegion is a GPU command — zero CPU<->GPU copies on the happy path.
+When the shared path fails (e.g., resolution change), it falls back to
 `av_hwframe_transfer_data` (GPU decode + CPU NV12 transfer — still faster than
 pure software decode).
+
+**Why not true zero-copy?** D3D11 immediate contexts are not thread-safe. FFmpeg's
+decode thread and our render thread cannot share the same device/context. Attempted
+sharing the render device directly with FFmpeg — access violations confirmed.
+The GPU-to-GPU copy via CopySubresourceRegion is the minimum viable path.
 
 The `dropped` delta (0 → ~3/s) is **not a regression**: the counter (`FrameQueue::dropped_`) counts stale frames skipped by the freshness policy (`popNewestUpTo` keeps the newest at-or-before the deadline — docs/02 §2.7). The old build counted 0 only because decode could not fill a single deadline (32 fps of a 60 fps source = ~28 fps silently missed). Now decode keeps up and the remaining ~3/s are decode-jitter stale frames — the wallpaper always shows the freshest frame, at 57 vs 32 fps.
 

@@ -2,6 +2,8 @@
 
 #include <commctrl.h>
 #include <dwmapi.h>
+#include <shlwapi.h>
+#include <shellapi.h>
 
 #include "logging/Logger.h"
 #include "ui/Theme.h"
@@ -72,6 +74,9 @@ bool Win32UI::create() {
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_TAB_CLASSES;
     ::InitCommonControlsEx(&icc);
+
+    // Enable drag & drop on the main window.
+    ::DragAcceptFiles(hwnd_, TRUE);
 
     // Create panels (children of main window, positioned below tab bar)
     Panel* panels[] = {home_.get(), library_.get(), playlists_.get(),
@@ -255,6 +260,26 @@ LRESULT CALLBACK Win32UI::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
             mmi->ptMinTrackSize.x = ::MulDiv(720, dpi, 96);
             mmi->ptMinTrackSize.y = ::MulDiv(480, dpi, 96);
+            return 0;
+        }
+        case WM_DROPFILES: {
+            // Drag & drop: add dropped files to the playlist.
+            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+            const UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < count; ++i) {
+                wchar_t path[MAX_PATH] = {};
+                if (::DragQueryFileW(hDrop, i, path, MAX_PATH)) {
+                    // Check if it's a video file by extension.
+                    const wchar_t* ext = PathFindExtensionW(path);
+                    if (ext && (*ext == L'.')) {
+                        Command c;
+                        c.id = CommandId::PlaylistAddFiles;
+                        c.paths.push_back(path);
+                        self->post_(c);
+                    }
+                }
+            }
+            ::DragFinish(hDrop);
             return 0;
         }
         case WM_CLOSE:

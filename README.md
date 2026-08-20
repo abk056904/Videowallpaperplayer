@@ -8,7 +8,7 @@ No .NET, no Electron, no Qt, no runtime frameworks, no bundled codecs: everythin
 Windows already provides is used as-is.
 
 > **Status:** v1.1 complete — adds FFmpeg hardware decode (D3D11VA / CUDA / NVDEC)
-> with zero-copy GPU paths, full audio pipeline (WASAPI + FFmpeg + swresample),
+> with GPU-accelerated decode (zero CPU↔GPU copies), full audio pipeline (WASAPI + FFmpeg + swresample),
 > and a codec-aware decoder factory. The v1 milestones (M0–M14) are in
 > [`docs/`](docs/), the execution contract in
 > [`implement-docs-plan-spec.md`](implement-docs-plan-spec.md), milestone progress in
@@ -88,7 +88,7 @@ Key components (all under `src/`):
 | `monitors/MonitorManager` | Enumeration, stable ids, add/remove/change events, adapter association |
 | `video/IVideoDecoder` | Abstract decoder interface — all backends (MF, NVDEC, FFmpeg SW) implement this |
 | `video/DecoderFactory` | Codec-aware factory: MF → NVDEC/CUDA → FFmpeg software; returns the best available decoder |
-| `video/FFmpegDecoder` | FFmpeg decode backend: D3D11VA (zero-copy), CUDA (→D3D11 map), or software (NV12/BGRA) |
+| `video/FFmpegDecoder` | FFmpeg decode backend: D3D11VA (GPU-to-GPU, zero CPU↔GPU), CUDA (→D3D11 map), or software (NV12/BGRA) |
 | `video/DecoderManager` | Media Foundation source reader; hardware (DXGI) path with honest software fallback |
 | `video/VideoPlayer` | Session lifecycle: open → decode → close; replay; metadata; EOS handling |
 | `video/FrameQueue` | Bounded queue (default 1, configurable), drop-oldest, buffer recycle pool |
@@ -216,10 +216,16 @@ The decoder factory (`CreateBestDecoder`) selects the best available backend:
 2. **VP9/AV1**: tries FFmpeg D3D11VA, then CUDA (cuvid), then software.
 3. **Other codecs**: FFmpeg software directly.
 
-### Zero-copy GPU paths
+### GPU-accelerated decode paths (zero CPU↔GPU copies)
 
-- **D3D11VA** (H.264/HEVC/VP9): frames arrive as `ID3D11Texture2D` directly from
-  the decoder — **zero CPU copies**.
+- **D3D11VA** (H.264/HEVC/VP9): FFmpeg decodes on its own D3D11 device; the
+  decoded texture is copied GPU-to-GPU via `CopySubresourceRegion` to a shared
+  texture, then opened on the render device via `OpenSharedResource1`. **Zero
+  CPU↔GPU copies** — the copy is a GPU command. D3D11 immediate contexts are
+  not thread-safe, so sharing the render device directly with FFmpeg is not
+  possible.
+- **MF HW** (H.264/HEVC): Media Foundation decodes directly onto the render
+  device — **true zero-copy** (no copies at all).
 - **CUDA** (H.264/HEVC/VP9/AV1): decoded on the GPU, then mapped to D3D11 textures
   via `av_hwframe_map()` — also zero-copy.
 - **Software**: frames are NV12 or BGRA on the CPU; NV12 is uploaded to the GPU

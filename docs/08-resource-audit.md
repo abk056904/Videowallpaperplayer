@@ -110,11 +110,12 @@ drops in steady state. No whole-video buffering, no unlimited frame buffering.
 
 **15. Are frames copied CPU↔GPU?**
 
-D3D11VA zero-copy: shared texture + deferred context GPU copy (no CPU transfer)
-via `CreateSharedHandle` / `OpenSharedResource1` across two D3D11 devices.
-Fallback: `av_hwframe_transfer_data` (GPU decode + CPU NV12 transfer) +
-`Map`/`Unmap` upload — still faster than pure software decode. The only readback
-is the on-demand M11 preview grab.
+D3D11VA path: zero CPU<->GPU copies. CopySubresourceRegion (GPU-to-GPU copy on a
+deferred context) transfers the decoded texture to a shared texture, then
+`OpenSharedResource1` on the render device opens it directly. Fallback:
+`av_hwframe_transfer_data` (GPU decode + CPU NV12 transfer) + `Map`/`Unmap`
+upload — still faster than pure software decode. MF HW path: true zero-copy
+(no copies at all). The only readback is the on-demand M11 preview grab.
 
 **16. Are identical wallpapers on multiple monitors decoded only once?**
 

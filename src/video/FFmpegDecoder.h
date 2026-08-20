@@ -55,13 +55,12 @@ public:
     bool isOpen() const override { return opened_; }
     uint64_t decodedFrames() const override { return decodedFrames_.load(); }
 
-    // Access FFmpeg's D3D11 device/context for shared-handle zero-copy.
-    // Returns nullptr if not using D3D11VA.
-    ID3D11Device* ffmpegDevice() const;
-    ID3D11DeviceContext* ffmpegContext() const;
-
     // Metadata-only probe (no decode pipeline).
     static Result<VideoMetadata> probeMetadata(const std::wstring& path);
+
+    // Access FFmpeg's D3D11 device/context for GPU-to-GPU shared copy.
+    ID3D11Device* ffmpegDevice() const;
+    ID3D11DeviceContext* ffmpegContext() const;
 
 private:
     void workerLoop(FrameQueue* queue);
@@ -76,12 +75,12 @@ private:
     AVBufferRef* hwFramesCtx_ = nullptr; // HW frames context (for D3D11 mapping)
     int videoStreamIdx_ = -1;
     ID3D11Device* d3dDevice_ = nullptr;
-    ID3D11DeviceContext* deferredCtx_ = nullptr; // for zero-copy GPU copies
+    ID3D11DeviceContext* deferredCtx_ = nullptr; // for GPU-to-GPU texture copies
 
-    // Cached shared texture for D3D11VA zero-copy (avoids per-frame alloc).
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex_;  // shared output texture
-    HANDLE sharedHandle_ = nullptr;                        // shared handle (open once)
-    UINT sharedWidth_ = 0, sharedHeight_ = 0;             // detect resolution change
+    // Cached shared texture for D3D11VA (avoids per-frame alloc).
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex_;
+    HANDLE sharedHandle_ = nullptr;
+    UINT sharedWidth_ = 0, sharedHeight_ = 0;
 
     VideoMetadata metadata_;
     std::thread worker_;
