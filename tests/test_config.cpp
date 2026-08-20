@@ -38,7 +38,7 @@ TEST_CASE("config: first run writes defaults") {
     CHECK(mgr.config().gpuPauseThreshold == 90);
     CHECK(mgr.config().gpuResumeThreshold == 70);
     CHECK(mgr.config().batteryMode == vw::config::BatteryMode::Pause);
-    CHECK_FALSE(mgr.config().audio);
+    CHECK(mgr.config().audio);  // §1.8: audio enabled by default
 
     // Defaults were persisted on first run.
     CHECK(std::filesystem::exists(path));

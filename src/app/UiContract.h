@@ -155,6 +155,8 @@ struct ConfigSnapshot {
     bool loop = true;
     ScalingMode scaling = ScalingMode::Fill;
     double playbackSpeed = 1.0; // playback speed multiplier (0.25–4.0)
+    bool audio = true;
+    int volume = 80; // 0–100
     bool clone = false; // wallpaper mode: true = Clone, false = Independent
     bool startWithWindows = false, minimizeToTray = true, startMinimized = false;
     std::wstring logLevel = L"info";
@@ -175,7 +177,7 @@ enum class CommandId : uint8_t {
     PlaylistAddFiles, PlaylistAddLibraryItems, PlaylistRemoveItem, PlaylistMoveItem,
     PlaylistToggleItem, PlaylistSetItemTimes, PlaylistSetMode, PlaylistSetLoop,
     LibraryAddFiles, LibraryAddFolder, LibraryRemove, LibraryRefresh,
-    ConfigSet, ConfigExport, ConfigImport,
+    ConfigSet, ConfigExport, ConfigImport, SetAudioVolume,
     ShowUi, ToggleUi, Focus, Exit,
 };
 

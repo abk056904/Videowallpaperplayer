@@ -51,12 +51,34 @@ bool SettingsPanel::create(HWND parent) {
         ::SendMessageW(speedCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
     }
 
+    // Audio toggle
+    checkAudio_ = ctl(hwnd_, L"BUTTON", L"Enable audio", WS_VISIBLE | BS_AUTOCHECKBOX,
+                      L.x(0), L.y(4), ::MulDiv(200, L.u, 5), L.cy,
+                      reinterpret_cast<HMENU>(kCkAudio));
+
+    // Volume slider
+    ctl(hwnd_, L"STATIC", L"Volume :", WS_VISIBLE, L.x(0), L.y(5),
+        ::MulDiv(80, L.u, 5), L.cy, nullptr);
+    sliderVolume_ = ::CreateWindowExW(0, TRACKBAR_CLASS, L"",
+                                      WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS | TBS_TOOLTIPS,
+                                      L.x(0) + ::MulDiv(85, L.u, 5), L.y(5),
+                                      ::MulDiv(200, L.u, 5), L.cy, hwnd_,
+                                      reinterpret_cast<HMENU>(kSlVolume),
+                                      ::GetModuleHandleW(nullptr), nullptr);
+    ::SendMessageW(sliderVolume_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+    ::SendMessageW(sliderVolume_, TBM_SETPOS, TRUE, 80);
+    ::SendMessageW(sliderVolume_, TBM_SETTICFREQ, 10, 0);
+    volumeLabel_ = ctl(hwnd_, L"STATIC", L"80%", WS_VISIBLE,
+                       L.x(0) + ::MulDiv(290, L.u, 5), L.y(5),
+                       ::MulDiv(50, L.u, 5), L.cy, nullptr);
+    if (font_) ::SendMessageW(sliderVolume_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+
     // About section
-    aboutText_ = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, L.x(0), L.y(5),
+    aboutText_ = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, L.x(0), L.y(7),
                      ::MulDiv(420, L.u, 5), 3 * L.cy, nullptr);
 
     btnReadme_ = ctl(hwnd_, L"BUTTON", L"Open README", WS_VISIBLE | BS_PUSHBUTTON,
-                     L.x(0), L.y(8), ::MulDiv(120, L.u, 5), L.cy,
+                     L.x(0), L.y(10), ::MulDiv(120, L.u, 5), L.cy,
                      reinterpret_cast<HMENU>(kBtnReadme));
     return true;
 }
@@ -68,6 +90,11 @@ void SettingsPanel::relayout() {
 void SettingsPanel::updateFromConfig(const ConfigSnapshot& c) {
     ::SendMessageW(checkStartup_, BM_SETCHECK, c.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
     ::SendMessageW(checkTray_, BM_SETCHECK, c.minimizeToTray ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(checkAudio_, BM_SETCHECK, c.audio ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(sliderVolume_, TBM_SETPOS, TRUE, c.volume);
+    wchar_t vBuf[16];
+    std::swprintf(vBuf, 16, L"%d%%", c.volume);
+    ::SetWindowTextW(volumeLabel_, vBuf);
     int idx = 0;
     if (c.logLevel == L"debug") idx = 1;
     else if (c.logLevel == L"warn") idx = 2;
@@ -163,6 +190,16 @@ LRESULT CALLBACK SettingsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                         }
                     }
                     return 0;
+                case kCkAudio:
+                    if (code == BN_CLICKED) {
+                        Command c;
+                        c.id = CommandId::ConfigSet;
+                        c.s1 = L"audio";
+                        c.s2 = ::SendMessageW(self->checkAudio_, BM_GETCHECK, 0, 0) == BST_CHECKED
+                                   ? L"true" : L"false";
+                        self->post_(c);
+                    }
+                    return 0;
                 case kBtnReadme: {
                     wchar_t exe[MAX_PATH] = {};
                     ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -174,6 +211,20 @@ LRESULT CALLBACK SettingsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     }
                     return 0;
                 }
+            }
+            return 0;
+        }
+        case WM_HSCROLL: {
+            if (reinterpret_cast<HWND>(lParam) == self->sliderVolume_) {
+                const int pos = static_cast<int>(::SendMessageW(self->sliderVolume_, TBM_GETPOS, 0, 0));
+                wchar_t vBuf[16];
+                std::swprintf(vBuf, 16, L"%d%%", pos);
+                ::SetWindowTextW(self->volumeLabel_, vBuf);
+                Command c;
+                c.id = CommandId::ConfigSet;
+                c.s1 = L"volume";
+                c.s2 = std::to_wstring(pos);
+                self->post_(c);
             }
             return 0;
         }

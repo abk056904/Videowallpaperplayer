@@ -601,7 +601,7 @@ bool ApplicationController::startPlaylistItem(size_t index) {
     auto opened =
         playback_->open(item->path, wallpaper_ ? wallpaper_->device() : nullptr,
                         static_cast<size_t>(config_->config().frameQueue),
-                        config_->config().audio);
+                        config_->config().audio, config_->config().volume);
     if (!opened) {
         log.warn(L"playlist item {} '{}' cannot be opened: {} — marking unavailable", index,
                  item->path, opened.error());
@@ -1523,6 +1523,16 @@ void ApplicationController::applyConfigSetLive(const std::wstring& key, const st
             playback_->setPlaybackSpeed(c.playbackSpeed);
         }
         updateTrayFromState();
+    } else if (key == L"volume") {
+        if (playback_) {
+            playback_->setVolume(c.volume);
+        }
+    } else if (key == L"audio") {
+        // Audio toggle takes effect on next file open (config-driven).
+        // Live toggle: if audio is now disabled, stop the pipeline.
+        if (!c.audio && playback_) {
+            playback_->stopAudio();
+        }
     }
 }
 
@@ -1636,6 +1646,8 @@ vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
     s.config.loop = c.loop;
     s.config.scaling = static_cast<vw::ui::ScalingMode>(c.scaling);
     s.config.playbackSpeed = c.playbackSpeed;
+    s.config.audio = c.audio;
+    s.config.volume = c.volume;
     s.config.clone = c.wallpaperMode == config::WallpaperMode::Clone;
     s.config.startWithWindows = c.startWithWindows;
     s.config.minimizeToTray = c.minimizeToTray;

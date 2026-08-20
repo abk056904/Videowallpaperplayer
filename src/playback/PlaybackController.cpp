@@ -31,7 +31,7 @@ PlaybackController::~PlaybackController() {
 }
 
 Result<void> PlaybackController::open(const std::wstring& path, ID3D11Device* d3dDevice,
-                                      size_t queueCapacity, bool enableAudio) {
+                                      size_t queueCapacity, bool enableAudio, int volume) {
     stop();
     auto player = std::make_unique<video::VideoPlayer>();
     if (d3dDevice) {
@@ -56,6 +56,7 @@ Result<void> PlaybackController::open(const std::wstring& path, ID3D11Device* d3
             audioPipeline_.reset(); // Continue without audio
         } else {
             log::Logger::instance().info(L"audio pipeline initialized (enabled by config)");
+            audioPipeline_->setVolume(static_cast<float>(volume) / 100.0f * 10.0f);
         }
     }
 
@@ -282,10 +283,22 @@ void PlaybackController::setPlaybackSpeed(double speed) {
     if (speed < 0.25) speed = 0.25;
     if (speed > 4.0) speed = 4.0;
     scheduler_.setSpeed(speed);
-    // Re-arm the timer immediately so the new speed takes effect on the
-    // next wake without waiting for the old deadline to expire.
     if (state_ == State::Playing) {
         armTimer();
+    }
+}
+
+void PlaybackController::setVolume(int volume) {
+    volume = std::max(0, std::min(volume, 100));
+    if (audioPipeline_ && audioPipeline_->hasAudio()) {
+        audioPipeline_->setVolume(static_cast<float>(volume) / 100.0f * 10.0f);
+    }
+}
+
+void PlaybackController::stopAudio() {
+    if (audioPipeline_) {
+        audioPipeline_->stop();
+        audioPipeline_.reset();
     }
 }
 

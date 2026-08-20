@@ -42,7 +42,8 @@ struct Config {
     // Raised (2..16) only when a jittery source needs buffering at the cost
     // of drops + latency.
     int frameQueue = 1;
-    bool audio = false;
+    bool audio = true;    // §1.8: audio enabled by default (was false pre-v1.1)
+    int volume = 80;      // 0–100 (mapped to WASAPI 0.0–10.0 range)
     std::wstring videoPath; // M4: single clip to play (empty = none, wallpaper shows checkerboard)
     // wallpaper (M8)
     WallpaperMode wallpaperMode = WallpaperMode::Independent;

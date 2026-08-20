@@ -119,6 +119,9 @@ Result<void> AudioOutput::init(ShareMode mode, int sampleRate, int channels) {
     hr = audioClient_->GetService(IID_PPV_ARGS(&renderClient_));
     if (FAILED(hr)) return std::unexpected(L"GetService(IAudioRenderClient) failed");
 
+    // Get session volume control (ISimpleAudioVolume)
+    audioClient_->GetService(IID_PPV_ARGS(&volumeCtrl_));
+
     log.info(L"audio: initialized ({} mode, {} Hz, {} ch, {} frames = {:.1f} ms)",
              shareMode_ == ShareMode::Exclusive ? L"exclusive" : L"shared",
              sampleRate_, channels_, bufferFrameCount_,
@@ -138,6 +141,37 @@ void AudioOutput::stop() {
     if (!isPlaying_) return;
     audioClient_->Stop();
     isPlaying_ = false;
+}
+
+void AudioOutput::setVolume(float volume) {
+    if (volumeCtrl_) {
+        volume = std::max(0.0f, std::min(volume, 10.0f)); // WASAPI range: 0.0–10.0
+        volumeCtrl_->SetMasterVolume(volume, nullptr);
+    }
+}
+
+float AudioOutput::getVolume() const {
+    if (volumeCtrl_) {
+        float vol = 1.0f;
+        volumeCtrl_->GetMasterVolume(&vol);
+        return vol;
+    }
+    return 1.0f;
+}
+
+void AudioOutput::setMuted(bool muted) {
+    if (volumeCtrl_) {
+        volumeCtrl_->SetMute(muted, nullptr);
+    }
+}
+
+bool AudioOutput::isMuted() const {
+    if (volumeCtrl_) {
+        BOOL muted = FALSE;
+        volumeCtrl_->GetMute(&muted);
+        return muted != FALSE;
+    }
+    return false;
 }
 
 Result<void> AudioOutput::write(const uint8_t* data, uint32_t size) {
@@ -399,6 +433,16 @@ void AudioPipeline::resume() {
     stopRequested_ = false;
     if (output_) output_->start();
     audioThread_ = std::thread(&AudioPipeline::audioThreadFunc, this);
+}
+
+void AudioPipeline::setVolume(float volume) {
+    volume_ = std::max(0.0f, std::min(volume, 10.0f));
+    if (output_) output_->setVolume(muted_ ? 0.0f : volume_);
+}
+
+void AudioPipeline::setMuted(bool muted) {
+    muted_ = muted;
+    if (output_) output_->setMuted(muted);
 }
 
 void AudioPipeline::audioThreadFunc() {

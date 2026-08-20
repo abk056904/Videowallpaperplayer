@@ -161,6 +161,7 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
     readBool(playback, L"shuffle", cfg.shuffle, [&](bool v) { cfg.shuffle = v; });
     readBool(playback, L"loop", cfg.loop, [&](bool v) { cfg.loop = v; });
     readBool(playback, L"audio", cfg.audio, [&](bool v) { cfg.audio = v; });
+    readInt(playback, L"volume", cfg.volume, 0, 100, [&](int v) { cfg.volume = v; });
     readInt(playback, L"frameQueue", cfg.frameQueue, 1, 16, [&](int v) { cfg.frameQueue = v; });
     const auto& pathStr = playback.get(L"videoPath");
     if (pathStr.isString()) cfg.videoPath = pathStr.asString();
@@ -265,6 +266,7 @@ bool ConfigurationManager::save() {
         {L"playbackSpeed", util::Json::number(config_.playbackSpeed)},
         {L"frameQueue", util::Json::number(static_cast<double>(config_.frameQueue))},
         {L"audio", util::Json::boolean(config_.audio)},
+        {L"volume", util::Json::number(static_cast<double>(config_.volume))},
         {L"videoPath", util::Json::string(config_.videoPath)},
     };
     util::Json::Object wallpaper{
@@ -469,6 +471,8 @@ bool ConfigurationManager::applyConfigSet(Config& cfg, const std::wstring& key,
         if (ok) { cfg.mode = static_cast<PlaybackMode>(m); }
     }
     else if (k == L"loop") { ok = parseBool(cfg.loop); }
+    else if (k == L"audio") { ok = parseBool(cfg.audio); }
+    else if (k == L"volume") { ok = parseInt(cfg.volume, 0, 100); }
     else if (k == L"startwithwindows") { ok = parseBool(cfg.startWithWindows); }
     else if (k == L"minimizetotray") { ok = parseBool(cfg.minimizeToTray); }
     else if (k == L"startminimized") { ok = parseBool(cfg.startMinimized); }

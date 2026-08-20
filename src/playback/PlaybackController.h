@@ -58,7 +58,7 @@ public:
     // (nullptr = software-only); `queueCapacity` is config.playback.frameQueue;
     // `enableAudio` is config.playback.audio (default false per spec §1.8).
     Result<void> open(const std::wstring& path, ID3D11Device* d3dDevice,
-                      size_t queueCapacity, bool enableAudio = false);
+                      size_t queueCapacity, bool enableAudio = false, int volume = 80);
 
     // Starts the decode worker + pacing. Idempotent while Playing.
     Result<void> start();
@@ -88,6 +88,10 @@ public:
     // Valid range: 0.25 – 4.0. Clamped on set.
     void setPlaybackSpeed(double speed);
     double playbackSpeed() const { return scheduler_.speed(); }
+
+    // Volume control (0–100, mapped to WASAPI 0.0–10.0)
+    void setVolume(int volume);
+    void stopAudio();
 
     // ---- message-loop integration (M6) ----
     // Waitable timer armed to the next presentation deadline (valid while

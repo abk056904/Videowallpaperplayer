@@ -81,10 +81,17 @@ public:
     // Get IAudioClient for clock access
     Microsoft::WRL::ComPtr<IAudioClient> audioClient() const { return audioClient_; }
 
+    // Volume control via ISimpleAudioVolume
+    void setVolume(float volume);
+    float getVolume() const;
+    void setMuted(bool muted);
+    bool isMuted() const;
+
 private:
     Microsoft::WRL::ComPtr<IMMDevice> device_;
     Microsoft::WRL::ComPtr<IAudioClient> audioClient_;
     Microsoft::WRL::ComPtr<IAudioRenderClient> renderClient_;
+    Microsoft::WRL::ComPtr<ISimpleAudioVolume> volumeCtrl_;
 
     ShareMode shareMode_ = ShareMode::Shared;
     int sampleRate_ = 48000;
@@ -170,6 +177,12 @@ public:
     // Check if audio is available
     bool hasAudio() const { return hasAudio_; }
 
+    // Volume control (0.0 = mute, 1.0 = full, >1.0 = boost)
+    void setVolume(float volume);
+    float getVolume() const { return volume_; }
+    void setMuted(bool muted);
+    bool isMuted() const { return muted_; }
+
     // Get audio metadata
     int sampleRate() const { return decoder_ ? decoder_->sampleRate() : 0; }
     int channels() const { return decoder_ ? decoder_->channels() : 0; }
@@ -188,6 +201,8 @@ private:
     std::atomic<bool> stopRequested_{false};
     bool hasAudio_ = false;
     bool isPaused_ = false;
+    float volume_ = 1.0f;
+    bool muted_ = false;
 };
 
 } // namespace vw::audio
