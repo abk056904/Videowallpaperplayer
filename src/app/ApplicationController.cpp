@@ -19,6 +19,7 @@
 #include "playback/PlaybackController.h"
 #include "playlist/PlaylistStore.h"
 #include "util/clock.h"
+#include "util/CrashReport.h"
 #include "util/utf8.h"
 #include "video/DecodedFrame.h"
 
@@ -115,6 +116,10 @@ int ApplicationController::run() {
     }
 
     initPaths();
+
+    // Install crash reporter early (before logger) so crashes during init are captured.
+    util::CrashReport::install(appDataDir_ / L"crashes");
+
     auto& log = log::Logger::instance();
     log.init(log::Logger::Options{
         .logDir = appDataDir_ / L"logs",

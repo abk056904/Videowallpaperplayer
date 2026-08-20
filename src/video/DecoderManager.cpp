@@ -143,9 +143,11 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
         }
     }
 
-    // Enumerate all adapters. NVIDIA (VendorId 0x10DE) is prioritized because
-    // its MFT produces GPU-resident DXGI surfaces; AMD iGPU typically falls
-    // back to system-memory even with D3D11_CREATE_DEVICE_VIDEO_SUPPORT.
+    // Enumerate adapters. Try the render adapter FIRST — if its MFT
+    // produces GPU-resident DXGI surfaces, the decoded texture is already
+    // on the render device (true zero-copy). Fall back to NVIDIA/other
+    // adapters which may also produce GPU surfaces but require a GPU-to-GPU
+    // shared-handle copy to reach the render device.
     std::vector<ComPtr<ID3D11Device>> nvidiaCandidates;
     std::vector<ComPtr<ID3D11Device>> otherCandidates;
     constexpr UINT kNvidiaVendorId = 0x10DE;
@@ -157,8 +159,6 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
 
             bool isRender = (info.luid.LowPart == renderLuid.LowPart &&
                              info.luid.HighPart == renderLuid.HighPart);
-            // Skip the render adapter — we'll try it last as fallback.
-            if (isRender) continue;
 
             auto adapter = gfx::D3D11DeviceManager::getAdapter(i);
             if (!adapter) continue;
@@ -171,8 +171,11 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
                 levels, 2, D3D11_SDK_VERSION, &dev, &fl, nullptr);
             if (FAILED(hr)) continue;
 
-            if (info.vendor == kNvidiaVendorId) {
-                log.info(L"MF hardware: NVIDIA adapter found ({}), prioritized", info.description);
+            if (isRender) {
+                // Render adapter: try first for true zero-copy.
+                nvidiaCandidates.insert(nvidiaCandidates.begin(), std::move(dev));
+            } else if (info.vendor == kNvidiaVendorId) {
+                log.info(L"MF hardware: NVIDIA adapter found ({})", info.description);
                 nvidiaCandidates.push_back(std::move(dev));
             } else {
                 otherCandidates.push_back(std::move(dev));
@@ -180,12 +183,11 @@ Result<void> DecoderManager::openHardware(const std::wstring& path) {
         }
     }
 
-    // Build priority order: NVIDIA first, then other non-render adapters, render last.
+    // Build priority order: render adapter first (zero-copy), NVIDIA, then others.
     std::vector<ComPtr<ID3D11Device>> candidates;
-    candidates.reserve(nvidiaCandidates.size() + otherCandidates.size() + 1);
+    candidates.reserve(nvidiaCandidates.size() + otherCandidates.size());
     for (auto& dev : nvidiaCandidates) candidates.push_back(std::move(dev));
     for (auto& dev : otherCandidates) candidates.push_back(std::move(dev));
-    if (d3dDevice_) candidates.push_back(d3dDevice_);
 
     for (auto& dev : candidates) {
         auto result = tryHardwareWithDevice(path, dev.Get());

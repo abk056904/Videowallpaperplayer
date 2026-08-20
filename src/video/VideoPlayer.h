@@ -29,7 +29,7 @@ public:
     Result<void> open(const std::wstring& path);
     Result<void> start();
     Result<void> replay();
-    void setQueueCapacity(size_t capacity) { queueCapacity_ = capacity == 0 ? 1 : capacity; }
+    void setQueueCapacity(size_t capacity) { queueCapacity_ = capacity < 2 ? 2 : capacity; }
     void pause();
     Result<void> resume();
     void stop();
@@ -54,7 +54,7 @@ private:
     ID3D11Device* d3dDevice_ = nullptr;
     State state_ = State::Stopped;
     LONGLONG position_ = 0;
-    size_t queueCapacity_ = 1;
+    size_t queueCapacity_ = 2;
     bool opened_ = false;
 };
 
