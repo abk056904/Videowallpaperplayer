@@ -82,9 +82,13 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
     }
     log.info(L"FFmpeg: using decoder {} for D3D11VA hwaccel", vw::util::utf8ToWide(codec->name));
 
-    // Create D3D11VA hardware device. We create our own device (not the
-    // render device) to avoid cross-device sharing and threading issues.
-    // Frames are transferred to CPU/uploaded by the caller if needed.
+    // Create a dedicated D3D11 device for D3D11VA decode.
+    // Cannot wrap the render device: FFmpeg and the renderer would share
+    // the same ID3D11DeviceContext (immediate context), which is NOT
+    // thread-safe across the decode worker and render threads.  Instead,
+    // we decode on a private device and transfer to CPU as NV12 — the GPU
+    // still does the heavy bitstream decode, so this is far faster than
+    // pure software decode.
     AVBufferRef* hwDeviceCtx = nullptr;
     {
         int err = av_hwdevice_ctx_create(&hwDeviceCtx, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
@@ -95,7 +99,7 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
                      vw::util::utf8ToWide(errbuf));
             avformat_close_input(&fmtCtx); return false;
         }
-        log.info(L"FFmpeg: D3D11VA device created");
+        log.info(L"FFmpeg: D3D11VA device created (GPU decode, CPU transfer)");
     }
 
     AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
@@ -375,12 +379,11 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             }
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
-                // D3D11VA: the GPU decoded the frame (fast), but the texture
-                // lives on FFmpeg's private D3D11 device.  Transfer to a
-                // software NV12 frame so the renderer can upload it.
-                // av_hwframe_transfer_data does a GPU→CPU copy of the decoded
-                // surface — still faster than pure SW decode because the GPU
-                // does the actual H.264/HEVC bitstream parsing.
+                // D3D11VA: GPU decoded the frame (fast bitstream parse),
+                // then transfer to CPU as NV12.  The render device uploads
+                // the bytes as a texture — GPU-accelerated decode with a
+                // CPU transfer in between (not zero-copy, but still far
+                // faster than pure software decode).
                 AVFrame* swFrame = av_frame_alloc();
                 swFrame->format = AV_PIX_FMT_NV12;
                 if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {

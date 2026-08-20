@@ -883,27 +883,25 @@ Result<void> WallpaperManager::bindGpuFrame(const video::DecodedFrame& frame) {
             return std::unexpected(L"bindGpuFrame: unsupported surface format " +
                                    std::to_wstring(static_cast<int>(desc.Format)));
     }
-    // B3: cache the plane views per surface texture. The decoder hands back
-    // surfaces from its internal pool, so the same pointer recurs across
-    // frames — creating the two views once per surface (not per frame) cuts
-    // per-frame GPU resource allocation. Views are bound to the resource, not
-    // the content, so a recycled surface with new pixels needs no new views.
-    // Bounded: pooled surfaces keep the map tiny; a pathological stream that
-    // never reuses a pointer clears it past the cap (no unbounded growth).
-    auto& entry = planeSrvCache_[frame.texture.Get()];
+    // B3: cache the plane views per (texture, slice) pair. D3D11VA textures
+    // are arrays — the same texture pointer recurs across frames with
+    // different array slices. Key by (ptr, slice) so each slice gets its own
+    // cached views. Bounded: pooled surfaces keep the map tiny.
+    const PlaneSrvKey key{frame.texture.Get(), frame.textureSlice};
+    auto& entry = planeSrvCache_[key];
     if (!entry.y) {
         if (planeSrvCache_.size() > kMaxPlaneSrvCacheEntries) {
             planeSrvCache_.clear();
-            entry = planeSrvCache_[frame.texture.Get()];
+            entry = planeSrvCache_[key];
         }
         auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                        yFormat);
+                                                        yFormat, frame.textureSlice);
         if (!ySrv) {
             return std::unexpected(ySrv.error());
         }
         auto uvSrv =
             gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                uvFormat);
+                                                uvFormat, frame.textureSlice);
         if (!uvSrv) {
             return std::unexpected(uvSrv.error());
         }
@@ -941,21 +939,22 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
             return std::unexpected(L"bindGpuFrameFor: unsupported surface format " +
                                    std::to_wstring(static_cast<int>(desc.Format)));
     }
-    // B3: cached plane views per surface (see bindGpuFrame).
-    auto& entry = planeSrvCache_[frame.texture.Get()];
+    // B3: cached plane views per (texture, slice) — see bindGpuFrame.
+    const PlaneSrvKey key{frame.texture.Get(), frame.textureSlice};
+    auto& entry = planeSrvCache_[key];
     if (!entry.y) {
         if (planeSrvCache_.size() > kMaxPlaneSrvCacheEntries) {
             planeSrvCache_.clear();
-            entry = planeSrvCache_[frame.texture.Get()];
+            entry = planeSrvCache_[key];
         }
         auto ySrv = gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                        yFormat);
+                                                        yFormat, frame.textureSlice);
         if (!ySrv) {
             return std::unexpected(ySrv.error());
         }
         auto uvSrv =
             gfx::TextureManager::createPlaneSrv(deviceManager_.device(), frame.texture.Get(),
-                                                uvFormat);
+                                                uvFormat, frame.textureSlice);
         if (!uvSrv) {
             return std::unexpected(uvSrv.error());
         }

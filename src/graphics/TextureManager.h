@@ -22,8 +22,10 @@ public:
     // SRV with an explicit format over a texture — used for planar video
     // (NV12/P010) plane views: the same texture is viewed twice, once as
     // R8/R16 (Y) and once as R8G8/R16G16 (UV), per the documented pattern.
+    // arraySlice selects which element of a D3D11VA texture array to view (0 for non-array).
     static Result<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> createPlaneSrv(
-        ID3D11Device* device, ID3D11Texture2D* texture, DXGI_FORMAT format);
+        ID3D11Device* device, ID3D11Texture2D* texture, DXGI_FORMAT format,
+        UINT arraySlice = 0);
 
     // Sampler state with the given filter and clamp addressing.
     static Result<Microsoft::WRL::ComPtr<ID3D11SamplerState>> createSampler(

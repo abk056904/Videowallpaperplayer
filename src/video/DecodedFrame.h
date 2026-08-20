@@ -32,6 +32,7 @@ struct DecodedFrame {
                                 // units — for decodeLatencyMs stats (M6)
     bool endOfStream = false;   // sentinel: the source reached the end
     bool hardware = false;      // true when `texture` is the payload
+    UINT textureSlice = 0;     // D3D11VA texture array index (0 for non-array)
     bool nv12 = false;          // software path: `bytes` are NV12 (not RGB32)
 };
 

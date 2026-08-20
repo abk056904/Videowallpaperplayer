@@ -180,7 +180,17 @@ private:
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> y;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uv;
     };
-    std::unordered_map<ID3D11Texture2D*, PlaneSrvCacheEntry> planeSrvCache_;
+    // Keyed by (texture, array slice) — D3D11VA textures are arrays,
+    // so the same texture pointer is reused for different slices.
+    using PlaneSrvKey = std::pair<ID3D11Texture2D*, UINT>;
+    struct PlaneSrvKeyHash {
+        size_t operator()(const PlaneSrvKey& k) const {
+            auto h1 = std::hash<void*>()(k.first);
+            auto h2 = std::hash<UINT>()(k.second);
+            return h1 ^ (h2 << 1);
+        }
+    };
+    std::unordered_map<PlaneSrvKey, PlaneSrvCacheEntry, PlaneSrvKeyHash> planeSrvCache_;
     // M8: per-monitor upload textures for the INDEPENDENT path (each display
     // runs its own video). Keyed by stable monitor id. `srv` is the BGRA
     // software path; `ySrv`/`uvSrv` (+ `nv12`) are the NV12 software path
