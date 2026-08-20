@@ -3,8 +3,10 @@
 #include <windows.h>
 #include <commctrl.h>
 
-#include <cstdio>
+#include <cwchar>
 #include <filesystem>
+
+#include "ui/Theme.h"
 
 namespace vw::ui {
 
@@ -32,7 +34,7 @@ bool MonitorsPanel::create(HWND parent) {
     initPanelFont();
     const Layout L = Layout::from(hwnd_);
 
-    // Mode radios.
+    // Mode radios
     radioInd_ = ctl(hwnd_, L"BUTTON", L"Independent", WS_VISIBLE | BS_AUTORADIOBUTTON,
                     12, 8, ::MulDiv(120, L.u, 5), L.cy, reinterpret_cast<HMENU>(kCtlIndependent));
     radioClone_ = ctl(hwnd_, L"BUTTON", L"Clone", WS_VISIBLE | BS_AUTORADIOBUTTON,
@@ -40,7 +42,7 @@ bool MonitorsPanel::create(HWND parent) {
                       reinterpret_cast<HMENU>(kCtlClone));
     ::SendMessageW(radioInd_, BM_SETCHECK, BST_CHECKED, 0);
 
-    // Monitor list.
+    // Monitor list
     list_ = ctl(hwnd_, WC_LISTVIEW, L"", WS_VISIBLE | WS_CHILD | LVS_REPORT | LVS_SINGLESEL,
                 8, L.y(1), 500, ::MulDiv(120, L.u, 5), nullptr);
     ::SendMessageW(list_, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
@@ -54,16 +56,17 @@ bool MonitorsPanel::create(HWND parent) {
         ::SendMessageW(list_, LVM_INSERTCOLUMNW, c, reinterpret_cast<LPARAM>(&col));
     }
 
-    // Wallpaper source combo: "Playlist" + one entry per library file.
+    // Source combo
     const int row2 = L.y(3);
-    ctl(hwnd_, L"STATIC", L"Wallpaper source :", WS_VISIBLE, 12, row2, ::MulDiv(120, L.u, 5),
-        L.cy, nullptr);
+    ctl(hwnd_, L"STATIC", L"Wallpaper source :", WS_VISIBLE, 12, row2,
+        ::MulDiv(120, L.u, 5), L.cy, nullptr);
     sourceCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
                        12 + ::MulDiv(125, L.u, 5), row2, ::MulDiv(260, L.u, 5), 300,
                        reinterpret_cast<HMENU>(kCtlSourceCombo));
 
+    // Scaling combo
     const int row3 = row2 + L.cy + L.u;
-    ctl(hwnd_, L"STATIC", L"Scaling          :", WS_VISIBLE, 12, row3, ::MulDiv(120, L.u, 5),
+    ctl(hwnd_, L"STATIC", L"Scaling :", WS_VISIBLE, 12, row3, ::MulDiv(120, L.u, 5),
         L.cy, nullptr);
     scalingCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
                         12 + ::MulDiv(125, L.u, 5), row3, ::MulDiv(120, L.u, 5), 200,
@@ -73,12 +76,12 @@ bool MonitorsPanel::create(HWND parent) {
     }
     ::SendMessageW(scalingCombo_, CB_SETCURSEL, 0, 0);
 
-    // Preview area + buttons.
-    preview_ = ctl(hwnd_, L"STATIC", L"(no preview)", WS_VISIBLE | SS_CENTERIMAGE | SS_BITMAP,
+    // Preview + buttons
+    preview_ = ctl(hwnd_, L"STATIC", L"(no preview)", WS_VISIBLE | SS_CENTERIMAGE,
                    12, row3 + L.cy + L.u, ::MulDiv(320, L.u, 5), ::MulDiv(180, L.u, 5), nullptr);
     btnPreview_ = ctl(hwnd_, L"BUTTON", L"Preview", WS_VISIBLE | BS_PUSHBUTTON,
-                      12 + ::MulDiv(330, L.u, 5), row3 + L.cy + L.u, ::MulDiv(110, L.u, 5), L.cy,
-                      reinterpret_cast<HMENU>(kBtnPreview));
+                      12 + ::MulDiv(330, L.u, 5), row3 + L.cy + L.u,
+                      ::MulDiv(110, L.u, 5), L.cy, reinterpret_cast<HMENU>(kBtnPreview));
     btnSet_ = ctl(hwnd_, L"BUTTON", L"Set as wallpaper", WS_VISIBLE | BS_PUSHBUTTON,
                   12 + ::MulDiv(330, L.u, 5), row3 + L.cy + L.u + L.cy + L.u,
                   ::MulDiv(130, L.u, 5), L.cy, reinterpret_cast<HMENU>(kBtnSetWallpaper));
@@ -97,13 +100,6 @@ void MonitorsPanel::relayout() {
 void MonitorsPanel::layout(int width, int /*height*/) {
     const Layout L = Layout::from(hwnd_);
     ::MoveWindow(list_, 8, L.y(1), width - 16, ::MulDiv(120, L.u, 5), TRUE);
-    // Bottom controls were positioned at create() relative to fixed rows; the
-    // panel is large enough at the minimum window size. Stretch the preview.
-    RECT r{};
-    ::GetWindowRect(preview_, &r);
-    const int w = r.right - r.left;
-    const int h = r.bottom - r.top;
-    ::MoveWindow(preview_, 12, 8 + L.y(5), width - 40 > w ? width - 40 : w, h, TRUE);
 }
 
 void MonitorsPanel::rebuildMonitors() {
@@ -125,7 +121,7 @@ void MonitorsPanel::rebuildMonitors() {
         std::swprintf(buf, 64, L"%d Hz", m.refreshDen ? m.refreshNum / m.refreshDen : 0);
         sub.iSubItem = 2;
         ::SendMessageW(list_, LVM_SETITEMTEXTW, row, reinterpret_cast<LPARAM>(&sub));
-        std::swprintf(buf, 64, L"%ls", m.primary ? L"✔" : L"");
+        std::swprintf(buf, 64, L"%ls", m.primary ? L"\u2714" : L"");
         sub.iSubItem = 3;
         ::SendMessageW(list_, LVM_SETITEMTEXTW, row, reinterpret_cast<LPARAM>(&sub));
         ++row;
@@ -136,14 +132,11 @@ void MonitorsPanel::rebuildMonitors() {
 void MonitorsPanel::rebuildSourceCombo(const UiSnapshot& s) {
     library_ = s.libraryItems;
     ::SendMessageW(sourceCombo_, CB_RESETCONTENT, 0, 0);
-    ::SendMessageW(sourceCombo_, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(L"Playlist (default)"));
+    ::SendMessageW(sourceCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Playlist (default)"));
     for (const auto& item : library_) {
         const std::wstring name = std::filesystem::path(item.path).filename().wstring();
         ::SendMessageW(sourceCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
     }
-    // The combo row i (i>=1) maps to library_[i-1] — look up by index, never
-    // by stored pointers (library_ is reassigned on each snapshot).
     int sel = 0;
     if (source_ == WallpaperSource::File) {
         for (size_t i = 0; i < library_.size(); ++i) {
@@ -182,11 +175,7 @@ void MonitorsPanel::refreshFromSnapshot(const UiSnapshot& s) {
     }
 }
 
-void MonitorsPanel::onMonitorEvent(const MonitorEvent&) {
-    // The app re-pushes the monitor list on the next snapshot; to stay live
-    // without polling, the panel re-reads via the snapshot on open and on
-    // display change. Acceptable v1 behavior (single display here).
-}
+void MonitorsPanel::onMonitorEvent(const MonitorEvent&) {}
 
 void MonitorsPanel::onWallpaperAssignment(const WallpaperAssignmentNotification& n) {
     updateReadback(n);
@@ -212,7 +201,7 @@ void MonitorsPanel::postSourceSelection() {
 void MonitorsPanel::previewClicked() {
     Command c;
     c.id = CommandId::GrabFrameSnapshot;
-    c.s1.clear(); // primary monitor
+    c.s1.clear();
     post_(c);
 }
 
@@ -283,9 +272,8 @@ LRESULT CALLBACK MonitorsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                         Command c;
                         c.id = CommandId::SetScaling;
                         c.s1.clear();
-                        c.scaling =
-                            static_cast<ScalingMode>(
-                                ::SendMessageW(self->scalingCombo_, CB_GETCURSEL, 0, 0));
+                        c.scaling = static_cast<ScalingMode>(
+                            ::SendMessageW(self->scalingCombo_, CB_GETCURSEL, 0, 0));
                         self->post_(c);
                     }
                     return 0;

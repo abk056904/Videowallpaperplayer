@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include <windows.h>
 
@@ -15,8 +16,8 @@
 
 namespace vw::ui {
 
-// Main UI window (spec §10.1, M11): resizable (default ≈900×600, min
-// ≈720×480), PerMonitorV2 aware, a six-tab control (Home · Library ·
+// Main UI window (spec §10.1, M11): dark-mode themed, resizable (default ≈900×600,
+// min ≈720×480), PerMonitorV2 aware, a custom six-tab bar (Home · Library ·
 // Playlists · Monitors · Performance · Settings), and one Panel per tab.
 // Constructed lazily on first open; destroyed on close (the tray persists and
 // the engine keeps running). The UI is a thin client: it posts Command and
@@ -24,33 +25,26 @@ namespace vw::ui {
 class Win32UI : public INotificationSink {
 public:
     using PostFn = std::function<void(Command)>;
-    using RefreshFn = std::function<void()>; // re-pull the playlist (app-side)
-    using CloseFn = std::function<void()>;   // app decides hide vs destroy
+    using RefreshFn = std::function<void()>;
+    using CloseFn = std::function<void()>;
 
     Win32UI(PostFn post, RefreshFn refreshPlaylist, LibraryPanel::MetadataRequestFn requestMeta);
 
-    // Lazily creates the window + panels. Returns false only on create failure.
     bool create();
-    void show();   // create if needed, show + focus
+    void show();
     void hide();
     void toggle();
-    // Destroys the window + panels (engine + tray continue). Idempotent.
     void destroy();
     bool isVisible() const { return visible_; }
     bool exists() const { return hwnd_ != nullptr; }
-    // Message boxes / owner windows (spec §10.9: errors surfaced to the user).
     HWND hwnd() const { return hwnd_; }
     void selectTab(int tabIndex);
     void setOnClose(CloseFn fn) { onClose_ = std::move(fn); }
 
-    // Delivers a GRAB_FRAME_SNAPSHOT result (HBITMAP ownership transfers to
-    // the Monitors panel, which deletes it on replacement/destroy).
     void showFrameSnapshot(HBITMAP bitmap);
-
-    // Pull-on-open: gives every panel immediate values before the first push.
     void refreshFromSnapshot(const UiSnapshot&);
 
-    // INotificationSink — routes to the owning panels.
+    // INotificationSink
     void onTelemetry(const TelemetrySnapshot&) override;
     void onPlaybackState(const PlaybackStateNotification&) override;
     void onMonitorEvent(const MonitorEvent&) override;
@@ -65,14 +59,28 @@ private:
     void layout(int width, int height);
     void showTab(int index);
 
+    // Custom tab bar painting
+    void paintTabBar(HDC hdc, int width);
+    int tabHitTest(int x, int y) const;
+    RECT tabRect(int index) const;
+
     PostFn post_;
     RefreshFn refreshPlaylist_;
     CloseFn onClose_;
     HWND hwnd_ = nullptr;
-    HWND tabs_ = nullptr;
     bool visible_ = false;
     int currentTab_ = 0;
+    int hoverTab_ = -1;
 
+    // Fonts
+    HFONT fontTab_ = nullptr;
+    HFONT fontPanel_ = nullptr;
+
+    // Tab names
+    static constexpr int kTabCount = 6;
+    static const wchar_t* kTabNames[kTabCount];
+
+    // Panels
     std::unique_ptr<HomePanel> home_;
     std::unique_ptr<LibraryPanel> library_;
     std::unique_ptr<PlaylistsPanel> playlists_;

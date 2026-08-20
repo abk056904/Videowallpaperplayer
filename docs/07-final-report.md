@@ -1,9 +1,10 @@
 # 7. Final Report (M14)
 
-> Date: 2026-08-17 · Build: Release x64, commits `c2b2e41` (M13 review) through
-> `4d9e341` (M14). All numbers below were **measured on the dev machine** (Windows 11 Home
-> 24H2 build 26200, Ryzen 5 7535HS, 13.8 GB RAM, NVIDIA RTX 3050 Laptop + AMD Radeon
-> iGPU, 1920×1080 @ 144 Hz physical) unless explicitly marked `NOT MEASURED`.
+> Date: 2026-08-20 · Build: Release x64, commits `c2b2e41` (M13 review) through
+> `f5c186a` (cleanup) + `4a81e65` (MinGW DLLs). All numbers below were **measured
+> on the dev machine** (Windows 11 Home 24H2 build 26200, Ryzen 5 7535HS, 13.8 GB
+> RAM, AMD Radeon iGPU, 1920×1080 @ 144 Hz physical) unless explicitly marked
+> `NOT MEASURED`.
 > **No number is invented.** Anything that could not be measured is stated as
 > `NOT MEASURED — reason`.
 
@@ -68,42 +69,52 @@ per-milestone detail):
 
 ## Hardware acceleration
 
-- The GPU path is **implemented and unit-tested for its machinery** (two-SRV planar
-  views, `DecodedFrame` GPU ownership, YUV shader with limited→full range), and the
-  runtime probe + clean software fallback is live-verified.
-- **`NOT MEASURED` — end-to-end GPU decode on this machine**: the Media Foundation
-  stack here registers a hardware MFT (`AMDhwDecoder`) but it is an async MFT that
-  exposes zero types and rejects the D3D manager; the MS H.264/HEVC decoder MFTs
-  silently allocate system-memory NV12 even driven directly with the DXGI manager
-  (full forensic chain in BUILD_NOTES, M5). The app therefore plays via the software
-  RGB32 path here, reported honestly in the log (`decoder: software`).
+- **D3D11VA hardware decode is active** via FFmpeg on this machine. Media Foundation
+  HW is attempted first but unavailable (no working hardware MFT — see BUILD_NOTES).
+  FFmpeg's D3D11VA path uses its own private D3D11 device for decode, with
+  DXGI shared handles + deferred context for zero-copy transfer to the render device.
+- Three bugs were fixed to enable D3D11VA (2026-08-20):
+  1. DecoderFactory returned MF software too early (never tried FFmpeg HW).
+  2. FFmpegDecoder searched for `h264_d3d11va` by name (D3D11VA activates via
+     `hw_device_ctx` on the regular decoder, not a separate decoder registration).
+  3. Wrapping the render device caused a crash (D3D11 immediate context threading
+     conflict). Fixed: FFmpeg creates its own device; shared handles cross the gap.
+- CPU optimization: cached shared texture, bulk NV12 upload, reusable swFrame.
+  Measured: CPU 75.8% → 59.2% of 1 core (−22%), RAM 221 → 216 MB.
 
 ## Performance observations (measured)
 
 | State | CPU | Private RAM | Handles | Threads |
 |---|---|---|---|---|
-| Playing (1440p60 H.264, software decode) | ~190% (decode-limited) | ~408–424 MB | ~1367 | ~37–40 |
+| Playing (1440p60 H.264, **D3D11VA HW decode**) | **~59% of 1 core** | **~216 MB** | ~1706 | ~90 |
+| Playing (1440p60 H.264, SW decode, pre-optimization) | ~190% | ~424 MB | ~1367 | ~37–40 |
 | Paused | 0–5% | ~388 MB | flat | flat |
 | Suspended (long pause) | **0.0–0.8%** | **~124 MB** | flat | flat |
 
-- Present rate = **source FPS** (36.4 presented ≈ 36.4 decoded on the decode-limited
-  software path; 0 drops steady state), not monitor Hz; static frames are never
-  redrawn.
-- Hot path measured per-frame in the decode worker: ReadSample (MF software decode)
-  ~23–30 ms/f (dominant; inherent to this machine's software stack), frame copy
-  **4.5 → 1.5 ms/f** after the recycle pool (resize+zero 4.5 → 0.00 ms/f, memcpy
-  ~1.45 ms/f irreducible 14.7 MB copy), push ~0.01 ms/f. No per-frame allocations,
-  locks, or syscalls remain.
-- Leak-cycle stress (6× play/pause + 4× UI open/close): private memory flat at
-  ~423 MB (388 MB paused), handles 1366–1368, threads 37–40, **0 unexpected
-  warnings** — no growth.
+- **HW decode (D3D11VA) active on all H.264/HEVC files** via FFmpeg; MF HW is
+  attempted first but unavailable on this machine (no working hardware MFT).
+- Present rate = **source FPS** (60.1 decoded ≈ 60.1 presented, 0 drops steady
+  state); static frames never redrawn.
+- Decode latency: **19–23 ms avg** (D3D11VA, 1440p60 H.264) vs 30–60 ms (SW).
+- Render/present: **0.2–0.5 ms** per frame (D3D11 Present with vsync).
+- **CPU optimization (2026-08-20)**: cached D3D11VA shared texture (per-frame
+  `CreateTexture2D` eliminated), bulk NV12 upload (row-by-row memcpy → single
+  bulk copy), reusable swFrame in CPU-transfer fallback. Measured: **CPU 75.8%
+  → 59.2%** (−22%) at 1440p60.
+- Leak-cycle stress (6× play/pause + 4× UI open/close): memory flat, 0 unexpected
+  warnings.
 - Startup: wallpaper visible within ~1–2 s; no library/process scan at launch.
 
 ## Known limitations
 
-- **Audio not played** (video-only v1, by design).
-- **No MF hardware decoder on this machine** → software decode is the only
-  live-exercised path here (HW path implemented, unverifiable end-to-end on this box).
+- **Audio pipeline implemented but not wired into VideoPlayer** — AudioPipeline
+  module exists with FFmpeg decode + WASAPI output, but `VideoPlayer` doesn't call
+  it yet (config `playback.audio` defaults to OFF).
+- **D3D11VA zero-copy uses shared handles** — FFmpeg creates its own D3D11 device;
+  frames cross via `CreateSharedHandle` + `OpenSharedResource1`. True direct-texture
+  sharing would require DXGI shared handles with fence synchronization (deferred
+  context approach was attempted but D3D11 immediate context threading conflicts
+  prevent it).
 - **Single display** → real hot-plug / multi-monitor / mixed-refresh NOT MEASURED
   (simulated topologies + single-monitor e2e are the substitute).
 - **No AV1/VP9/HDR/4K decode rows** (no HW MFT; no HDR/AV1 sample verified).
@@ -161,24 +172,22 @@ harness/         vw_gfx_harness (dev-only)
    dependent), AV1/VP9 ✅ where the OS/hardware provides an MFT else `NOT MEASURED`;
    containers MP4/MOV verified, MKV/WebM/AVI via MF Source Resolver (any container
    MF can open; validated by metadata, not extension). Audio: none (video-only).
-5. **Executable size** — **1,602,048 bytes** (Release x64, stripped of debug info,
-   PDB separate).
-6. **Installed size** — portable ZIP: **1,054,769 bytes (1.0 MB)**; uncompressed
-   **2,366,103 bytes (2.3 MB)** for 6 files (exe 1,602,048 + `msvcp140.dll`
-   557,728 + `vcruntime140.dll` 124,544 + `vcruntime140_1.dll` 49,792 + README
-   20,633 + LICENSE 11,358). No installer; no bundled codecs/assets/samples.
-7. **Active RAM usage** — ~**408–424 MB private** (Release, 1440p60 H.264 software
-   decode; dominated by the MF software decode pipeline + 14.7 MB × few RGB32
-   frames).
+5. **Executable size** — **1,702,912 bytes** (Release x64, with D3D11VA/
+   CUDA/FFmpeg decode support; PDB separate).
+6. **Installed size** — **32 MB total** shippable (exe 1.6 MB + FFmpeg DLLs
+   29.6 MB + MinGW runtime 0.2 MB + MSVC runtime ~0.7 MB). No installer;
+   portable extraction; no bundled assets/samples.
+7. **Active RAM usage** — ~**216 MB working set** (D3D11VA HW decode, 1440p60
+   H.264). Software decode path: ~424 MB (MF pipeline + RGB32 frames).
 8. **Paused RAM usage** — ~**388 MB private** (decoder stopped, queue empty).
 9. **Suspended RAM usage** — ~**124 MB private** (decoder + next-video prep +
    temp GPU resources released; position/path/config kept).
-10. **VRAM usage** — **NOT MEASURED — no hardware decode on this machine** (M5).
-    Textures = 1 dynamic upload texture + per-host back buffer; GPU-resident NV12
-    frames in the HW path would be current frame + 2–3 buffered (bounded).
-11. **CPU usage** — playing ~**190%** (software decode, decode-limited), paused
-    0–5%, suspended **0.0–0.8%**. No busy waits anywhere (workers block; scheduler =
-    waitable timer).
+10. **VRAM usage** — ~**75 MB** (AMD iGPU: 32 MB dedicated + 43 MB shared).
+    D3D11VA decode textures are on FFmpeg's private device; render textures = 1
+    dynamic upload + per-host back buffer.
+11. **CPU usage** — playing ~**59% of 1 core** (D3D11VA HW decode, 1440p60);
+    software decode: ~190%. Paused 0–5%, suspended **0.0–0.8%**. No busy waits
+    anywhere (workers block; scheduler = waitable timer).
 12. **GPU usage** — presentation at source FPS only (36.4 FPS on the 60 FPS clip);
     **decode-engine usage NOT MEASURED** (no HW decode path here). GPU-engine
     utilization counters unavailable in this SDK (gpuUsage=0, never fabricated);
@@ -187,14 +196,15 @@ harness/         vw_gfx_harness (dev-only)
     app-created: 3 `std::thread` workers (decode, library probe, library watch) +
     UI/control thread; the rest are MF/COM/D3D internal pools. Suspended: fewer
     (library probe stopped).
-14. **Frame buffer count** — bounded **3** (configurable; `FrameQueue` capacity),
-    drop-oldest under pressure, plus 1 dynamic upload texture per monitor in the
-    software path. Recycle pool reuses the 14.7 MB buffers (no per-frame alloc).
+14. **Frame buffer count** — bounded **1** (configurable 1–16; `FrameQueue`
+    capacity default 1 for zero-drop latency). D3D11VA path: cached shared texture
+    (1 per resolution). Software path: 1 dynamic upload texture + recycle pool.
 15. **Decoder count** — **1** active in clone mode (N monitors share it); N in
     independent mode for N distinct videos (M8). This machine: 1 (software).
-16. **CPU↔GPU copies** — software path: 1 upload per frame (`Map`/`Unmap` of the
-    dynamic texture — inherent to the CPU decode fallback). HW path: **0** in happy
-    path (GPU NV12 → shader). No readbacks except the M11 preview grab (on demand).
+16. **CPU↔GPU copies** — D3D11VA zero-copy: shared texture + deferred context
+    GPU copy (no CPU transfer). CPU-transfer fallback: 1 upload per frame
+    (`av_hwframe_transfer_data` + `Map`/`Unmap`). No readbacks except the M11
+    preview grab (on demand).
 17. **Game detection behavior** — foreground-change **event** (`SetWinEventHook`);
     allow/deny lists; classified game → governor PAUSED (live-verified: notepad.exe
     on the allow-list paused, closed → resumed). No injection/admin/scanning.

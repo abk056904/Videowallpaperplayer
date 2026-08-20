@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <commctrl.h>
 
-#include <cstdio>
+#include <cwchar>
 #include <vector>
 
 namespace vw::ui {

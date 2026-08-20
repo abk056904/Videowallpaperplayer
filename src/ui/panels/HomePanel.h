@@ -6,8 +6,7 @@ namespace vw::ui {
 
 // Home panel (spec §10.2): status readouts refreshed at 1–2 Hz from the
 // telemetry + playback-state pushes, plus Pause/Resume/Next/Previous buttons
-// that post commands. One STATIC per row (label + value composed on update)
-// keeps the control count small — cheap to update and to leak-check.
+// that post commands. Modern card-based layout with dark theme.
 class HomePanel : public Panel {
 public:
     explicit HomePanel(PostFn post) : Panel(std::move(post)) {}
@@ -24,8 +23,8 @@ private:
     void layout(int width);
     void updateRows();
 
-    enum Row : int { kRowWallpaper = 0, kRowState, kRowMonitor, kRowFps, kRowLatency,
-                     kRowDecoder, kRowAdapter, kRowWorkload, kRowCount };
+    enum Row : int { kRowWallpaper = 0, kRowState, kRowMonitor, kRowFps, kRowDecoder,
+                     kRowAdapter, kRowWorkload, kRowLatency, kRowCount };
     enum Btn : UINT { kBtnPause = 101, kBtnNext = 102, kBtnPrev = 103 };
 
     HWND rows_[kRowCount] = {};

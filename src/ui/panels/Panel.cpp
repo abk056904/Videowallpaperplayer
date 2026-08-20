@@ -1,7 +1,6 @@
 #include "ui/panels/Panel.h"
 
-#include <cstdio>
-#include <cwchar>
+#include "ui/Theme.h"
 
 namespace vw::ui {
 
@@ -9,17 +8,13 @@ Panel::Layout Panel::Layout::from(HWND hwnd) {
     Layout out;
     const UINT dpi = ::GetDpiForWindow(hwnd);
     out.u = ::MulDiv(5, dpi, 96);
-    out.cy = ::MulDiv(24, dpi, 96);
+    out.cy = ::MulDiv(28, dpi, 96);  // slightly taller for modern look
     return out;
 }
 
 void Panel::initPanelFont() {
     dpi_ = static_cast<int>(::GetDpiForWindow(hwnd_));
-    // Segoe UI 9pt scaled to the monitor DPI (per-monitor DPI aware app).
-    const int px = -::MulDiv(9, dpi_, 72);
-    font_ = ::CreateFontW(px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                          DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    font_ = theme::createFont(dpi_);
 }
 
 HWND Panel::ctl(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y,
@@ -44,6 +39,7 @@ HWND createPanelWindow(HWND parent, const wchar_t* cls, WNDPROC wndProc, void* u
     wc.lpfnWndProc = wndProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = ::CreateSolidBrush(theme::kBgSurface);
     wc.lpszClassName = cls;
     ::RegisterClassExW(&wc);
     return ::CreateWindowExW(0, cls, L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, parent, nullptr,
@@ -54,7 +50,7 @@ void makeButtons(HWND parent, HFONT font,
                  const std::vector<std::pair<UINT, std::wstring>>& items, std::vector<HWND>& out,
                  int y, int u, int cy) {
     int x = 8;
-    const int bw = ::MulDiv(110, u, 5);
+    const int bw = ::MulDiv(120, u, 5);
     for (const auto& [id, text] : items) {
         HWND b = ::CreateWindowExW(0, L"BUTTON", text.c_str(),
                                    WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, x, y, bw, cy, parent,

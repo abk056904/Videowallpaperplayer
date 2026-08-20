@@ -6,7 +6,6 @@
 #include <shlobj.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <cwchar>
 
 namespace vw::ui {

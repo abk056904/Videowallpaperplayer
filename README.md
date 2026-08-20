@@ -91,7 +91,7 @@ Key components (all under `src/`):
 | `video/FFmpegDecoder` | FFmpeg decode backend: D3D11VA (zero-copy), CUDA (→D3D11 map), or software (NV12/BGRA) |
 | `video/DecoderManager` | Media Foundation source reader; hardware (DXGI) path with honest software fallback |
 | `video/VideoPlayer` | Session lifecycle: open → decode → close; replay; metadata; EOS handling |
-| `video/FrameQueue` | Bounded queue (default 3), drop-oldest, buffer recycle pool |
+| `video/FrameQueue` | Bounded queue (default 1, configurable), drop-oldest, buffer recycle pool |
 | `playback/FrameScheduler` | Source-FPS pacing via QPC + waitable timer; no busy loop |
 | `playback/PlaybackController` | Owns player + scheduler + queue; stats feed; pause/resume/stop/replay |
 | `playlist/PlaylistManager` | Items, modes (single/sequential/loop/shuffle), persistence, next-video prep |
@@ -114,9 +114,9 @@ Key components (all under `src/`):
 - **GPU with Direct3D 11.1** (feature level 11_1 or 11_0).
 - **No runtime frameworks** — only the OS and the MSVC runtime DLLs
   (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`).
-- ~1–2 MB disk, ~1.6 MB executable.
-- Optional: a hardware video decoder (H.264/HEVC) via Media Foundation; the app
-  detects it honestly and falls back to software decode when absent.
+- ~32 MB total (1.6 MB exe + FFmpeg DLLs + runtime DLLs).
+- D3D11VA hardware decode for H.264/HEVC (via FFmpeg); falls back to software
+  when GPU decode is unavailable.
 
 ## Build instructions
 

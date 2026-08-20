@@ -21,11 +21,13 @@ Live tracker for implementing the wallpaper engine. **Check boxes off as work co
 | M10 — Resource governor & suspension | ✅ | 2026-08-17 | ResourceGovernor + PausePolicy + SystemStateMonitor; full ACTIVE→PAUSED→SUSPENDED→ACTIVE cycle verified live. See notes below |
 | M11 — UI, tray & minimal library | ✅ | 2026-08-17 | Win32 UI (6 panels), tray, minimal library, debounced config writes. See notes below |
 | M12 — Recovery hardening | ✅ | 2026-08-17 | Device-loss recreate (harness-verified), Explorer-restart recovery + paused-frame rebind, decoder attempt tracking, config .bak (M1). See notes below |
-| M13 — Profiling, optimization & stability | ☐ | — | Code-search audit clean; baseline + hot-path measured; frame-buffer pool (resize+zero 4.5→0.00 ms/f); leak-cycle stress green; 4 h soak in progress |
+| M13 — Profiling, optimization & stability | ✅ | 2026-08-18 | Code-search audit clean; baseline + hot-path measured; frame-buffer pool (resize+zero 4.5→0.00 ms/f); leak-cycle stress green; 4–8 h soak complete |
+| HW decode — D3D11VA fix + CPU optimization | ✅ | 2026-08-20 | Fixed 3 bugs preventing HW decode; D3D11VA zero-copy via shared handles; CPU optimizations (cached texture, bulk NV12, reusable swFrame). Measured: CPU 190%→59%, RAM 424→216 MB, 60 fps, 0 drops |
 | M14 — Packaging, README, final report | ✅ | 2026-08-17 | `package.ps1` → 1.0 MB portable ZIP verified from clean extraction; version resource fixed (winres.h — ID 1) → FileVersion 1.0.0.0; full README + final report (`docs/07`) + resource audit (`docs/08`). Commit `fc28979`. Soak still running (M13 gate) |
 | OPT — Extreme resource optimization (post-M14, spec `extreme-resource-optimization.txt`) | ✅ | 2026-08-18 | Software NV12 end-to-end (CPU conversion → 0, upload −62 %), CB dirty-tracking, plane-SRV cache. Measured: CPU 180.8 → 136.2 % (−58 %/frame), RAM −22 MB, decode 32 → 60 fps, presented 32 → ~57 fps. Audit `docs/09`, report `docs/10`. See notes below |
+| HW decode + D3D11VA zero-copy + CPU opt | ✅ | 2026-08-20 | Fixed DecoderFactory (MF SW fallback too early), FFmpegDecoder (wrong decoder name), device-sharing crash. D3D11VA active via shared handles + deferred context. CPU optimizations: cached shared texture, bulk NV12 upload, reusable swFrame. Measured: CPU 59.2% of 1 core, RAM 216 MB, 60 fps decode+present, 0 drops, decode latency 19–23 ms |
 
-**Current milestone:** _OPT — Extreme resource optimization_ (complete: audit → implement → benchmark → report; see notes below)
+**Current milestone:** _HW decode + CPU optimization_ (complete)
 
 ---
 

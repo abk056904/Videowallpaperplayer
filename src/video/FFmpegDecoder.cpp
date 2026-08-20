@@ -312,6 +312,9 @@ void FFmpegDecoder::close() {
     if (hwFramesCtx_) { av_buffer_unref(&hwFramesCtx_); hwFramesCtx_ = nullptr; }
     if (hwCtx_) { av_buffer_unref(&hwCtx_); hwCtx_ = nullptr; }
     if (deferredCtx_) { deferredCtx_->Release(); deferredCtx_ = nullptr; }
+    sharedTex_.Reset();
+    if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
+    sharedWidth_ = sharedHeight_ = 0;
     videoStreamIdx_ = -1;
     hardware_ = false;
     decoderName_.clear();
@@ -396,9 +399,8 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
                 // D3D11VA: try zero-copy via deferred context + shared handle.
-                // avcodec_receive_frame has returned — FFmpeg is done with
-                // the immediate context.  Record CopySubresourceRegion on a
-                // deferred context, then ExecuteCommandLists in one atomic call.
+                // The shared texture + handle are cached — only recreated on
+                // resolution change (avoiding per-frame CreateTexture2D overhead).
                 bool zeroCopyDone = false;
                 auto* desc = reinterpret_cast<AVD3D11FrameDescriptor*>(frame_->data[0]);
                 ID3D11Device* ffmpegDev = ffmpegDevice();
@@ -406,73 +408,90 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                 if (desc && desc->texture && ffmpegDev && ffmpegCtx && deferredCtx_) {
                     D3D11_TEXTURE2D_DESC srcDesc{};
                     desc->texture->GetDesc(&srcDesc);
-                    D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
-                    sharedDesc.Usage = D3D11_USAGE_DEFAULT;
-                    sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                    sharedDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-                    Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex;
-                    HRESULT hr = ffmpegDev->CreateTexture2D(&sharedDesc, nullptr, &sharedTex);
-                    if (SUCCEEDED(hr)) {
+                    // Recreate the cached shared texture only on resolution change.
+                    if (!sharedTex_ || sharedWidth_ != srcDesc.Width || sharedHeight_ != srcDesc.Height) {
+                        sharedTex_.Reset();
+                        if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
+                        D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
+                        sharedDesc.Usage = D3D11_USAGE_DEFAULT;
+                        sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                        sharedDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+                        HRESULT hr = ffmpegDev->CreateTexture2D(&sharedDesc, nullptr, &sharedTex_);
+                        if (FAILED(hr)) { sharedTex_.Reset(); }
+                        else {
+                            Microsoft::WRL::ComPtr<IDXGIResource1> dxgiRes;
+                            hr = sharedTex_.As(&dxgiRes);
+                            if (SUCCEEDED(hr)) {
+                                hr = dxgiRes->CreateSharedHandle(
+                                    nullptr,
+                                    DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                    nullptr, &sharedHandle_);
+                                if (FAILED(hr)) { sharedTex_.Reset(); sharedHandle_ = nullptr; }
+                                else { sharedWidth_ = srcDesc.Width; sharedHeight_ = srcDesc.Height; }
+                            }
+                        }
+                    }
+                    if (sharedTex_ && sharedHandle_) {
                         const UINT slice = static_cast<UINT>(desc->index);
                         if (srcDesc.ArraySize > 1) {
                             D3D11_BOX box{};
                             box.left = 0; box.top = 0; box.front = 0;
                             box.right = srcDesc.Width; box.bottom = srcDesc.Height; box.back = 1;
                             deferredCtx_->CopySubresourceRegion(
-                                sharedTex.Get(), slice, 0, 0, 0,
+                                sharedTex_.Get(), slice, 0, 0, 0,
                                 desc->texture, slice, &box);
                         } else {
                             deferredCtx_->CopySubresourceRegion(
-                                sharedTex.Get(), 0, 0, 0, 0,
+                                sharedTex_.Get(), 0, 0, 0, 0,
                                 desc->texture, 0, nullptr);
                         }
                         Microsoft::WRL::ComPtr<ID3D11CommandList> cmdList;
-                        hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
+                        HRESULT hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
                         if (SUCCEEDED(hr) && cmdList) {
                             ffmpegCtx->ExecuteCommandList(cmdList.Get(), FALSE);
-                            Microsoft::WRL::ComPtr<IDXGIResource1> dxgiRes;
-                            hr = sharedTex.As(&dxgiRes);
-                            if (SUCCEEDED(hr)) {
-                                HANDLE handle = nullptr;
-                                hr = dxgiRes->CreateSharedHandle(
-                                    nullptr,
-                                    DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                    nullptr, &handle);
-                                if (SUCCEEDED(hr) && handle) {
-                                    df.sharedHandle = handle;
-                                    df.hardware = true;
-                                    df.textureSlice = slice;
-                                    zeroCopyDone = true;
-                                }
-                            }
+                            df.sharedHandle = sharedHandle_;
+                            df.hardware = true;
+                            df.textureSlice = slice;
+                            zeroCopyDone = true;
                         }
                     }
                 }
                 if (!zeroCopyDone) {
                     // Fallback: GPU decode + CPU transfer.
-                    AVFrame* swFrame = av_frame_alloc();
+                    static thread_local AVFrame* swFrame = nullptr;
+                    if (!swFrame) swFrame = av_frame_alloc();
                     swFrame->format = AV_PIX_FMT_NV12;
                     if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
                         df.nv12 = true;
-                        uint32_t w = swFrame->width;
-                        uint32_t h = swFrame->height;
-                        uint32_t ySize = w * h;
-                        uint32_t uvSize = w * (h / 2);
+                        const uint32_t w = swFrame->width;
+                        const uint32_t h = swFrame->height;
+                        const uint32_t ySize = w * h;
+                        const uint32_t uvSize = w * (h / 2);
                         df.bytes.resize(ySize + uvSize);
-                        for (uint32_t y = 0; y < h; ++y)
-                            std::memcpy(df.bytes.data() + y * w,
-                                        swFrame->data[0] + y * swFrame->linesize[0], w);
+                        // Bulk copy when linesize matches width (no padding).
+                        const bool yBulk = (swFrame->linesize[0] == w);
+                        const bool uvBulk = (swFrame->linesize[1] == w);
+                        if (yBulk) {
+                            std::memcpy(df.bytes.data(), swFrame->data[0], ySize);
+                        } else {
+                            for (uint32_t y = 0; y < h; ++y)
+                                std::memcpy(df.bytes.data() + y * w,
+                                            swFrame->data[0] + y * swFrame->linesize[0], w);
+                        }
                         uint8_t* uvDst = df.bytes.data() + ySize;
-                        for (uint32_t y = 0; y < h / 2; ++y)
-                            std::memcpy(uvDst + y * w,
-                                        swFrame->data[1] + y * swFrame->linesize[1], w);
+                        if (uvBulk) {
+                            std::memcpy(uvDst, swFrame->data[1], uvSize);
+                        } else {
+                            for (uint32_t y = 0; y < h / 2; ++y)
+                                std::memcpy(uvDst + y * w,
+                                            swFrame->data[1] + y * swFrame->linesize[1], w);
+                        }
                     } else {
                         log.warn(L"FFmpeg: D3D11VA frame transfer failed");
-                        av_frame_free(&swFrame);
                         av_frame_unref(frame_);
                         continue;
                     }
-                    av_frame_free(&swFrame);
+                    av_frame_unref(swFrame); // reuse static frame; don't free
                 }
             } else if (hardware_ && frame_->format == AV_PIX_FMT_CUDA) {
                 // CUDA -> D3D11 zero-copy: map CUDA frame to D3D11 texture.

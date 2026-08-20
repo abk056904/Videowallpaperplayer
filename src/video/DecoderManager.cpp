@@ -1,6 +1,6 @@
 #include "video/DecoderManager.h"
 
-#include <cstdio>
+#include <cwchar>
 #include <cstring>
 
 #include <mfapi.h>

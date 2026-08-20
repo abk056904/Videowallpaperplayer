@@ -1,12 +1,18 @@
 #include "ui/Win32UI.h"
 
 #include <commctrl.h>
+#include <dwmapi.h>
 
 #include "logging/Logger.h"
+#include "ui/Theme.h"
+
+#pragma comment(lib, "dwmapi.lib")
 
 namespace vw::ui {
 
 const wchar_t* Win32UI::kClassName = L"VideoWallpaper.MainWindow";
+const wchar_t* Win32UI::kTabNames[] = {L"Home", L"Library", L"Playlists",
+                                        L"Monitors", L"Performance", L"Settings"};
 
 Win32UI::Win32UI(PostFn post, RefreshFn refreshPlaylist,
                  LibraryPanel::MetadataRequestFn requestMeta)
@@ -29,41 +35,48 @@ bool Win32UI::create() {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &Win32UI::wndProc;
     wc.hInstance = inst;
-    wc.hIcon = ::LoadIconW(inst, MAKEINTRESOURCEW(101)); // IDI_APP_ICON
+    wc.hIcon = ::LoadIconW(inst, MAKEINTRESOURCEW(101));
     wc.hIconSm = wc.hIcon;
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kClassName;
+    wc.hbrBackground = ::CreateSolidBrush(theme::kBgBase);
     ::RegisterClassExW(&wc);
 
     const int dpi = static_cast<int>(::GetDpiForSystem());
-    hwnd_ = ::CreateWindowExW(0, kClassName, L"Video Wallpaper", WS_OVERLAPPEDWINDOW,
+    hwnd_ = ::CreateWindowExW(0, kClassName, L"Video Wallpaper",
+                              WS_OVERLAPPEDWINDOW,
                               CW_USEDEFAULT, CW_USEDEFAULT,
-                              ::MulDiv(900, dpi, 96), ::MulDiv(600, dpi, 96), nullptr, nullptr,
-                              inst, this);
+                              ::MulDiv(900, dpi, 96), ::MulDiv(600, dpi, 96),
+                              nullptr, nullptr, inst, this);
     if (!hwnd_) {
-        log::Logger::instance().error(L"ui: main window creation failed ({})", ::GetLastError());
+        log::Logger::instance().error(L"ui: main window creation failed ({})",
+                                      ::GetLastError());
         return false;
     }
 
-    // Tab control with six tabs.
-    tabs_ = ::CreateWindowExW(0, WC_TABCONTROL, L"",
-                              WS_CHILD | WS_VISIBLE | TCS_FIXEDWIDTH, 0, 0, 0, 0, hwnd_, nullptr,
-                              inst, nullptr);
-    ::SendMessageW(tabs_, WM_SETFONT, reinterpret_cast<WPARAM>(::GetStockObject(DEFAULT_GUI_FONT)),
-                   TRUE);
-    const wchar_t* titles[] = {L"Home", L"Library", L"Playlists", L"Monitors",
-                               L"Performance", L"Settings"};
-    TCITEMW item{};
-    item.mask = TCIF_TEXT;
-    for (int i = 0; i < 6; ++i) {
-        item.pszText = const_cast<wchar_t*>(titles[i]);
-        ::SendMessageW(tabs_, TCM_INSERTITEMW, i, reinterpret_cast<LPARAM>(&item));
-    }
+    // Enable dark mode title bar (Windows 10 1903+)
+    BOOL darkMode = TRUE;
+    ::DwmSetWindowAttribute(hwnd_, 19 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/,
+                            &darkMode, sizeof(darkMode));
+    // Dark menu/title bar caption
+    BOOL darkCaption = TRUE;
+    ::DwmSetWindowAttribute(hwnd_, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE (v2)*/,
+                            &darkCaption, sizeof(darkCaption));
 
-    // Panels (children of the main window, below the tab control).
-    const Panel* panels[] = {home_.get(), library_.get(), playlists_.get(), monitors_.get(),
-                             performance_.get(), settings_.get()};
-    for (const Panel* p : panels) {
+    // Create fonts
+    fontTab_ = theme::createFontBold(dpi);
+    fontPanel_ = theme::createFont(dpi);
+
+    // Initialize common controls for ListView, ComboBox, etc.
+    INITCOMMONCONTROLSEX icc{};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_TAB_CLASSES;
+    ::InitCommonControlsEx(&icc);
+
+    // Create panels (children of main window, positioned below tab bar)
+    Panel* panels[] = {home_.get(), library_.get(), playlists_.get(),
+                       monitors_.get(), performance_.get(), settings_.get()};
+    for (Panel* p : panels) {
         const_cast<Panel*>(p)->create(hwnd_);
     }
     showTab(0);
@@ -71,40 +84,195 @@ bool Win32UI::create() {
 }
 
 void Win32UI::showTab(int index) {
-    if (!hwnd_) {
+    if (!hwnd_ || index < 0 || index >= kTabCount) {
         return;
     }
     currentTab_ = index;
-    ::SendMessageW(tabs_, TCM_SETCURSEL, index, 0);
-    Panel* panels[] = {home_.get(), library_.get(), playlists_.get(), monitors_.get(),
-                       performance_.get(), settings_.get()};
-    for (int i = 0; i < 6; ++i) {
+    Panel* panels[] = {home_.get(), library_.get(), playlists_.get(),
+                       monitors_.get(), performance_.get(), settings_.get()};
+    for (int i = 0; i < kTabCount; ++i) {
         if (i == index) {
             panels[i]->show();
         } else {
             panels[i]->hide();
         }
     }
+    ::InvalidateRect(hwnd_, nullptr, FALSE); // repaint tabs
 }
 
 void Win32UI::layout(int width, int height) {
     if (!hwnd_) {
         return;
     }
-    const int tabH = ::GetSystemMetrics(SM_CYCAPTION) > 0 ? 22 : 22;
-    ::MoveWindow(tabs_, 0, 0, width, tabH, TRUE);
-    const int panelY = tabH + 2;
-    const int panelH = height - panelY - 2;
-    Panel* panels[] = {home_.get(), library_.get(), playlists_.get(), monitors_.get(),
-                       performance_.get(), settings_.get()};
-    for (int i = 0; i < 6; ++i) {
+    const int dpi = static_cast<int>(::GetDpiForWindow(hwnd_));
+    const int tabH = theme::dpiScale(theme::kTabHeight, dpi);
+    const int panelY = tabH;
+    const int panelH = height - panelY;
+
+    Panel* panels[] = {home_.get(), library_.get(), playlists_.get(),
+                       monitors_.get(), performance_.get(), settings_.get()};
+    for (int i = 0; i < kTabCount; ++i) {
         ::MoveWindow(panels[i]->handle(), 0, panelY, width, panelH, TRUE);
     }
-    // Panels with dynamic content re-flow.
     for (Panel* p : panels) {
         p->relayout();
     }
 }
+
+// ---- Custom tab bar painting ----
+
+RECT Win32UI::tabRect(int index) const {
+    const int dpi = static_cast<int>(::GetDpiForWindow(hwnd_));
+    const int tabH = theme::dpiScale(theme::kTabHeight, dpi);
+
+    RECT rc{};
+    ::GetClientRect(hwnd_, &rc);
+    const int totalW = rc.right;
+    const int tabW = totalW / kTabCount;
+    rc.left = index * tabW;
+    rc.right = (index + 1) * tabW;
+    rc.top = 0;
+    rc.bottom = tabH;
+    return rc;
+}
+
+int Win32UI::tabHitTest(int x, int y) const {
+    const int dpi = static_cast<int>(::GetDpiForWindow(hwnd_));
+    const int tabH = theme::dpiScale(theme::kTabHeight, dpi);
+    if (y < 0 || y >= tabH) {
+        return -1;
+    }
+    RECT rc{};
+    ::GetClientRect(hwnd_, &rc);
+    const int tabW = rc.right / kTabCount;
+    if (tabW <= 0) return -1;
+    const int idx = x / tabW;
+    return (idx >= 0 && idx < kTabCount) ? idx : -1;
+}
+
+void Win32UI::paintTabBar(HDC hdc, int width) {
+    const int dpi = static_cast<int>(::GetDpiForWindow(hwnd_));
+    const int tabH = theme::dpiScale(theme::kTabHeight, dpi);
+
+    // Tab bar background
+    RECT rcBar = {0, 0, width, tabH};
+    theme::fillRect(hdc, rcBar, theme::kBgSurface);
+
+    const int tabW = width / kTabCount;
+    HFONT font = fontTab_ ? fontTab_ : reinterpret_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
+
+    for (int i = 0; i < kTabCount; ++i) {
+        RECT rc = {i * tabW, 0, (i + 1) * tabW, tabH};
+
+        // Active tab: accent underline + lighter bg
+        if (i == currentTab_) {
+            theme::fillRect(hdc, rc, theme::kBgCard);
+            // Accent underline
+            RECT rcLine = {rc.left, tabH - 3, rc.right, tabH};
+            theme::fillRect(hdc, rcLine, theme::kAccent);
+        }
+        // Hover
+        else if (i == hoverTab_) {
+            theme::fillRect(hdc, rc, theme::kBgHover);
+        }
+
+        // Tab text
+        COLORREF textColor = (i == currentTab_) ? theme::kTextPrimary
+                             : theme::kTextSecondary;
+        RECT textRc = {rc.left + 4, rc.top, rc.right - 4, rc.bottom - 3};
+        theme::drawTextCentered(hdc, textRc, kTabNames[i], font, textColor);
+    }
+
+    // Bottom border line
+    RECT rcBorder = {0, tabH - 1, width, tabH};
+    theme::fillRect(hdc, rcBorder, theme::kBorder);
+}
+
+// ---- Window procedure ----
+
+LRESULT CALLBACK Win32UI::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* self = reinterpret_cast<Win32UI*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        const auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        self = static_cast<Win32UI*>(cs->lpCreateParams);
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    }
+    if (!self) {
+        return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC hdc = ::BeginPaint(hwnd, &ps);
+            RECT rc{};
+            ::GetClientRect(hwnd, &rc);
+            // Fill background
+            theme::fillRect(hdc, rc, theme::kBgBase);
+            // Paint tab bar
+            self->paintTabBar(hdc, rc.right);
+            ::EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            const int x = LOWORD(lParam);
+            const int y = HIWORD(lParam);
+            const int tab = self->tabHitTest(x, y);
+            if (tab >= 0) {
+                self->showTab(tab);
+            }
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            const int x = LOWORD(lParam);
+            const int y = HIWORD(lParam);
+            const int tab = self->tabHitTest(x, y);
+            if (tab != self->hoverTab_) {
+                self->hoverTab_ = tab;
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+                // Track mouse for hover leave
+                TRACKMOUSEEVENT tme{};
+                tme.cbSize = sizeof(tme);
+                tme.dwFlags = TME_LEAVE;
+                tme.hwndTrack = hwnd;
+                ::TrackMouseEvent(&tme);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE: {
+            self->hoverTab_ = -1;
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_SIZE: {
+            const int w = LOWORD(lParam);
+            const int h = HIWORD(lParam);
+            self->layout(w, h);
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_GETMINMAXINFO: {
+            const int dpi = static_cast<int>(::GetDpiForWindow(hwnd));
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            mmi->ptMinTrackSize.x = ::MulDiv(720, dpi, 96);
+            mmi->ptMinTrackSize.y = ::MulDiv(480, dpi, 96);
+            return 0;
+        }
+        case WM_CLOSE:
+            if (self->onClose_) {
+                self->onClose_();
+            }
+            return 0;
+        case WM_DESTROY:
+            if (self->fontTab_) { ::DeleteObject(self->fontTab_); self->fontTab_ = nullptr; }
+            if (self->fontPanel_) { ::DeleteObject(self->fontPanel_); self->fontPanel_ = nullptr; }
+            self->hwnd_ = nullptr;
+            self->visible_ = false;
+            return 0;
+    }
+    return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// ---- Public API ----
 
 void Win32UI::show() {
     if (!hwnd_) {
@@ -137,13 +305,12 @@ void Win32UI::destroy() {
     if (hwnd_) {
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
-        tabs_ = nullptr;
         visible_ = false;
     }
 }
 
 void Win32UI::selectTab(int tabIndex) {
-    if (tabIndex < 0 || tabIndex > 5) {
+    if (tabIndex < 0 || tabIndex >= kTabCount) {
         tabIndex = 0;
     }
     show();
@@ -154,7 +321,7 @@ void Win32UI::showFrameSnapshot(HBITMAP bitmap) {
     if (monitors_) {
         monitors_->onFrameSnapshot(bitmap);
     } else if (bitmap) {
-        ::DeleteObject(bitmap); // nobody owns it — don't leak
+        ::DeleteObject(bitmap);
     }
 }
 
@@ -189,51 +356,6 @@ void Win32UI::onPlaylistChange(const PlaylistChangeNotification& n) {
 
 void Win32UI::onWallpaperAssignment(const WallpaperAssignmentNotification& n) {
     if (monitors_) monitors_->onWallpaperAssignment(n);
-}
-
-LRESULT CALLBACK Win32UI::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    auto* self = reinterpret_cast<Win32UI*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (msg == WM_NCCREATE) {
-        const auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
-        self = static_cast<Win32UI*>(cs->lpCreateParams);
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    }
-    if (!self) {
-        return ::DefWindowProcW(hwnd, msg, wParam, lParam);
-    }
-    switch (msg) {
-        case WM_SIZE: {
-            self->layout(LOWORD(lParam), HIWORD(lParam));
-            return 0;
-        }
-        case WM_GETMINMAXINFO: {
-            const int dpi = static_cast<int>(::GetDpiForWindow(hwnd));
-            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
-            mmi->ptMinTrackSize.x = ::MulDiv(720, dpi, 96);
-            mmi->ptMinTrackSize.y = ::MulDiv(480, dpi, 96);
-            return 0;
-        }
-        case WM_NOTIFY: {
-            const auto* nmhdr = reinterpret_cast<NMHDR*>(lParam);
-            if (nmhdr->hwndFrom == self->tabs_ && nmhdr->code == TCN_SELCHANGE) {
-                const int sel =
-                    static_cast<int>(::SendMessageW(self->tabs_, TCM_GETCURSEL, 0, 0));
-                self->showTab(sel);
-            }
-            return 0;
-        }
-        case WM_CLOSE:
-            if (self->onClose_) {
-                self->onClose_(); // the app hides or destroys per config
-            }
-            return 0;
-        case WM_DESTROY:
-            self->hwnd_ = nullptr;
-            self->tabs_ = nullptr;
-            self->visible_ = false;
-            return 0;
-    }
-    return ::DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 } // namespace vw::ui

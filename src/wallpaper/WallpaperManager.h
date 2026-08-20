@@ -155,6 +155,18 @@ private:
                                     const video::DecodedFrame& frame);
     Result<void> bindFramePlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
                                  float videoAspect);
+    // DRY: common NV12/RGB texture ensure+upload (clone + independent paths).
+    struct UploadSlot {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;    // BGRA
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ySrv;   // NV12 Y
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvSrv;  // NV12 UV
+        UINT width = 0;
+        UINT height = 0;
+        float displayAspect = 0.0f;
+        bool nv12 = false;
+    };
+    Result<void> ensureAndUpload(UploadSlot& slot, const video::DecodedFrame& frame);
     void teardownHosts();
     void addHostFor(const std::wstring& monitorId);
     void removeHostFor(const std::wstring& monitorId);
@@ -197,6 +209,8 @@ private:
         }
     };
     std::unordered_map<PlaneSrvKey, PlaneSrvCacheEntry, PlaneSrvKeyHash> planeSrvCache_;
+    // DRY: resolve plane SRVs for a GPU frame (cached per texture+slice).
+    Result<PlaneSrvCacheEntry*> getOrCreatePlaneSrvs(const video::DecodedFrame& frame);
     // D3D11VA shared-handle cache: opened textures on the render device,
     // keyed by the shared HANDLE value.  Each handle is opened once and
     // closed when the cache is cleared (device recreate).
@@ -206,20 +220,8 @@ private:
     };
     std::unordered_map<HANDLE, SharedFrameCacheEntry> sharedFrameCache_;
     // M8: per-monitor upload textures for the INDEPENDENT path (each display
-    // runs its own video). Keyed by stable monitor id. `srv` is the BGRA
-    // software path; `ySrv`/`uvSrv` (+ `nv12`) are the NV12 software path
-    // (GPU YUV conversion, B1 optimization).
-    struct PerMonitorFrame {
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ySrv;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvSrv;
-        UINT width = 0;
-        UINT height = 0;
-        float displayAspect = 0.0f; // SAR-corrected aspect of THIS frame (rebind)
-        bool nv12 = false;
-    };
-    std::map<std::wstring, PerMonitorFrame> perMonitorFrames_;
+    // runs its own video). Keyed by stable monitor id.
+    std::map<std::wstring, UploadSlot> perMonitorFrames_;
     gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;
     DesktopLayer layer_;
     bool running_ = false;

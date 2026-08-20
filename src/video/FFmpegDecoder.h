@@ -5,6 +5,7 @@
 #include <thread>
 
 #include <d3d11.h>
+#include <wrl/client.h>
 
 #include "util/Result.h"
 #include "video/FrameQueue.h"
@@ -76,6 +77,11 @@ private:
     int videoStreamIdx_ = -1;
     ID3D11Device* d3dDevice_ = nullptr;
     ID3D11DeviceContext* deferredCtx_ = nullptr; // for zero-copy GPU copies
+
+    // Cached shared texture for D3D11VA zero-copy (avoids per-frame alloc).
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex_;  // shared output texture
+    HANDLE sharedHandle_ = nullptr;                        // shared handle (open once)
+    UINT sharedWidth_ = 0, sharedHeight_ = 0;             // detect resolution change
 
     VideoMetadata metadata_;
     std::thread worker_;

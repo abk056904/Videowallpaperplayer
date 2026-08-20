@@ -1,7 +1,8 @@
 #include "ui/panels/HomePanel.h"
 
-#include <cstdio>
 #include <cwchar>
+
+#include "ui/Theme.h"
 
 namespace vw::ui {
 
@@ -17,15 +18,20 @@ bool HomePanel::create(HWND parent) {
     }
     initPanelFont();
     const Layout L = Layout::from(hwnd_);
+
+    // Create status rows
     for (int i = 0; i < kRowCount; ++i) {
-        rows_[i] = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, 12, L.y(i), 600, L.cy, nullptr);
+        rows_[i] = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, 16, L.y(i), 600, L.cy, nullptr);
     }
-    btnPause_ = ctl(hwnd_, L"BUTTON", L"Pause", WS_VISIBLE | BS_PUSHBUTTON, 12, 0, 100, L.cy,
-                    reinterpret_cast<HMENU>(kBtnPause));
-    btnNext_ = ctl(hwnd_, L"BUTTON", L"Next", WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 100, L.cy,
-                   reinterpret_cast<HMENU>(kBtnNext));
-    btnPrev_ = ctl(hwnd_, L"BUTTON", L"Previous", WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 100, L.cy,
-                   reinterpret_cast<HMENU>(kBtnPrev));
+
+    // Modern playback buttons
+    btnPause_ = ctl(hwnd_, L"BUTTON", L"\u23F8  Pause", WS_VISIBLE | BS_PUSHBUTTON,
+                    16, 0, 120, L.cy, reinterpret_cast<HMENU>(kBtnPause));
+    btnNext_ = ctl(hwnd_, L"BUTTON", L"\u23ED  Next", WS_VISIBLE | BS_PUSHBUTTON,
+                   0, 0, 100, L.cy, reinterpret_cast<HMENU>(kBtnNext));
+    btnPrev_ = ctl(hwnd_, L"BUTTON", L"\u23EE  Previous", WS_VISIBLE | BS_PUSHBUTTON,
+                   0, 0, 120, L.cy, reinterpret_cast<HMENU>(kBtnPrev));
+
     layout(600);
     updateRows();
     return true;
@@ -34,16 +40,15 @@ bool HomePanel::create(HWND parent) {
 void HomePanel::layout(int width) {
     const Layout L = Layout::from(hwnd_);
     for (int i = 0; i < kRowCount; ++i) {
-        ::MoveWindow(rows_[i], 12, L.y(i), width - 24, L.cy, TRUE);
+        ::MoveWindow(rows_[i], 16, L.y(i), width - 32, L.cy, TRUE);
     }
-    const int btnY = L.y(kRowCount) + 4;
-    int x = 12;
-    const int bw = 100;
-    ::MoveWindow(btnPause_, x, btnY, bw, L.cy, TRUE);
-    x += bw + L.u;
-    ::MoveWindow(btnNext_, x, btnY, bw, L.cy, TRUE);
-    x += bw + L.u;
-    ::MoveWindow(btnPrev_, x, btnY, bw, L.cy, TRUE);
+    const int btnY = L.y(kRowCount) + L.u;
+    int x = 16;
+    ::MoveWindow(btnPause_, x, btnY, 120, L.cy, TRUE);
+    x += 120 + L.u;
+    ::MoveWindow(btnNext_, x, btnY, 100, L.cy, TRUE);
+    x += 100 + L.u;
+    ::MoveWindow(btnPrev_, x, btnY, 120, L.cy, TRUE);
 }
 
 void HomePanel::relayout() {
@@ -64,7 +69,7 @@ void HomePanel::onPlaybackState(const PlaybackStateNotification& s) {
     state_ = s;
     const bool paused = s.state != PlaybackState::Playing;
     if (btnPause_) {
-        ::SetWindowTextW(btnPause_, paused ? L"Resume" : L"Pause");
+        ::SetWindowTextW(btnPause_, paused ? L"\u25B6  Resume" : L"\u23F8  Pause");
     }
     updateRows();
 }
@@ -78,44 +83,43 @@ void HomePanel::updateRows() {
 
     std::wstring stateText;
     switch (s.state) {
-        case PlaybackState::Playing: stateText = L"PLAYING"; break;
-        case PlaybackState::Paused: stateText = L"PAUSED"; break;
-        case PlaybackState::Suspended: stateText = L"SUSPENDED"; break;
-        case PlaybackState::NoWallpaper: stateText = L"no wallpaper"; break;
+        case PlaybackState::Playing: stateText = L"\u25B6 PLAYING"; break;
+        case PlaybackState::Paused: stateText = L"\u23F8 PAUSED"; break;
+        case PlaybackState::Suspended: stateText = L"\u23F9 SUSPENDED"; break;
+        case PlaybackState::NoWallpaper: stateText = L"No wallpaper"; break;
     }
+
+    // Status display
     wchar_t buf[512];
 
-    std::swprintf(buf, 512, L"Current wallpaper : %ls",
-                  s.videoName.empty() ? L"(none)" : s.videoName.c_str());
+    std::swprintf(buf, 512, L"\U0001F3AC  %ls",
+                  s.videoName.empty() ? L"No video loaded" : s.videoName.c_str());
     ::SetWindowTextW(rows_[kRowWallpaper], buf);
 
-    std::swprintf(buf, 512, L"Playback state    : %ls (reasons: 0x%X)", stateText.c_str(),
-                  s.pauseReasons);
+    std::swprintf(buf, 512, L"\u25C9  %ls", stateText.c_str());
     ::SetWindowTextW(rows_[kRowState], buf);
 
-    std::swprintf(buf, 512, L"Current monitor   : %ls", s.monitorId.c_str());
+    std::swprintf(buf, 512, L"\U0001F4F7  %ls", s.monitorId.c_str());
     ::SetWindowTextW(rows_[kRowMonitor], buf);
 
-    std::swprintf(buf, 512, L"Presented FPS     : %.1f        Dropped frames : %llu",
-                  t.presentedFps, static_cast<unsigned long long>(t.droppedFrames));
+    std::swprintf(buf, 512, L"\U0001F4CA  %.1f fps  \u2022  %.1f ms decode  \u2022  %llu dropped",
+                  t.presentedFps, t.decodeLatencyMs,
+                  static_cast<unsigned long long>(t.droppedFrames));
     ::SetWindowTextW(rows_[kRowFps], buf);
 
-    std::swprintf(buf, 512, L"Decode latency    : %.1f ms        Decoded FPS : %.1f",
-                  t.decodeLatencyMs, t.decodedFps);
-    ::SetWindowTextW(rows_[kRowLatency], buf);
-
-    std::swprintf(buf, 512, L"Decoder           : %ls",
-                  s.decoderMode.empty() ? L"software" : s.decoderMode.c_str());
+    std::swprintf(buf, 512, L"\U0001F527  %ls", s.decoderMode.empty() ? L"software" : s.decoderMode.c_str());
     ::SetWindowTextW(rows_[kRowDecoder], buf);
 
-    std::swprintf(buf, 512, L"GPU adapter       : %ls",
-                  s.adapterName.empty() ? L"(unknown)" : s.adapterName.c_str());
+    std::swprintf(buf, 512, L"\U0001F3AE  %ls", s.adapterName.empty() ? L"(unknown)" : s.adapterName.c_str());
     ::SetWindowTextW(rows_[kRowAdapter], buf);
 
-    std::swprintf(buf, 512, L"CPU: %.1f%%   GPU: %.1f%%   RAM: %.0f MB   VRAM: %.0f / %.0f MB",
-                  t.cpuUsage, t.gpuUsage, t.systemMemoryUsed / (1024.0 * 1024.0),
-                  t.gpuMemoryUsed / (1024.0 * 1024.0), t.gpuMemoryBudget / (1024.0 * 1024.0));
+    std::swprintf(buf, 512, L"\u26A1  CPU: %.1f%%  \u2022  GPU: %.1f%%  \u2022  RAM: %.0f MB",
+                  t.cpuUsage, t.gpuUsage, t.systemMemoryUsed / (1024.0 * 1024.0));
     ::SetWindowTextW(rows_[kRowWorkload], buf);
+
+    std::swprintf(buf, 512, L"\U0001F4C8  Render: %.1f ms  \u2022  Latency: %.1f ms",
+                  t.renderTimeMs, t.decodeLatencyMs);
+    ::SetWindowTextW(rows_[kRowLatency], buf);
 }
 
 LRESULT CALLBACK HomePanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

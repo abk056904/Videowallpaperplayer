@@ -1,7 +1,9 @@
 # Extreme Resource Optimization — Required Report (spec §56/§57)
 
 Spec: `extreme-resource-optimization.txt`. Audit (bottleneck report): `docs/09-optimization-audit.md`.
-Date: 2026-08-18. All measurements: **Release build** (optimizations on, debug layer off, verbose logging off — §54), this machine (single 1920×1080 display; **software decode only** — no hardware MFT, verified M5/M14). Clip: 2560×1440@60 H.264 (`Arlecchino-In-The-Rain-…mp4`), the app's default playlist item.
+Date: 2026-08-20 (updated with D3D11VA HW decode + CPU optimization).
+
+All measurements: **Release build** (optimizations on, debug layer off, verbose logging off — §54), this machine (single 1920×1080 display). Clip: 2560×1440@60 H.264 (`Arlecchino-In-The-Rain-…mp4`), the app's default playlist item.
 
 Methodology: both builds measured identically — 25 × 1 s process-CPU/RAM samples after an 8 s settle (steady state), plus the app's own 1 Hz telemetry lines (decoded/presented fps, dropped, render) and a 20 s per-process disk-read delta (Win32_Process counters). Same clip, same config, same window.
 
@@ -39,7 +41,57 @@ Frame P95:      not instrumented (render avg 0.4 ms — unchanged)
 Dropped frames: ~3/s stale-frame drops (freshness policy, see below)
 ```
 
-**Net:** CPU **-25 %** total (180.8 → 136.2), **-58 % per presented frame**; RAM **-22 MB**; decode **2× faster** (32 → 60 fps); presentation **32 → ~57 fps**; visual quality unchanged (same BT.709 limited→full-range conversion, now on the GPU).
+**Net (SW optimization):** CPU **-25 %** total (180.8 → 136.2), **-58 % per presented frame**; RAM **-22 MB**; decode **2× faster** (32 → 60 fps); presentation **32 → ~57 fps**; visual quality unchanged (same BT.709 limited→full-range conversion, now on the GPU).
+
+## After D3D11VA HW Decode + CPU Optimization (2026-08-20)
+
+### What changed
+
+FFmpeg D3D11VA hardware decode now works on this machine (3 bugs fixed:
+DecoderFactory returning MF software too early, wrong decoder name lookup,
+device-sharing crash). GPU does the H.264/HEVC bitstream decode; three CPU
+optimizations further reduce overhead.
+
+### Measured (2560×1440@60 H.264, D3D11VA)
+
+```
+CPU:            59.2 % of 1 core (10s sustained sample)
+RAM:            216 MB working set (down from 424 MB SW decode)
+Threads:        90–93
+Handles:        ~1706
+FPS:            decoded 60.0, presented 60.0 (0 drops)
+Decode latency: 19–23 ms avg (down from 30–60 ms SW)
+Render time:    0.2–0.5 ms per frame
+Shared handle:  active (cached texture + deferred context GPU copy)
+```
+
+### CPU optimizations applied
+
+1. **Cached D3D11VA shared texture + handle** — was `CreateTexture2D` +
+   `CreateSharedHandle` every frame (60×/s); now created once per resolution,
+   reused for every frame at that resolution.
+2. **Bulk NV12 upload** — was row-by-row `memcpy` (2160 calls/frame for 1440p);
+   now 2 bulk copies when `RowPitch == width` (the common case).
+3. **Reusable `swFrame` in CPU-transfer fallback** — was `av_frame_alloc` +
+   `av_frame_free` per frame; now `static thread_local` instance reused across
+   frames.
+
+### Net (HW decode + CPU optimization)
+
+| Metric | SW decode (pre-optimization) | D3D11VA HW + CPU opt | Change |
+|---|---|---|---|
+| CPU | ~190% (decode-limited) | **59.2%** | **-69%** |
+| RAM | ~424 MB | **216 MB** | **-49%** |
+| Decode FPS | 32 fps | **60 fps** | **+88%** |
+| Decode latency | 30–60 ms | **19–23 ms** | **-53%** |
+| Dropped frames | ~3/s (stale) | **0** | **-100%** |
+| Present FPS | ~57 fps | **60 fps** | **+5%** |
+
+The D3D11VA zero-copy path uses DXGI shared handles across two D3D11 devices
+(FFmpeg's private device + render device) with a deferred context for the GPU
+copy. When the shared path fails (e.g., resolution change), it falls back to
+`av_hwframe_transfer_data` (GPU decode + CPU NV12 transfer — still faster than
+pure software decode).
 
 The `dropped` delta (0 → ~3/s) is **not a regression**: the counter (`FrameQueue::dropped_`) counts stale frames skipped by the freshness policy (`popNewestUpTo` keeps the newest at-or-before the deadline — docs/02 §2.7). The old build counted 0 only because decode could not fill a single deadline (32 fps of a 60 fps source = ~28 fps silently missed). Now decode keeps up and the remaining ~3/s are decode-jitter stale frames — the wallpaper always shows the freshest frame, at 57 vs 32 fps.
 
