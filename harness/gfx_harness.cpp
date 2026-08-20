@@ -29,7 +29,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -80,14 +79,14 @@ void printOutputs(const std::vector<vw::gfx::OutputInfo>& outputs) {
 
 // ---- M5-preview: decode one frame to RGB32 via Media Foundation -------------
 
-struct DecodedFrame {
+struct HarnessFrame {
     std::vector<uint8_t> bytes; // tightly packed w*4 per row
     UINT width = 0;
     UINT height = 0;
     float displayAspect = 0.0f; // SAR-corrected aspect (0 = square pixels)
 };
 
-std::wstring formatHr(HRESULT hr) {
+std::wstring fmtHr(HRESULT hr) {
     return std::format(L"hr=0x{:08X}", static_cast<unsigned>(hr));
 }
 
@@ -97,7 +96,7 @@ constexpr DWORD kFirstVideoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VI
 
 // Decodes the first video frame as RGB32 (B,G,R,A byte order, matches
 // DXGI_FORMAT_B8G8R8A8_UNORM so the bytes upload verbatim).
-bool decodeFirstFrame(const std::wstring& path, DecodedFrame& out, std::wstring& err) {
+bool decodeFirstFrame(const std::wstring& path, HarnessFrame& out, std::wstring& err) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IMFAttributes> attrs;
     HRESULT hr = ::MFCreateAttributes(&attrs, 1);
@@ -112,7 +111,7 @@ bool decodeFirstFrame(const std::wstring& path, DecodedFrame& out, std::wstring&
         hr = ::MFCreateSourceReaderFromURL(path.c_str(), attrs.Get(), &reader);
     }
     if (FAILED(hr)) {
-        err = L"MFCreateSourceReaderFromURL failed: " + formatHr(hr);
+        err = L"MFCreateSourceReaderFromURL failed: " + fmtHr(hr);
         return false;
     }
 
@@ -177,7 +176,7 @@ bool decodeFirstFrame(const std::wstring& path, DecodedFrame& out, std::wstring&
     }
     hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, rgb.Get());
     if (FAILED(hr)) {
-        err = L"RGB32 output unsupported for this file (codec/color-converter): " + formatHr(hr);
+        err = L"RGB32 output unsupported for this file (codec/color-converter): " + fmtHr(hr);
         return false;
     }
 
@@ -185,7 +184,7 @@ bool decodeFirstFrame(const std::wstring& path, DecodedFrame& out, std::wstring&
     DWORD flags = 0;
     hr = reader->ReadSample(kFirstVideoStream, 0, nullptr, &flags, nullptr, &sample);
     if (FAILED(hr) || !sample) {
-        err = L"ReadSample failed: " + formatHr(hr);
+        err = L"ReadSample failed: " + fmtHr(hr);
         return false;
     }
     if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
@@ -196,7 +195,7 @@ bool decodeFirstFrame(const std::wstring& path, DecodedFrame& out, std::wstring&
     ComPtr<IMFMediaBuffer> buffer;
     hr = sample->GetBufferByIndex(0, &buffer);
     if (FAILED(hr)) {
-        err = L"GetBufferByIndex failed: " + formatHr(hr);
+        err = L"GetBufferByIndex failed: " + fmtHr(hr);
         return false;
     }
 
@@ -208,14 +207,14 @@ bool decodeFirstFrame(const std::wstring& path, DecodedFrame& out, std::wstring&
     if (SUCCEEDED(buffer.As(&buffer2d))) {
         hr = buffer2d->Lock2D(&scanline0, &pitch);
         if (FAILED(hr)) {
-            err = L"Lock2D failed: " + formatHr(hr);
+            err = L"Lock2D failed: " + fmtHr(hr);
             return false;
         }
     } else {
         DWORD len = 0;
         hr = buffer->Lock(&scanline0, nullptr, &len);
         if (FAILED(hr)) {
-            err = L"media buffer Lock failed: " + formatHr(hr);
+            err = L"media buffer Lock failed: " + fmtHr(hr);
             return false;
         }
         pitch = static_cast<LONG>(w) * 4; // assume tight packing
@@ -476,7 +475,7 @@ int wmain(int argc, wchar_t** argv) {
     // M5 preview: decode one frame, upload to a D3D11 texture, bind via SRV.
     bool videoMode = false;
     if (!videoPath.empty()) {
-        DecodedFrame frame;
+        HarnessFrame frame;
         std::wstring decodeErr;
         if (!decodeFirstFrame(videoPath, frame, decodeErr)) {
             fail(L"decode failed: %s", decodeErr.c_str());

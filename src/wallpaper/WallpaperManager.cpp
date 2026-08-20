@@ -980,34 +980,27 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
 }
 
 // ---- D3D11VA shared-handle zero-copy path ----
-// Opens a DXGI shared texture on the render device, caches it, then
-// falls through to the existing plane-bind logic.
+// D3D11VA shared-handle zero-copy path.
+// Opens a DXGI shared texture on the render device, caching it for reuse.
+Microsoft::WRL::ComPtr<ID3D11Texture2D> WallpaperManager::openSharedHandle(HANDLE sharedHandle) {
+    auto& entry = sharedFrameCache_[sharedHandle];
+    if (entry.texture) return entry.texture;
+    Microsoft::WRL::ComPtr<ID3D11Device1> dev1;
+    HRESULT hr = deviceManager_.device()->QueryInterface(IID_PPV_ARGS(&dev1));
+    if (FAILED(hr) || !dev1) return nullptr;
+    ID3D11Texture2D* rawTex = nullptr;
+    hr = dev1->OpenSharedResource1(sharedHandle, IID_PPV_ARGS(&rawTex));
+    if (FAILED(hr) || !rawTex) return nullptr;
+    entry.texture.Attach(rawTex);
+    entry.handle = sharedHandle;
+    return entry.texture;
+}
 
 Result<void> WallpaperManager::bindSharedFrame(const video::DecodedFrame& frame) {
-    if (!frame.sharedHandle) {
-        return std::unexpected(L"bindSharedFrame: no shared handle");
-    }
-    // Look up the cached opened texture on the render device.
-    auto& entry = sharedFrameCache_[frame.sharedHandle];
-    if (!entry.texture) {
-        Microsoft::WRL::ComPtr<ID3D11Device1> dev1;
-        HRESULT hr = deviceManager_.device()->QueryInterface(IID_PPV_ARGS(&dev1));
-        if (FAILED(hr) || !dev1) {
-            return std::unexpected(L"ID3D11Device1 QI failed");
-        }
-        ID3D11Texture2D* rawTex = nullptr;
-        hr = dev1->OpenSharedResource1(frame.sharedHandle, IID_PPV_ARGS(&rawTex));
-        if (FAILED(hr) || !rawTex) {
-            log::Logger::instance().warn(L"OpenSharedResource1 failed: 0x{:08X}", static_cast<unsigned>(hr));
-            return std::unexpected(L"OpenSharedResource1 failed: 0x" +
-                                   std::format(L"{:08X}", static_cast<unsigned>(hr)));
-        }
-        entry.texture.Attach(rawTex);
-        entry.handle = frame.sharedHandle;
-    }
-    // Build a temporary DecodedFrame with the opened texture for bindGpuFrame.
+    auto tex = openSharedHandle(frame.sharedHandle);
+    if (!tex) return std::unexpected(L"bindSharedFrame: OpenSharedResource1 failed");
     video::DecodedFrame proxy;
-    proxy.texture = entry.texture;
+    proxy.texture = tex;
     proxy.hardware = true;
     proxy.width = frame.width;
     proxy.height = frame.height;
@@ -1018,28 +1011,10 @@ Result<void> WallpaperManager::bindSharedFrame(const video::DecodedFrame& frame)
 
 Result<void> WallpaperManager::bindSharedFrameFor(const std::wstring& monitorId,
                                                   const video::DecodedFrame& frame) {
-    if (!frame.sharedHandle) {
-        return std::unexpected(L"bindSharedFrameFor: no shared handle");
-    }
-    auto& entry = sharedFrameCache_[frame.sharedHandle];
-    if (!entry.texture) {
-        Microsoft::WRL::ComPtr<ID3D11Device1> dev1;
-        HRESULT hr = deviceManager_.device()->QueryInterface(IID_PPV_ARGS(&dev1));
-        if (FAILED(hr) || !dev1) {
-            return std::unexpected(L"ID3D11Device1 QI failed");
-        }
-        ID3D11Texture2D* rawTex = nullptr;
-        hr = dev1->OpenSharedResource1(frame.sharedHandle, IID_PPV_ARGS(&rawTex));
-        if (FAILED(hr) || !rawTex) {
-            log::Logger::instance().warn(L"OpenSharedResource1 (per-monitor) failed: 0x{:08X}", static_cast<unsigned>(hr));
-            return std::unexpected(L"OpenSharedResource1 failed: 0x" +
-                                   std::format(L"{:08X}", static_cast<unsigned>(hr)));
-        }
-        entry.texture.Attach(rawTex);
-        entry.handle = frame.sharedHandle;
-    }
+    auto tex = openSharedHandle(frame.sharedHandle);
+    if (!tex) return std::unexpected(L"bindSharedFrameFor: OpenSharedResource1 failed");
     video::DecodedFrame proxy;
-    proxy.texture = entry.texture;
+    proxy.texture = tex;
     proxy.hardware = true;
     proxy.width = frame.width;
     proxy.height = frame.height;

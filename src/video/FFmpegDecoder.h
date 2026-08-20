@@ -75,6 +75,7 @@ private:
     AVBufferRef* hwFramesCtx_ = nullptr; // HW frames context (for D3D11 mapping)
     int videoStreamIdx_ = -1;
     ID3D11Device* d3dDevice_ = nullptr;
+    ID3D11DeviceContext* deferredCtx_ = nullptr; // for zero-copy GPU copies
 
     VideoMetadata metadata_;
     std::thread worker_;

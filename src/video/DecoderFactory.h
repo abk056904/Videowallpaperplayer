@@ -11,11 +11,7 @@ namespace vw::video {
 
 // Adapter information for diagnostic reporting
 struct AdapterInfo {
-    std::wstring name;
-    LUID luid{};
-    bool isRenderDevice = false;
-    bool hasNvdec = false;
-    bool hasD3d11va = false;
+    std::wstring name; // human-readable decoder name (e.g. "h264", "h264_cuvid")
 };
 
 // Creates the best video decoder backend for the given file.

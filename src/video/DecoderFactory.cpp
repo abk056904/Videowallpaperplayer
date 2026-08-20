@@ -37,10 +37,7 @@ std::unique_ptr<IVideoDecoder> CreateBestDecoder(
         auto result = mfDecoder->open(path);
         if (result && mfDecoder->isHardwareDecoding()) {
             log.info(L"decoder factory: Media Foundation HW succeeded ({})", mfDecoder->decoderName());
-            if (selectedAdapter) {
-                selectedAdapter->name = L"Media Foundation";
-                selectedAdapter->isRenderDevice = true;
-            }
+            if (selectedAdapter) selectedAdapter->name = L"Media Foundation";
             return mfDecoder;
         }
         if (result && !mfDecoder->isHardwareDecoding()) {
@@ -62,10 +59,7 @@ std::unique_ptr<IVideoDecoder> CreateBestDecoder(
         auto result = ffmpegDecoder->open(path);
         if (result && ffmpegDecoder->isHardwareDecoding()) {
             log.info(L"decoder factory: FFmpeg HW decode succeeded ({})", ffmpegDecoder->decoderName());
-            if (selectedAdapter) {
-                selectedAdapter->name = ffmpegDecoder->decoderName();
-                selectedAdapter->hasNvdec = true;
-            }
+            if (selectedAdapter) selectedAdapter->name = ffmpegDecoder->decoderName();
             return ffmpegDecoder;
         }
         if (result) {
@@ -78,10 +72,7 @@ std::unique_ptr<IVideoDecoder> CreateBestDecoder(
     // --- Step 3: accept MF software fallback if available ---
     if (mfSoftwareFallback) {
         log.info(L"decoder factory: using MF software fallback ({})", mfSoftwareFallback->decoderName());
-        if (selectedAdapter) {
-            selectedAdapter->name = mfSoftwareFallback->decoderName();
-            selectedAdapter->isRenderDevice = true;
-        }
+        if (selectedAdapter) selectedAdapter->name = mfSoftwareFallback->decoderName();
         return mfSoftwareFallback;
     }
 

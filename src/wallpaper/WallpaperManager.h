@@ -148,7 +148,8 @@ private:
     Result<void> bindGpuFrameFor(const std::wstring& monitorId,
                                  const video::DecodedFrame& frame);
     // D3D11VA zero-copy via DXGI shared handles: open the shared texture
-    // on the render device and bind it directly.
+    // on the render device, cache it, and bind for rendering.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> openSharedHandle(HANDLE sharedHandle);
     Result<void> bindSharedFrame(const video::DecodedFrame& frame);
     Result<void> bindSharedFrameFor(const std::wstring& monitorId,
                                     const video::DecodedFrame& frame);

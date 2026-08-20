@@ -1,5 +1,9 @@
 #include "video/FFmpegDecoder.h"
 
+// D3D11 headers must come before FFmpeg to avoid forward-declaration conflicts.
+#include <d3d11_1.h>
+#include <dxgi1_2.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavcodec/d3d11va.h>
@@ -13,7 +17,6 @@ extern "C" {
 
 #include <cstring>
 
-#include <dxgi1_2.h>
 #include "logging/Logger.h"
 #include "util/clock.h"
 #include "util/utf8.h"
@@ -71,10 +74,8 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
 
     AVCodecParameters* par = fmtCtx->streams[vidIdx]->codecpar;
 
-    // Use the regular decoder — D3D11VA hwactivates via hw_device_ctx +
-    // get_format callback, NOT via a separate decoder name. The minimal
-    // FFmpeg build only enables software decoders; D3D11VA is a hwaccel
-    // that auto-activates when a D3D11VA device context is provided.
+    // Use the regular decoder — D3D11VA activates via hw_device_ctx +
+    // get_format callback, NOT via a separate decoder name.
     const AVCodec* codec = avcodec_find_decoder(par->codec_id);
     if (!codec) {
         log.info(L"FFmpeg: no decoder found for codec id {}", static_cast<int>(par->codec_id));
@@ -84,12 +85,6 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
     log.info(L"FFmpeg: using decoder {} for D3D11VA hwaccel", vw::util::utf8ToWide(codec->name));
 
     // Create a dedicated D3D11 device for D3D11VA decode.
-    // Cannot wrap the render device: FFmpeg and the renderer would share
-    // the same ID3D11DeviceContext (immediate context), which is NOT
-    // thread-safe across the decode worker and render threads.  Instead,
-    // we decode on a private device and transfer to CPU as NV12 — the GPU
-    // still does the heavy bitstream decode, so this is far faster than
-    // pure software decode.
     AVBufferRef* hwDeviceCtx = nullptr;
     {
         int err = av_hwdevice_ctx_create(&hwDeviceCtx, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
@@ -100,7 +95,12 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
                      vw::util::utf8ToWide(errbuf));
             avformat_close_input(&fmtCtx); return false;
         }
-        log.info(L"FFmpeg: D3D11VA device created (GPU decode, CPU transfer)");
+        log.info(L"FFmpeg: D3D11VA device created (GPU decode)");
+        // Create a deferred context for zero-copy GPU copies.
+        ID3D11Device* dev = ffmpegDevice();
+        if (dev) {
+            dev->CreateDeferredContext(0, &deferredCtx_);
+        }
     }
 
     AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
@@ -173,7 +173,7 @@ bool FFmpegDecoder::tryOpenCuda(const std::wstring& path) {
     }
 
     // Derive D3D11VA device context from CUDA, then create a frames context
-    // for av_hwframe_map (CUDA frame → D3D11 texture, zero-copy).
+    // for av_hwframe_map (CUDA frame -> D3D11 texture, zero-copy).
     AVBufferRef* d3d11DeviceCtx = nullptr;
     if (av_hwdevice_ctx_create_derived(&d3d11DeviceCtx, AV_HWDEVICE_TYPE_D3D11VA, hwDeviceCtx, 0) < 0) {
         log.debug(L"FFmpeg: could not derive D3D11VA from CUDA");
@@ -182,7 +182,7 @@ bool FFmpegDecoder::tryOpenCuda(const std::wstring& path) {
         return false;
     }
 
-    // Create frames context so av_hwframe_map can map CUDA → D3D11.
+    // Create frames context so av_hwframe_map can map CUDA -> D3D11.
     AVBufferRef* d3d11FramesCtx = av_hwframe_ctx_alloc(d3d11DeviceCtx);
     if (!d3d11FramesCtx) {
         av_buffer_unref(&d3d11DeviceCtx);
@@ -311,6 +311,7 @@ void FFmpegDecoder::close() {
     if (fmtCtx_) { avformat_close_input(&fmtCtx_); fmtCtx_ = nullptr; }
     if (hwFramesCtx_) { av_buffer_unref(&hwFramesCtx_); hwFramesCtx_ = nullptr; }
     if (hwCtx_) { av_buffer_unref(&hwCtx_); hwCtx_ = nullptr; }
+    if (deferredCtx_) { deferredCtx_->Release(); deferredCtx_ = nullptr; }
     videoStreamIdx_ = -1;
     hardware_ = false;
     decoderName_.clear();
@@ -336,7 +337,7 @@ Result<void> FFmpegDecoder::start(FrameQueue* queue, LONGLONG position100ns) {
     if (worker_.joinable()) return {};
 
     if (position100ns > 0 && fmtCtx_) {
-        int64_t ts = position100ns / 10; // 100ns units → microseconds
+        int64_t ts = position100ns / 10; // 100ns units -> microseconds
         avformat_seek_file(fmtCtx_, -1, INT64_MIN, ts, INT64_MAX, 0);
         avcodec_flush_buffers(codecCtx_);
     }
@@ -394,39 +395,87 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             }
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
-                // D3D11VA: GPU decoded the frame (fast bitstream parse),
-                // then transfer to CPU as NV12 via av_hwframe_transfer_data.
-                // This is NOT zero-copy — true zero-copy via DXGI shared
-                // handles requires creating a shared texture + GPU copy on
-                // FFmpeg's device, but the D3D11 immediate context cannot
-                // be safely used for CopySubresourceRegion while FFmpeg
-                // holds internal state on it from avcodec_receive_frame.
-                // The GPU still handles the heavy bitstream decode.
-                AVFrame* swFrame = av_frame_alloc();
-                swFrame->format = AV_PIX_FMT_NV12;
-                if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
-                    df.nv12 = true;
-                    uint32_t w = swFrame->width;
-                    uint32_t h = swFrame->height;
-                    uint32_t ySize = w * h;
-                    uint32_t uvSize = w * (h / 2);
-                    df.bytes.resize(ySize + uvSize);
-                    for (uint32_t y = 0; y < h; ++y)
-                        std::memcpy(df.bytes.data() + y * w,
-                                    swFrame->data[0] + y * swFrame->linesize[0], w);
-                    uint8_t* uvDst = df.bytes.data() + ySize;
-                    for (uint32_t y = 0; y < h / 2; ++y)
-                        std::memcpy(uvDst + y * w,
-                                    swFrame->data[1] + y * swFrame->linesize[1], w);
-                } else {
-                    log.warn(L"FFmpeg: D3D11VA frame transfer failed");
-                    av_frame_free(&swFrame);
-                    av_frame_unref(frame_);
-                    continue;
+                // D3D11VA: try zero-copy via deferred context + shared handle.
+                // avcodec_receive_frame has returned — FFmpeg is done with
+                // the immediate context.  Record CopySubresourceRegion on a
+                // deferred context, then ExecuteCommandLists in one atomic call.
+                bool zeroCopyDone = false;
+                auto* desc = reinterpret_cast<AVD3D11FrameDescriptor*>(frame_->data[0]);
+                ID3D11Device* ffmpegDev = ffmpegDevice();
+                ID3D11DeviceContext* ffmpegCtx = ffmpegContext();
+                if (desc && desc->texture && ffmpegDev && ffmpegCtx && deferredCtx_) {
+                    D3D11_TEXTURE2D_DESC srcDesc{};
+                    desc->texture->GetDesc(&srcDesc);
+                    D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
+                    sharedDesc.Usage = D3D11_USAGE_DEFAULT;
+                    sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                    sharedDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+                    Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex;
+                    HRESULT hr = ffmpegDev->CreateTexture2D(&sharedDesc, nullptr, &sharedTex);
+                    if (SUCCEEDED(hr)) {
+                        const UINT slice = static_cast<UINT>(desc->index);
+                        if (srcDesc.ArraySize > 1) {
+                            D3D11_BOX box{};
+                            box.left = 0; box.top = 0; box.front = 0;
+                            box.right = srcDesc.Width; box.bottom = srcDesc.Height; box.back = 1;
+                            deferredCtx_->CopySubresourceRegion(
+                                sharedTex.Get(), slice, 0, 0, 0,
+                                desc->texture, slice, &box);
+                        } else {
+                            deferredCtx_->CopySubresourceRegion(
+                                sharedTex.Get(), 0, 0, 0, 0,
+                                desc->texture, 0, nullptr);
+                        }
+                        Microsoft::WRL::ComPtr<ID3D11CommandList> cmdList;
+                        hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
+                        if (SUCCEEDED(hr) && cmdList) {
+                            ffmpegCtx->ExecuteCommandList(cmdList.Get(), FALSE);
+                            Microsoft::WRL::ComPtr<IDXGIResource1> dxgiRes;
+                            hr = sharedTex.As(&dxgiRes);
+                            if (SUCCEEDED(hr)) {
+                                HANDLE handle = nullptr;
+                                hr = dxgiRes->CreateSharedHandle(
+                                    nullptr,
+                                    DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                    nullptr, &handle);
+                                if (SUCCEEDED(hr) && handle) {
+                                    df.sharedHandle = handle;
+                                    df.hardware = true;
+                                    df.textureSlice = slice;
+                                    zeroCopyDone = true;
+                                }
+                            }
+                        }
+                    }
                 }
-                av_frame_free(&swFrame);
+                if (!zeroCopyDone) {
+                    // Fallback: GPU decode + CPU transfer.
+                    AVFrame* swFrame = av_frame_alloc();
+                    swFrame->format = AV_PIX_FMT_NV12;
+                    if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
+                        df.nv12 = true;
+                        uint32_t w = swFrame->width;
+                        uint32_t h = swFrame->height;
+                        uint32_t ySize = w * h;
+                        uint32_t uvSize = w * (h / 2);
+                        df.bytes.resize(ySize + uvSize);
+                        for (uint32_t y = 0; y < h; ++y)
+                            std::memcpy(df.bytes.data() + y * w,
+                                        swFrame->data[0] + y * swFrame->linesize[0], w);
+                        uint8_t* uvDst = df.bytes.data() + ySize;
+                        for (uint32_t y = 0; y < h / 2; ++y)
+                            std::memcpy(uvDst + y * w,
+                                        swFrame->data[1] + y * swFrame->linesize[1], w);
+                    } else {
+                        log.warn(L"FFmpeg: D3D11VA frame transfer failed");
+                        av_frame_free(&swFrame);
+                        av_frame_unref(frame_);
+                        continue;
+                    }
+                    av_frame_free(&swFrame);
+                }
             } else if (hardware_ && frame_->format == AV_PIX_FMT_CUDA) {
-                // CUDA → D3D11 zero-copy: map CUDA frame to D3D11 texture.
+                // CUDA -> D3D11 zero-copy: map CUDA frame to D3D11 texture.
                 AVFrame* d3d11Frame = av_frame_alloc();
                 d3d11Frame->format = AV_PIX_FMT_D3D11;
                 d3d11Frame->hw_frames_ctx = av_buffer_ref(hwFramesCtx_);
