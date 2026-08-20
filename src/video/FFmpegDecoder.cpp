@@ -13,6 +13,7 @@ extern "C" {
 
 #include <cstring>
 
+#include <dxgi1_2.h>
 #include "logging/Logger.h"
 #include "util/clock.h"
 #include "util/utf8.h"
@@ -316,6 +317,20 @@ void FFmpegDecoder::close() {
     opened_ = false;
 }
 
+ID3D11Device* FFmpegDecoder::ffmpegDevice() const {
+    if (!hwCtx_ || !hardware_) return nullptr;
+    auto* hwctx = reinterpret_cast<AVHWDeviceContext*>(hwCtx_->data);
+    auto* d3d11ctx = reinterpret_cast<AVD3D11VADeviceContext*>(hwctx->hwctx);
+    return d3d11ctx ? d3d11ctx->device : nullptr;
+}
+
+ID3D11DeviceContext* FFmpegDecoder::ffmpegContext() const {
+    if (!hwCtx_ || !hardware_) return nullptr;
+    auto* hwctx = reinterpret_cast<AVHWDeviceContext*>(hwCtx_->data);
+    auto* d3d11ctx = reinterpret_cast<AVD3D11VADeviceContext*>(hwctx->hwctx);
+    return d3d11ctx ? d3d11ctx->device_context : nullptr;
+}
+
 Result<void> FFmpegDecoder::start(FrameQueue* queue, LONGLONG position100ns) {
     if (!opened_) return std::unexpected(std::wstring(L"FFmpegDecoder::start: not opened"));
     if (worker_.joinable()) return {};
@@ -380,10 +395,13 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
                 // D3D11VA: GPU decoded the frame (fast bitstream parse),
-                // then transfer to CPU as NV12.  The render device uploads
-                // the bytes as a texture — GPU-accelerated decode with a
-                // CPU transfer in between (not zero-copy, but still far
-                // faster than pure software decode).
+                // then transfer to CPU as NV12 via av_hwframe_transfer_data.
+                // This is NOT zero-copy — true zero-copy via DXGI shared
+                // handles requires creating a shared texture + GPU copy on
+                // FFmpeg's device, but the D3D11 immediate context cannot
+                // be safely used for CopySubresourceRegion while FFmpeg
+                // holds internal state on it from avcodec_receive_frame.
+                // The GPU still handles the heavy bitstream decode.
                 AVFrame* swFrame = av_frame_alloc();
                 swFrame->format = AV_PIX_FMT_NV12;
                 if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {

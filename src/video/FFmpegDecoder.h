@@ -54,6 +54,11 @@ public:
     bool isOpen() const override { return opened_; }
     uint64_t decodedFrames() const override { return decodedFrames_.load(); }
 
+    // Access FFmpeg's D3D11 device/context for shared-handle zero-copy.
+    // Returns nullptr if not using D3D11VA.
+    ID3D11Device* ffmpegDevice() const;
+    ID3D11DeviceContext* ffmpegContext() const;
+
     // Metadata-only probe (no decode pipeline).
     static Result<VideoMetadata> probeMetadata(const std::wstring& path);
 
