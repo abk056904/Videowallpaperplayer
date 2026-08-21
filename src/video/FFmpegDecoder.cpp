@@ -130,6 +130,16 @@ void copyYuv420pToNv12(uint8_t* dst, const uint8_t* const* data,
         }
 }
 
+// Guard: reject frames where w*h overflows uint64_t.
+// 4K (3840x2160) = 8.3M pixels × 4 = 33 MB — well under 4 GB.
+// An 8192x8192 frame would be 256 MB × 4 = 1 GB — still safe.
+// A malicious file claiming 65536x65536 would be 16 GB — reject.
+static bool safeFrameSize(uint32_t w, uint32_t h, uint64_t bytesPerPixel, uint64_t& outBytes) {
+    uint64_t pixels = static_cast<uint64_t>(w) * h;
+    outBytes = pixels * bytesPerPixel;
+    return w > 0 && h > 0 && outBytes < (1ull << 32); // cap at 4 GiB
+}
+
 } // namespace
 
 FFmpegDecoder::~FFmpegDecoder() { close(); }
@@ -431,6 +441,9 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
     auto& log = log::Logger::instance();
     AVPacket* pkt = av_packet_alloc();
     if (!pkt) { log.error(L"FFmpeg: failed to allocate packet"); return; }
+    // Reusable software frame for D3D11VA CPU readback (av_hwframe_transfer_data).
+    // Allocated once and reused across all frames to avoid per-frame alloc/free.
+    AVFrame* swFrame = av_frame_alloc();
 
     while (!stopRequested_) {
         int ret = av_read_frame(fmtCtx_, pkt);
@@ -495,8 +508,6 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                 // Calling CopySubresourceRegion on it from our code causes a
                 // crash. av_hwframe_transfer_data avoids this by going through
                 // FFmpeg's internal D3D11VA synchronization path.
-                static thread_local AVFrame* swFrame = nullptr;
-                if (!swFrame) swFrame = av_frame_alloc();
                 swFrame->format = AV_PIX_FMT_NONE;
                 if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
                     const AVPixelFormat swFmt = static_cast<AVPixelFormat>(swFrame->format);
@@ -504,7 +515,12 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     const uint32_t h = swFrame->height;
                     if (swFmt == AV_PIX_FMT_NV12 || swFmt == AV_PIX_FMT_YUV420P) {
                         df.nv12 = true;
-                        df.bytes.resize(w * h * 3 / 2);
+                        uint64_t nv12Bytes = 0;
+                        if (!safeFrameSize(w, h, 3, nv12Bytes) || nv12Bytes / 2 < w) {
+                            log.warn(L"FFmpeg: frame too large ({}x{}), skipping", w, h);
+                            av_frame_unref(frame_); continue;
+                        }
+                        df.bytes.resize(static_cast<size_t>(nv12Bytes / 2));
                         if (swFmt == AV_PIX_FMT_NV12) {
                             copyNv12Tightly(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
                         } else {
@@ -513,7 +529,12 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     } else {
                         // P010 or other 10-bit: convert to BGRA via swscale.
                         df.nv12 = false;
-                        df.bytes.resize(w * h * 4);
+                        uint64_t bgraBytes = 0;
+                        if (!safeFrameSize(w, h, 4, bgraBytes)) {
+                            log.warn(L"FFmpeg: frame too large ({}x{}), skipping", w, h);
+                            av_frame_unref(frame_); continue;
+                        }
+                        df.bytes.resize(static_cast<size_t>(bgraBytes));
                         if (!swsCtx_ || swsSrcW_ != w || swsSrcH_ != h ||
                             swsSrcFmt_ != static_cast<int>(swFmt)) {
                             sws_freeContext(swsCtx_);
@@ -535,11 +556,16 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     continue;
                 }
                 av_frame_unref(swFrame);
+                av_frame_unref(frame_);
             } else if (hardware_ && frame_->format == AV_PIX_FMT_CUDA) {
                 // CUDA -> D3D11 zero-copy: map CUDA frame to D3D11 texture.
                 AVFrame* d3d11Frame = av_frame_alloc();
+                if (!d3d11Frame) { av_frame_unref(frame_); continue; }
                 d3d11Frame->format = AV_PIX_FMT_D3D11;
-                d3d11Frame->hw_frames_ctx = av_buffer_ref(hwFramesCtx_);
+                if (hwFramesCtx_) d3d11Frame->hw_frames_ctx = av_buffer_ref(hwFramesCtx_);
+                if (!d3d11Frame->hw_frames_ctx) {
+                    av_frame_free(&d3d11Frame); av_frame_unref(frame_); continue;
+                }
                 bool mapped = (av_hwframe_map(d3d11Frame, frame_, 0) == 0);
                 if (mapped) {
                     auto* desc = reinterpret_cast<AVD3D11FrameDescriptor*>(d3d11Frame->data[0]);
@@ -557,7 +583,11 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                 df.nv12 = true;
                 const uint32_t w = frame_->width;
                 const uint32_t h = frame_->height;
-                df.bytes.resize(w * h * 3 / 2);
+                uint64_t nv12Bytes = 0;
+                if (!safeFrameSize(w, h, 3, nv12Bytes) || nv12Bytes / 2 < w) {
+                    av_frame_unref(frame_); continue;
+                }
+                df.bytes.resize(static_cast<size_t>(nv12Bytes / 2));
                 if (frame_->format == AV_PIX_FMT_NV12) {
                     copyNv12Tightly(df.bytes.data(), frame_->data, frame_->linesize, w, h);
                 } else {
@@ -569,7 +599,11 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                 uint32_t w = frame_->width;
                 uint32_t h = frame_->height;
                 uint32_t stride = w * 4;
-                df.bytes.resize(stride * h);
+                uint64_t bgraBytes = 0;
+                if (!safeFrameSize(w, h, 4, bgraBytes)) {
+                    av_frame_unref(frame_); continue;
+                }
+                df.bytes.resize(static_cast<size_t>(bgraBytes));
                 const auto srcFmt = static_cast<AVPixelFormat>(frame_->format);
                 if (!swsCtx_ || swsSrcW_ != w || swsSrcH_ != h ||
                     swsSrcFmt_ != static_cast<int>(srcFmt)) {
@@ -585,6 +619,17 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     sws_scale(swsCtx_, frame_->data, frame_->linesize, 0, h, dst, dstStride);
                 }
             }
+            // Release the decoded frame reference after CPU copy.
+            // avcodec_receive_frame reuses the same AVFrame, so we must
+            // unref before the next receive to avoid leaking buffers.
+            av_frame_unref(frame_);
+
+            // Guard: never push a frame with empty/invalid data.
+            // sws_scale failure or overflow rejection leaves bytes empty.
+            if (df.bytes.empty() && !df.hardware && !df.endOfStream) {
+                av_frame_unref(frame_);
+                continue;
+            }
 
             df.decodeTime100ns = util::Clock::instance().now100ns();
             if (!queue->push(std::move(df))) break;
@@ -592,6 +637,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
         }
     }
 
+    if (swFrame) { av_frame_free(&swFrame); swFrame = nullptr; }
     av_packet_free(&pkt);
     log.info(L"FFmpeg decode worker finished ({} frames)", decodedFrames_.load());
 }
