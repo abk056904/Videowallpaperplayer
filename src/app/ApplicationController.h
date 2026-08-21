@@ -12,6 +12,7 @@
 #include "detection/GameDetector.h"
 #include "governor/ResourceGovernor.h"
 #include "library/LibraryManager.h"
+#include "library/ThumbnailExtractor.h"
 #include "performance/StatsCollector.h"
 #include "performance/WorkloadMonitor.h"
 #include "playlist/PlaylistManager.h"
@@ -123,6 +124,7 @@ private:
     std::unique_ptr<ui::Win32UI> ui_;                     // M11: main window (lazy)
     std::unique_ptr<ui::TrayController> tray_;            // M11: tray (persists)
     std::unique_ptr<library::LibraryManager> library_;    // M11: minimal library
+    std::unique_ptr<library::ThumbnailExtractor> thumbnails_; // #9: video frame previews
     std::mutex cmdMu_;                                    // M11: command queue
     std::deque<vw::ui::Command> commands_;
     vw::ui::INotificationSink* sink_ = nullptr;           // M11: single subscriber

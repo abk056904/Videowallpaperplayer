@@ -78,6 +78,8 @@ bool ffmpegApiLoad(const wchar_t* dllDir) {
     ok &= loadFn(g_hAvutil, g_api.rescale_rnd, "av_rescale_rnd");
     ok &= loadFn(g_hAvutil, g_api.strerror, "av_strerror");
     ok &= loadFn(g_hAvutil, g_api.get_bytes_per_sample, "av_get_bytes_per_sample");
+    ok &= loadFn(g_hAvutil, g_api.image_get_buffer_size, "av_image_get_buffer_size");
+    ok &= loadFn(g_hAvutil, g_api.image_fill_arrays, "av_image_fill_arrays");
 
     // libavcodec — packet, codec, hwaccel
     ok &= loadFn(g_hAvcodec, g_api.packet_alloc, "av_packet_alloc");

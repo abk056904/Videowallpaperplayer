@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <filesystem>
 
 namespace vw::ui {
 
@@ -48,6 +49,12 @@ bool LibraryPanel::create(HWND parent) {
         col.cx = (c == kColName) ? ::MulDiv(220, L.u, 5) : ::MulDiv(80, L.u, 5);
         col.iSubItem = c;
         ::SendMessageW(list_, LVM_INSERTCOLUMNW, c, reinterpret_cast<LPARAM>(&col));
+    }
+    // #9: Create image list for thumbnails (32x24, 16-bit color).
+    imageList_ = reinterpret_cast<void*>(::ImageList_Create(32, 24, ILC_COLOR16, 0, 16));
+    if (imageList_) {
+        ::SendMessageW(list_, LVM_SETIMAGELIST, LVSIL_SMALL,
+                       reinterpret_cast<LPARAM>(imageList_));
     }
     // Status line.
     status_ = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, 8, 0, 400, L.cy, nullptr);
@@ -130,6 +137,26 @@ void LibraryPanel::rebuildList() {
         lv.iItem = INT_MAX;
         lv.pszText = const_cast<wchar_t*>(item.path.c_str());
         lv.lParam = static_cast<LPARAM>(item.id);
+        // #9: set thumbnail image if cached.
+        if (imageList_) {
+            const std::wstring thumbPath = thumbnailCache_.count(item.path)
+                                              ? thumbnailCache_[item.path]
+                                              : L"";
+            if (!thumbPath.empty() && std::filesystem::exists(thumbPath)) {
+                // Load BMP and add to image list.
+                HBITMAP bmp = (HBITMAP)::LoadImageW(nullptr, thumbPath.c_str(),
+                                                     IMAGE_BITMAP, 32, 24,
+                                                     LR_LOADFROMFILE);
+                if (bmp) {
+                    int idx = ::ImageList_Add(reinterpret_cast<HIMAGELIST>(imageList_), bmp, nullptr);
+                    ::DeleteObject(bmp);
+                    if (idx >= 0) {
+                        lv.mask |= LVIF_IMAGE;
+                        lv.iImage = idx;
+                    }
+                }
+            }
+        }
         const int row = static_cast<int>(
             ::SendMessageW(list_, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&lv)));
         // Subitems: duration / resolution / fps / codec / hdr / size.
@@ -160,6 +187,12 @@ void LibraryPanel::rebuildList() {
     ::InvalidateRect(list_, nullptr, TRUE);
 }
 
+void LibraryPanel::setThumbnail(const std::wstring& videoPath, const std::wstring& bmpPath) {
+    thumbnailCache_[videoPath] = bmpPath;
+    // Rebuild the list to show the new thumbnail.
+    rebuildList();
+}
+
 std::wstring LibraryPanel::sizeText(uint64_t bytes) {
     if (bytes == 0) {
         return L"-";
@@ -178,6 +211,14 @@ std::wstring LibraryPanel::sizeText(uint64_t bytes) {
 void LibraryPanel::refreshFromSnapshot(const UiSnapshot& s) {
     library_ = s.libraryItems;
     applySort();
+    // #9: request thumbnails for all library items.
+    if (requestThumbnail_) {
+        for (const auto& item : library_) {
+            if (thumbnailCache_.find(item.path) == thumbnailCache_.end()) {
+                requestThumbnail_(item.path);
+            }
+        }
+    }
     rebuildList();
     updateSelectionStatus();
 }

@@ -477,6 +477,15 @@ int ApplicationController::run() {
         }
     });
 
+    // #9: thumbnail extractor — cache thumbnails in AppData/VideoWallpaper/thumbnails
+    thumbnails_ = std::make_unique<library::ThumbnailExtractor>();
+    {
+        auto thumbDir = appDataDir_ / L"thumbnails";
+        std::error_code ec;
+        std::filesystem::create_directories(thumbDir, ec);
+        thumbnails_->setCacheDir(thumbDir.wstring());
+    }
+
     // M11: system tray — created at startup, persists while the UI is closed
     // (spec §10.8: tray must not keep the UI alive; it holds only icon+menu).
     tray_ = std::make_unique<ui::TrayController>();
@@ -496,6 +505,16 @@ int ApplicationController::run() {
         [this](vw::ui::LibraryItemId id) { // lazy metadata probe request
             if (library_) {
                 library_->requestMetadata(id);
+            }
+        },
+        [this](const std::wstring& path) { // #9: thumbnail request
+            if (thumbnails_) {
+                thumbnails_->request(path, [this](const std::wstring& videoPath, bool success,
+                                                  const std::wstring& thumbPath) {
+                    if (success && ui_ && ui_->exists()) {
+                        ui_->setThumbnail(videoPath, thumbPath);
+                    }
+                });
             }
         });
     ui_->setOnClose([this]() {
@@ -1433,6 +1452,10 @@ void ApplicationController::onUiTelemetryTick() {
     log::Logger::instance().debug(L"ui telemetry tick (2 Hz, UI visible)");
     if (library_) {
         library_->pollChangeEvents();
+    }
+    // #9: poll thumbnail extractor to fire callbacks on the UI thread.
+    if (thumbnails_) {
+        thumbnails_->poll();
     }
     if (config_) {
         config_->maybeFlushDirty(std::chrono::steady_clock::now());

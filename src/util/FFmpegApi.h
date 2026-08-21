@@ -68,6 +68,11 @@ struct FFmpegApi {
     int64_t         (*rescale_rnd)(int64_t a, int64_t b, int64_t c, enum AVRounding rnd) = nullptr;
     int             (*strerror)(int errnum, char *errbuf, size_t errbuf_size) = nullptr;
     int             (*get_bytes_per_sample)(enum AVSampleFormat sample_fmt) = nullptr;
+    int             (*image_get_buffer_size)(enum AVPixelFormat pix_fmt, int width,
+                                             int height, int align) = nullptr;
+    int             (*image_fill_arrays)(uint8_t *dst_data[4], int dst_linesize[4],
+                                         const uint8_t *src, enum AVPixelFormat pix_fmt,
+                                         int width, int height, int align) = nullptr;
 
     // ---- libavcodec ----
     AVCodecContext* (*codec_alloc_context3)(const AVCodec *codec) = nullptr;

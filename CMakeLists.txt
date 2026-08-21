@@ -153,6 +153,7 @@ set(VW_PLAYLIST_SOURCES
 # Library module sources (M11: minimal media library + folder watch).
 set(VW_LIBRARY_SOURCES
     src/library/LibraryManager.cpp
+    src/library/ThumbnailExtractor.cpp
 )
 
 # UI module sources (M11: main window, panels, tray).

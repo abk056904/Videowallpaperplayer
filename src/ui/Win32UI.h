@@ -28,7 +28,8 @@ public:
     using RefreshFn = std::function<void()>;
     using CloseFn = std::function<void()>;
 
-    Win32UI(PostFn post, RefreshFn refreshPlaylist, LibraryPanel::MetadataRequestFn requestMeta);
+    Win32UI(PostFn post, RefreshFn refreshPlaylist, LibraryPanel::MetadataRequestFn requestMeta,
+            LibraryPanel::ThumbnailRequestFn requestThumb = nullptr);
 
     bool create();
     void show();
@@ -43,6 +44,7 @@ public:
 
     void showFrameSnapshot(HBITMAP bitmap);
     void refreshFromSnapshot(const UiSnapshot&);
+    void setThumbnail(const std::wstring& videoPath, const std::wstring& bmpPath);
 
     // INotificationSink
     void onTelemetry(const TelemetrySnapshot&) override;

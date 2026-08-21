@@ -17,11 +17,13 @@ const wchar_t* Win32UI::kTabNames[] = {L"Home", L"Library", L"Playlists",
                                         L"Monitors", L"Performance", L"Settings"};
 
 Win32UI::Win32UI(PostFn post, RefreshFn refreshPlaylist,
-                 LibraryPanel::MetadataRequestFn requestMeta)
+                 LibraryPanel::MetadataRequestFn requestMeta,
+                 LibraryPanel::ThumbnailRequestFn requestThumb)
     : post_(std::move(post)),
       refreshPlaylist_(std::move(refreshPlaylist)),
       home_(std::make_unique<HomePanel>(post_)),
-      library_(std::make_unique<LibraryPanel>(post_, std::move(requestMeta))),
+      library_(std::make_unique<LibraryPanel>(post_, std::move(requestMeta),
+                                              std::move(requestThumb))),
       playlists_(std::make_unique<PlaylistsPanel>(post_, refreshPlaylist_)),
       monitors_(std::make_unique<MonitorsPanel>(post_)),
       performance_(std::make_unique<PerformancePanel>(post_)),
@@ -347,6 +349,12 @@ void Win32UI::showFrameSnapshot(HBITMAP bitmap) {
         monitors_->onFrameSnapshot(bitmap);
     } else if (bitmap) {
         ::DeleteObject(bitmap);
+    }
+}
+
+void Win32UI::setThumbnail(const std::wstring& videoPath, const std::wstring& bmpPath) {
+    if (library_) {
+        library_->setThumbnail(videoPath, bmpPath);
     }
 }
 

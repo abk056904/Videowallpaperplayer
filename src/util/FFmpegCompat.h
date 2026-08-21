@@ -34,6 +34,8 @@
 #define av_rescale_rnd              FF.rescale_rnd
 #define av_strerror                 FF.strerror
 #define av_get_bytes_per_sample     FF.get_bytes_per_sample
+#define av_image_get_buffer_size    FF.image_get_buffer_size
+#define av_image_fill_arrays        FF.image_fill_arrays
 
 // ---- libavcodec ----
 #define avcodec_alloc_context3          FF.codec_alloc_context3

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <map>
+#include <string>
 
 #include "ui/panels/Panel.h"
 
@@ -16,9 +18,12 @@ namespace vw::ui {
 class LibraryPanel : public Panel {
 public:
     using MetadataRequestFn = std::function<void(vw::ui::LibraryItemId)>;
+    using ThumbnailRequestFn = std::function<void(const std::wstring& path)>;
 
-    LibraryPanel(PostFn post, MetadataRequestFn requestMetadata)
-        : Panel(std::move(post)), requestMetadata_(std::move(requestMetadata)) {}
+    LibraryPanel(PostFn post, MetadataRequestFn requestMetadata,
+                 ThumbnailRequestFn requestThumbnail = nullptr)
+        : Panel(std::move(post)), requestMetadata_(std::move(requestMetadata)),
+          requestThumbnail_(std::move(requestThumbnail)) {}
 
     bool create(HWND parent) override;
     void onLibraryChange(const LibraryChangeNotification&) override;
@@ -38,6 +43,9 @@ private:
     void addFolderDialog();
     void removeSelected();
     void setWallpaperForSelection();
+public:
+    void setThumbnail(const std::wstring& videoPath, const std::wstring& bmpPath);
+private:
     static std::wstring sizeText(uint64_t bytes);
 
     enum Btn : UINT { kBtnAddFiles = 101, kBtnAddFolder = 102, kBtnRemove = 103,
@@ -46,7 +54,10 @@ private:
                      kColHdr, kColSize, kColCount };
 
     MetadataRequestFn requestMetadata_;
+    ThumbnailRequestFn requestThumbnail_;
     std::vector<LibraryItem> library_; // local copy (sorted)
+    void* imageList_ = nullptr; // HIMAGELIST (opaque; commctrl.h in .cpp only)
+    std::map<std::wstring, std::wstring> thumbnailCache_; // path -> cached BMP path
     int sortCol_ = kColName;
     bool sortAsc_ = true;
     HWND list_ = nullptr;
