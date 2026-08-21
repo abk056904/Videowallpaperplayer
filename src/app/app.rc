@@ -7,9 +7,10 @@
 // rc.exe emits a string-named resource that those APIs cannot find.
 #include <winres.h>
 
-IDI_APP_ICON ICON "..\\..\\video_wallpaper_engine_transparent_rgb_centered.ico"
+IDI_APP_ICON ICON "..\\..\\video_wallpaper_icon_final.ico"
 
 // clang-format off
+
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION     1,0,0,0
  PRODUCTVERSION  1,0,0,0

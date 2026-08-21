@@ -922,18 +922,7 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
 Microsoft::WRL::ComPtr<ID3D11Texture2D> WallpaperManager::openSharedHandle(HANDLE sharedHandle) {
     if (!sharedHandle) return nullptr;
     auto& entry = sharedFrameCache_[sharedHandle];
-    if (entry.texture) {
-        // Validate cached texture is still valid (not device-lost).
-        D3D11_TEXTURE2D_DESC desc{};
-        entry.texture->GetDesc(&desc);
-        if (desc.Width == 0 || desc.Height == 0) {
-            entry.texture.Reset();
-            if (entry.handle) { CloseHandle(entry.handle); entry.handle = nullptr; }
-            sharedFrameCache_.erase(sharedHandle);
-        } else {
-            return entry.texture;
-        }
-    }
+    if (entry.texture) return entry.texture;
     Microsoft::WRL::ComPtr<ID3D11Device1> dev1;
     HRESULT hr = deviceManager_.device()->QueryInterface(IID_PPV_ARGS(&dev1));
     if (FAILED(hr) || !dev1) return nullptr;
@@ -976,9 +965,7 @@ Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,
                                                ID3D11ShaderResourceView* uvSrv,
                                                float videoAspect) {
     if (!ySrv || !uvSrv) {
-        return std::unexpected(L"bindFramePlanes: null SRV (y=" +
-                               std::to_wstring(reinterpret_cast<uintptr_t>(ySrv)) +
-                               L" uv=" + std::to_wstring(reinterpret_cast<uintptr_t>(uvSrv)) + L")");
+        return std::unexpected(L"bindFramePlanes: null SRV");
     }
     bool anyError = false;
     for (auto& host : hosts_) {

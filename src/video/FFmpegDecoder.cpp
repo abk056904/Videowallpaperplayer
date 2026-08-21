@@ -375,7 +375,10 @@ Result<void> FFmpegDecoder::start(FrameQueue* queue, LONGLONG position100ns) {
     if (!opened_) return std::unexpected(std::wstring(L"FFmpegDecoder::start: not opened"));
     if (worker_.joinable()) return {};
 
-    if (position100ns > 0 && fmtCtx_) {
+    if (fmtCtx_) {
+        // Always seek to the requested position (including 0 for replay).
+        // Without this, replay() leaves the format context at EOF and the
+        // new decode worker immediately hits AVERROR_EOF.
         int64_t ts = position100ns / 10; // 100ns units -> microseconds
         avformat_seek_file(fmtCtx_, -1, INT64_MIN, ts, INT64_MAX, 0);
         avcodec_flush_buffers(codecCtx_);
@@ -422,12 +425,28 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
 
         ret = avcodec_send_packet(codecCtx_, pkt);
         av_packet_unref(pkt);
-        if (ret < 0) continue;
+        if (ret < 0) {
+            static int sendFailures = 0;
+            if (++sendFailures <= 3) {
+                char errbuf[128]{};
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                log.warn(L"FFmpeg: send_packet failed ({})", vw::util::utf8ToWide(errbuf));
+            }
+            continue;
+        }
 
         while (ret >= 0) {
             ret = avcodec_receive_frame(codecCtx_, frame_);
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-            if (ret < 0) break;
+            if (ret < 0) {
+                static int recvFailures = 0;
+                if (++recvFailures <= 3) {
+                    char errbuf[128]{};
+                    av_strerror(ret, errbuf, sizeof(errbuf));
+                    log.warn(L"FFmpeg: receive_frame failed ({})", vw::util::utf8ToWide(errbuf));
+                }
+                break;
+            }
 
             DecodedFrame df;
             df.width = static_cast<UINT>(frame_->width);
@@ -458,15 +477,6 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     if (needsNewTex) {
                         sharedTex_.Reset();
                         if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
-                        // Validate format is supported for shared textures.
-                        // NV12 and P010 are the primary D3D11VA decode formats.
-                        const bool fmtOk = (srcDesc.Format == DXGI_FORMAT_NV12 ||
-                                            srcDesc.Format == DXGI_FORMAT_P010 ||
-                                            srcDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
-                        if (!fmtOk) {
-                            log.warn(L"FFmpeg: unsupported shared texture format {}",
-                                     static_cast<int>(srcDesc.Format));
-                        } else {
                         D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
                         sharedDesc.Usage = D3D11_USAGE_DEFAULT;
                         sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -485,34 +495,24 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                                 else { sharedWidth_ = srcDesc.Width; sharedHeight_ = srcDesc.Height; sharedFormat_ = srcDesc.Format; }
                             }
                         }
-                        } // fmtOk
                     }
-                    if (sharedTex_ && sharedHandle_) {
-                        // NV12 has 2 planes (Y + UV) per array slice.
-                        // CopySubresourceRegion operates on ONE subresource at a time,
-                        // so we must copy BOTH planes. For texture arrays (ArraySize>1),
-                        // each slice has 2 subresources: slice*2+0 (Y) and slice*2+1 (UV).
+                    if (sharedTex_ && sharedHandle_ && deferredCtx_) {
+                        // D3D11 planar textures (NV12/P010): each array slice is ONE subresource
+                        // containing both Y and UV planes. CopySubresourceRegion copies
+                        // the entire subresource (both planes) in one call.
                         const UINT slice = static_cast<UINT>(desc->index);
-                        const UINT planeCount = 2; // NV12 = Y + UV interleaved
-                        for (UINT plane = 0; plane < planeCount; ++plane) {
-                            const UINT srcSub = slice * planeCount + plane;
-                            const UINT dstSub = slice * planeCount + plane;
-                            // UV plane is half height for NV12.
-                            const UINT planeHeight = (plane == 0) ? srcDesc.Height : srcDesc.Height / 2;
-                            D3D11_BOX box{};
-                            box.left = 0; box.top = 0; box.front = 0;
-                            box.right = srcDesc.Width; box.bottom = planeHeight; box.back = 1;
-                            deferredCtx_->CopySubresourceRegion(
-                                sharedTex_.Get(), dstSub, 0, 0, 0,
-                                desc->texture, srcSub, &box);
-                        }
+                        D3D11_BOX box{};
+                        box.left = 0; box.top = 0; box.front = 0;
+                        box.right = srcDesc.Width;
+                        box.bottom = srcDesc.Height;
+                        box.back = 1;
+                        deferredCtx_->CopySubresourceRegion(
+                            sharedTex_.Get(), slice, 0, 0, 0,
+                            desc->texture, slice, &box);
                         Microsoft::WRL::ComPtr<ID3D11CommandList> cmdList;
                         HRESULT hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
                         if (SUCCEEDED(hr) && cmdList) {
                             ffmpegCtx->ExecuteCommandList(cmdList.Get(), FALSE);
-                            // Flush to ensure the GPU copy completes before the render
-                            // device reads the shared texture. Without this, the render
-                            // device may see uninitialized data (green screen).
                             ffmpegCtx->Flush();
                             df.sharedHandle = sharedHandle_;
                             df.hardware = true;

@@ -797,9 +797,11 @@ void ApplicationController::handleEndOfStream() {
     if (!playlist_ || !playback_) {
         return;
     }
-    // A session that presented zero frames is broken (opens but decodes
-    // nothing) — mark it unavailable (M7; M12 hardens with attempt tracking).
-    if (playback_->stats().presentedFrames == 0) {
+    // Capture presented count BEFORE any replay/reset. A successful playback
+    // session (presentedFrames > 0) should not be marked unavailable just
+    // because a subsequent replay() resets stats_.
+    const uint64_t presented = playback_->stats().presentedFrames;
+    if (presented == 0) {
         if (const auto* item = playlist_->currentItem()) {
             log.warn(L"playlist item produced no frames — marking unavailable: {}", item->path);
         }

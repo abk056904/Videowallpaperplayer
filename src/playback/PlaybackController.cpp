@@ -233,14 +233,12 @@ std::optional<video::DecodedFrame> PlaybackController::onWake() {
                          ? queue->popNewestUpTo(scheduler_.dueMediaAt(now), frame)
                          : player_->pollFrame(frame);
     if (!got) {
-        // Deadline passed with nothing due (decoder still working): re-arm
-        // relative to now — never a past deadline (no busy re-fire).
         scheduler_.advanceIdle(now);
         armTimer();
         return std::nullopt;
     }
     if (frame.endOfStream) {
-        armTimer(); // caller stops immediately; harmless
+        armTimer();
         return frame;
     }
     scheduler_.advanceAfterPresent(now, frame.timestamp);
