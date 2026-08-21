@@ -15,6 +15,7 @@ Testing/
 # Logs / runtime state (never commit personal media or test clips)
 *.log
 config.json.bak
+portable.ini
 
 # Scratch / temp (e.g. ffmpeg-synthesized test clips)
 scratch/

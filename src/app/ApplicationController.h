@@ -111,6 +111,7 @@ private:
 
     HANDLE mutex_ = nullptr;
     std::filesystem::path appDataDir_;
+    bool portableMode_ = false; // portable.ini detected next to exe
     std::unique_ptr<config::ConfigurationManager> config_;
     std::unique_ptr<wallpaper::WallpaperManager> wallpaper_;
     std::unique_ptr<playback::PlaybackController> playback_;

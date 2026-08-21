@@ -1,7 +1,7 @@
 #include "video/DecoderManager.h"
 
-#include <cwchar>
 #include <cstring>
+#include <functional>
 
 #include <Windows.h>
 #include <mfapi.h>
@@ -24,7 +24,11 @@ constexpr DWORD kFirstVideoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VI
 constexpr DWORD kAllStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
 constexpr DWORD kMediaSourceStream = static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE);
 
-Result<void> negotiateNv12Output(IMFSourceReader* reader) {
+// DRY: negotiate an output media type on the first video stream.
+// Shared by negotiateNv12Output and negotiateRgb32Output.
+Result<void> negotiateOutput(IMFSourceReader* reader, const GUID& subtype,
+                              const wchar_t* label,
+                              std::function<void(ComPtr<IMFMediaType>&)> extraSetup = nullptr) {
     ComPtr<IMFMediaType> native;
     if (FAILED(reader->GetCurrentMediaType(kFirstVideoStream, &native)))
         return std::unexpected(L"no video stream in file");
@@ -33,48 +37,37 @@ Result<void> negotiateNv12Output(IMFSourceReader* reader) {
     if (FAILED(::MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0)
         return std::unexpected(L"could not read frame size");
 
-    ComPtr<IMFMediaType> nv12;
-    HRESULT hr = ::MFCreateMediaType(&nv12);
-    if (SUCCEEDED(hr)) hr = nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (SUCCEEDED(hr)) hr = nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    if (SUCCEEDED(hr)) hr = nv12->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(nv12.Get(), MF_MT_FRAME_SIZE, w, h);
-    if (FAILED(hr)) return std::unexpected(L"could not build NV12 media type");
+    ComPtr<IMFMediaType> outType;
+    HRESULT hr = ::MFCreateMediaType(&outType);
+    if (SUCCEEDED(hr)) hr = outType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    if (SUCCEEDED(hr)) hr = outType->SetGUID(MF_MT_SUBTYPE, subtype);
+    if (SUCCEEDED(hr)) hr = outType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(outType.Get(), MF_MT_FRAME_SIZE, w, h);
+    if (extraSetup && SUCCEEDED(hr)) extraSetup(outType);
+    if (FAILED(hr)) return std::unexpected(std::wstring(L"could not build ") + label + L" media type");
 
-    hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, nv12.Get());
+    hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, outType.Get());
     if (FAILED(hr))
-        return std::unexpected(L"NV12 output unsupported: hr=0x" + std::format(L"{:08X}", static_cast<unsigned>(hr)));
+        return std::unexpected(label + std::wstring(L" output unsupported: hr=0x") + std::format(L"{:08X}", static_cast<unsigned>(hr)));
     return {};
 }
 
+Result<void> negotiateNv12Output(IMFSourceReader* reader) {
+    return negotiateOutput(reader, MFVideoFormat_NV12, L"NV12");
+}
+
 Result<void> negotiateRgb32Output(IMFSourceReader* reader) {
-    ComPtr<IMFMediaType> native;
-    if (FAILED(reader->GetCurrentMediaType(kFirstVideoStream, &native)))
-        return std::unexpected(L"no video stream in file");
-
-    UINT32 w = 0, h = 0;
-    if (FAILED(::MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0)
-        return std::unexpected(L"could not read frame size");
-
-    ComPtr<IMFMediaType> rgb;
-    HRESULT hr = ::MFCreateMediaType(&rgb);
-    if (SUCCEEDED(hr)) hr = rgb->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (SUCCEEDED(hr)) hr = rgb->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-    if (SUCCEEDED(hr)) hr = rgb->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (SUCCEEDED(hr)) hr = rgb->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    if (SUCCEEDED(hr)) hr = rgb->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-    if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(rgb.Get(), MF_MT_FRAME_SIZE, w, h);
-    if (SUCCEEDED(hr)) {
-        LONG stride = 0;
-        if (SUCCEEDED(::MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, w, &stride)) && stride > 0)
-            hr = rgb->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(stride));
-    }
-    if (FAILED(hr)) return std::unexpected(L"could not build RGB32 media type");
-
-    hr = reader->SetCurrentMediaType(kFirstVideoStream, nullptr, rgb.Get());
-    if (FAILED(hr))
-        return std::unexpected(L"RGB32 output unsupported: hr=0x" + std::format(L"{:08X}", static_cast<unsigned>(hr)));
-    return {};
+    return negotiateOutput(reader, MFVideoFormat_RGB32, L"RGB32",
+        [](ComPtr<IMFMediaType>& t) {
+            t->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+            t->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+            // RGB32 needs explicit stride for the Video Processor MFT.
+            LONG stride = 0;
+            UINT32 w = 0;
+            ::MFGetAttributeSize(t.Get(), MF_MT_FRAME_SIZE, &w, nullptr);
+            if (SUCCEEDED(::MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, w, &stride)) && stride > 0)
+                t->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(stride));
+        });
 }
 
 std::wstring clsidFriendlyName(const GUID& clsid) {
@@ -440,15 +433,13 @@ bool DecoderManager::copySampleToTexture(IMFSample* sample, DecodedFrame& out, s
     return true;
 }
 
-bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height,
-                                      DecodedFrame& out, std::wstring& err) {
-    ComPtr<IMFMediaBuffer> buffer;
+// DRY: lock an MF sample buffer for CPU access (2D or linear).
+// Returns scanline0 + pitch on success; false + err on failure.
+static bool lockSampleBuffer(IMFSample* sample, ComPtr<IMFMediaBuffer>& buffer,
+                             BYTE*& scanline0, LONG& pitch, std::wstring& err) {
     HRESULT hr = sample->GetBufferByIndex(0, &buffer);
     if (FAILED(hr)) { err = L"GetBufferByIndex failed"; return false; }
-    sample->GetSampleTime(&out.timestamp);
-
     ComPtr<IMF2DBuffer> buffer2d;
-    BYTE* scanline0 = nullptr; LONG pitch = 0;
     if (SUCCEEDED(buffer.As(&buffer2d))) {
         hr = buffer2d->Lock2D(&scanline0, &pitch);
         if (FAILED(hr)) { err = L"Lock2D failed"; return false; }
@@ -458,6 +449,19 @@ bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height
         if (FAILED(hr)) { err = L"Lock failed"; return false; }
         pitch = 0;
     }
+    return true;
+}
+static void unlockSampleBuffer(ComPtr<IMFMediaBuffer>& buffer) {
+    ComPtr<IMF2DBuffer> buffer2d;
+    if (SUCCEEDED(buffer.As(&buffer2d))) buffer2d->Unlock2D(); else buffer->Unlock();
+}
+
+bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height,
+                                      DecodedFrame& out, std::wstring& err) {
+    ComPtr<IMFMediaBuffer> buffer;
+    BYTE* scanline0 = nullptr; LONG pitch = 0;
+    if (!lockSampleBuffer(sample, buffer, scanline0, pitch, err)) return false;
+    sample->GetSampleTime(&out.timestamp);
 
     out.width = width; out.height = height; out.nv12 = true;
     const size_t srcPitch = pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width);
@@ -471,28 +475,16 @@ bool DecoderManager::copySampleToNv12(IMFSample* sample, UINT width, UINT height
     for (UINT y = 0; y < height / 2; ++y)
         std::memcpy(dst + ySize + static_cast<size_t>(y) * rowBytes, uv + static_cast<size_t>(y) * srcPitch, rowBytes);
 
-    if (buffer2d) buffer2d->Unlock2D(); else buffer->Unlock();
+    unlockSampleBuffer(buffer);
     return true;
 }
 
 bool DecoderManager::copySampleToFrame(IMFSample* sample, UINT width, UINT height,
                                        DecodedFrame& out, std::wstring& err) {
     ComPtr<IMFMediaBuffer> buffer;
-    HRESULT hr = sample->GetBufferByIndex(0, &buffer);
-    if (FAILED(hr)) { err = L"GetBufferByIndex failed"; return false; }
-    sample->GetSampleTime(&out.timestamp);
-
-    ComPtr<IMF2DBuffer> buffer2d;
     BYTE* scanline0 = nullptr; LONG pitch = 0;
-    if (SUCCEEDED(buffer.As(&buffer2d))) {
-        hr = buffer2d->Lock2D(&scanline0, &pitch);
-        if (FAILED(hr)) { err = L"Lock2D failed"; return false; }
-    } else {
-        DWORD len = 0;
-        hr = buffer->Lock(&scanline0, nullptr, &len);
-        if (FAILED(hr)) { err = L"Lock failed"; return false; }
-        pitch = 0;
-    }
+    if (!lockSampleBuffer(sample, buffer, scanline0, pitch, err)) return false;
+    sample->GetSampleTime(&out.timestamp);
 
     out.width = width; out.height = height;
     const size_t srcPitch = pitch > 0 ? static_cast<size_t>(pitch) : static_cast<size_t>(width) * 4;
@@ -501,7 +493,7 @@ bool DecoderManager::copySampleToFrame(IMFSample* sample, UINT width, UINT heigh
         std::memcpy(out.bytes.data() + static_cast<size_t>(y) * width * 4,
                     scanline0 + static_cast<size_t>(y) * srcPitch, static_cast<size_t>(width) * 4);
 
-    if (buffer2d) buffer2d->Unlock2D(); else buffer->Unlock();
+    unlockSampleBuffer(buffer);
     return true;
 }
 

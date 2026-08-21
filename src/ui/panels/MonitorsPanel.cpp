@@ -318,10 +318,12 @@ LRESULT CALLBACK MonitorsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     return 0;
                 case kCtlScalingCombo:
                     if (HIWORD(wParam) == CBN_SELCHANGE) {
+                        const int selIdx = static_cast<int>(
+                            ::SendMessageW(self->scalingCombo_, CB_GETCURSEL, 0, 0));
+                        if (selIdx < 0 || selIdx > 3) return 0; // CB_ERR or out of range
                         Command c;
                         c.id = CommandId::SetScaling;
-                        c.scaling = static_cast<ScalingMode>(
-                            ::SendMessageW(self->scalingCombo_, CB_GETCURSEL, 0, 0));
+                        c.scaling = static_cast<ScalingMode>(selIdx);
                         // #23: send per-monitor scaling for the selected monitor.
                         const int sel = static_cast<int>(
                             ::SendMessageW(self->list_, LVM_GETSELECTIONMARK, 0, 0));

@@ -59,6 +59,10 @@ public:
     D3D_FEATURE_LEVEL featureLevel() const { return featureLevel_; }
     bool debugLayer() const { return debugLayer_; }
 
+    // Adapter info for the debug overlay (name + VRAM).
+    std::wstring adapterName() const;
+    uint64_t dedicatedVramBytes() const;
+
     // Flip-model swap chain for an HWND (2 buffers, B8G8R8A8, vsync at present).
     Result<Microsoft::WRL::ComPtr<IDXGISwapChain1>> createSwapChain(
         HWND hwnd, UINT width, UINT height) const;

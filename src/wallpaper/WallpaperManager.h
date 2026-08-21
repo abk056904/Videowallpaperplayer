@@ -119,7 +119,9 @@ public:
     void setDebugEnabled(bool enabled) { debugEnabled_ = enabled; }
     bool debugEnabled() const { return debugEnabled_; }
     void updateDebugOverlay(double decodedFps, double presentedFps, uint64_t dropped,
-                             const wchar_t* decoderName, bool hwDecode);
+                             const wchar_t* decoderName, bool hwDecode,
+                             const wchar_t* adapterName = nullptr,
+                             uint64_t vramUsedBytes = 0, uint64_t vramBudgetBytes = 0);
 
     // M11 Monitors-panel preview: one-time CPU readback of the CURRENT video
     // frame (the software-path upload texture). Returns tightly-packed BGRA8

@@ -23,6 +23,10 @@ namespace vw::video {
 
 namespace {
 
+// Decode thread priority (THREAD_PRIORITY_HIGHER = 1). Named constant
+// avoids scattering magic numbers across FFmpegDecoder + DecoderManager.
+constexpr int kDecodeThreadPriority = 1;
+
 // D3D11VA pixel format callback
 enum AVPixelFormat hwGetFormatD3d11(AVCodecContext* ctx, const enum AVPixelFormat* pixFmts) {
     for (const auto* p = pixFmts; *p != AV_PIX_FMT_NONE; ++p) {
@@ -37,6 +41,62 @@ enum AVPixelFormat hwGetFormatCuda(AVCodecContext* ctx, const enum AVPixelFormat
         if (*p == AV_PIX_FMT_CUDA) return *p;
     }
     return pixFmts[0];
+}
+
+// DRY: fill VideoMetadata from an opened AVFormatContext + AVCodecParameters.
+// Called by tryOpenD3d11va, tryOpenCuda, tryOpenSw, and probeMetadata.
+void fillMetadata(VideoMetadata& meta, const AVFormatContext* fmtCtx, int videoStreamIdx,
+                  const AVCodecParameters* par) {
+    auto* stream = fmtCtx->streams[videoStreamIdx];
+    meta.width = static_cast<UINT>(par->width);
+    meta.height = static_cast<UINT>(par->height);
+    meta.fps = av_q2d(stream->avg_frame_rate);
+    if (meta.fps <= 0 || meta.fps > 240) meta.fps = 30.0;
+    meta.duration100ns = (fmtCtx->duration > 0) ? fmtCtx->duration * 10 : 0;
+    meta.codec = vw::util::utf8ToWide(avcodec_get_name(par->codec_id));
+    meta.bitDepth = 8;
+    meta.displayAspect = (par->height > 0)
+        ? static_cast<double>(par->width) / par->height : 0.0;
+}
+
+// DRY: copy NV12 rows from src (with linesize stride) to a tightly-packed dst.
+// Handles both Y plane and interleaved UV plane. Used by D3D11VA fallback and
+// software NV12 paths in workerLoop.
+void copyNv12Tightly(uint8_t* dst, const uint8_t* const* srcData,
+                     const int* linesize, uint32_t w, uint32_t h) {
+    const uint32_t ySize = w * h;
+    const uint32_t uvSize = w * (h / 2);
+    const bool yBulk = (linesize[0] == static_cast<int>(w));
+    const bool uvBulk = (linesize[1] == static_cast<int>(w));
+    if (yBulk) {
+        std::memcpy(dst, srcData[0], ySize);
+    } else {
+        for (uint32_t y = 0; y < h; ++y)
+            std::memcpy(dst + y * w, srcData[0] + y * linesize[0], w);
+    }
+    uint8_t* uvDst = dst + ySize;
+    if (uvBulk) {
+        std::memcpy(uvDst, srcData[1], uvSize);
+    } else {
+        for (uint32_t y = 0; y < h / 2; ++y)
+            std::memcpy(uvDst + y * w, srcData[1] + y * linesize[1], w);
+    }
+}
+
+// DRY: copy YUV420P planes (separate Y, U, V) to tightly-packed NV12 layout.
+void copyYuv420pToNv12(uint8_t* dst, const uint8_t* const* data,
+                        const int* linesize, uint32_t w, uint32_t h) {
+    const uint32_t ySize = w * h;
+    // Y plane
+    for (uint32_t y = 0; y < h; ++y)
+        std::memcpy(dst + y * w, data[0] + y * linesize[0], w);
+    // Interleave U/V into NV12 UV plane
+    uint8_t* uvDst = dst + ySize;
+    for (uint32_t y = 0; y < h / 2; ++y)
+        for (uint32_t x = 0; x < w / 2; ++x) {
+            uvDst[y * w + x * 2] = data[1][y * linesize[1] + x];
+            uvDst[y * w + x * 2 + 1] = data[2][y * linesize[2] + x];
+        }
 }
 
 } // namespace
@@ -123,15 +183,7 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
     hardware_ = true;
     decoderName_ = vw::util::utf8ToWide(codec->name);
 
-    auto* stream = fmtCtx_->streams[videoStreamIdx_];
-    metadata_.width = static_cast<UINT>(par->width);
-    metadata_.height = static_cast<UINT>(par->height);
-    metadata_.fps = av_q2d(stream->avg_frame_rate);
-    if (metadata_.fps <= 0 || metadata_.fps > 240) metadata_.fps = 30.0;
-    metadata_.duration100ns = (fmtCtx_->duration > 0) ? fmtCtx_->duration * 10 : 0;
-    metadata_.codec = vw::util::utf8ToWide(avcodec_get_name(par->codec_id));
-    metadata_.bitDepth = 8;
-    metadata_.displayAspect = static_cast<double>(par->width) / par->height;
+    fillMetadata(metadata_, fmtCtx_, videoStreamIdx_, par);
 
     frame_ = av_frame_alloc();
     opened_ = true;
@@ -236,15 +288,7 @@ bool FFmpegDecoder::tryOpenCuda(const std::wstring& path) {
     hardware_ = true;
     decoderName_ = vw::util::utf8ToWide(codec->name);
 
-    auto* stream = fmtCtx_->streams[videoStreamIdx_];
-    metadata_.width = static_cast<UINT>(par->width);
-    metadata_.height = static_cast<UINT>(par->height);
-    metadata_.fps = av_q2d(stream->avg_frame_rate);
-    if (metadata_.fps <= 0 || metadata_.fps > 240) metadata_.fps = 30.0;
-    metadata_.duration100ns = (fmtCtx_->duration > 0) ? fmtCtx_->duration * 10 : 0;
-    metadata_.codec = vw::util::utf8ToWide(avcodec_get_name(par->codec_id));
-    metadata_.bitDepth = 8;
-    metadata_.displayAspect = static_cast<double>(par->width) / par->height;
+    fillMetadata(metadata_, fmtCtx_, videoStreamIdx_, par);
 
     frame_ = av_frame_alloc();
     opened_ = true;
@@ -285,15 +329,7 @@ bool FFmpegDecoder::tryOpenSw(const std::wstring& path) {
     hardware_ = false;
     decoderName_ = vw::util::utf8ToWide(codec->name);
 
-    auto* stream = fmtCtx_->streams[videoStreamIdx_];
-    metadata_.width = static_cast<UINT>(par->width);
-    metadata_.height = static_cast<UINT>(par->height);
-    metadata_.fps = av_q2d(stream->avg_frame_rate);
-    if (metadata_.fps <= 0 || metadata_.fps > 240) metadata_.fps = 30.0;
-    metadata_.duration100ns = (fmtCtx_->duration > 0) ? fmtCtx_->duration * 10 : 0;
-    metadata_.codec = vw::util::utf8ToWide(avcodec_get_name(par->codec_id));
-    metadata_.bitDepth = 8;
-    metadata_.displayAspect = static_cast<double>(par->width) / par->height;
+    fillMetadata(metadata_, fmtCtx_, videoStreamIdx_, par);
 
     frame_ = av_frame_alloc();
     opened_ = true;
@@ -314,6 +350,7 @@ void FFmpegDecoder::close() {
     sharedTex_.Reset();
     if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
     sharedWidth_ = sharedHeight_ = 0;
+    sharedFormat_ = DXGI_FORMAT_UNKNOWN;
     videoStreamIdx_ = -1;
     hardware_ = false;
     decoderName_.clear();
@@ -351,7 +388,7 @@ Result<void> FFmpegDecoder::start(FrameQueue* queue, LONGLONG position100ns) {
         // Boost decode thread priority so OS background tasks (AV scans,
         // Windows Update, indexers) cannot preempt the decode loop and
         // cause frame-starvation lag on the consumer side.
-        ::SetThreadPriority(::GetCurrentThread(), 1 /*THREAD_PRIORITY_HIGHER*/);
+        ::SetThreadPriority(::GetCurrentThread(), kDecodeThreadPriority);
         workerLoop(queue);
     });
     return {};
@@ -414,8 +451,11 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                 if (desc && desc->texture && ffmpegDev && ffmpegCtx && deferredCtx_) {
                     D3D11_TEXTURE2D_DESC srcDesc{};
                     desc->texture->GetDesc(&srcDesc);
-                    // Recreate the cached shared texture only on resolution change.
-                    if (!sharedTex_ || sharedWidth_ != srcDesc.Width || sharedHeight_ != srcDesc.Height) {
+                    // Recreate the cached shared texture on resolution OR format change.
+                    const bool needsNewTex = !sharedTex_ || sharedWidth_ != srcDesc.Width ||
+                                              sharedHeight_ != srcDesc.Height ||
+                                              sharedFormat_ != srcDesc.Format;
+                    if (needsNewTex) {
                         sharedTex_.Reset();
                         if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
                         D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
@@ -433,7 +473,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                                     DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
                                     nullptr, &sharedHandle_);
                                 if (FAILED(hr)) { sharedTex_.Reset(); sharedHandle_ = nullptr; }
-                                else { sharedWidth_ = srcDesc.Width; sharedHeight_ = srcDesc.Height; }
+                                else { sharedWidth_ = srcDesc.Width; sharedHeight_ = srcDesc.Height; sharedFormat_ = srcDesc.Format; }
                             }
                         }
                     }
@@ -468,32 +508,42 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                 }
                 if (!zeroCopyDone) {
                     // Fallback: GPU decode + CPU transfer.
+                    // Don't hardcode NV12 — HEVC may decode as P010 (10-bit).
+                    // Let av_hwframe_transfer_data auto-detect the sw format.
                     static thread_local AVFrame* swFrame = nullptr;
                     if (!swFrame) swFrame = av_frame_alloc();
-                    swFrame->format = AV_PIX_FMT_NV12;
+                    swFrame->format = AV_PIX_FMT_NONE; // auto-detect from HW frame
                     if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
-                        df.nv12 = true;
+                        const AVPixelFormat swFmt = static_cast<AVPixelFormat>(swFrame->format);
                         const uint32_t w = swFrame->width;
                         const uint32_t h = swFrame->height;
-                        const uint32_t ySize = w * h;
-                        const uint32_t uvSize = w * (h / 2);
-                        df.bytes.resize(ySize + uvSize);
-                        const bool yBulk = (swFrame->linesize[0] == w);
-                        const bool uvBulk = (swFrame->linesize[1] == w);
-                        if (yBulk) {
-                            std::memcpy(df.bytes.data(), swFrame->data[0], ySize);
+                        if (swFmt == AV_PIX_FMT_NV12 || swFmt == AV_PIX_FMT_YUV420P) {
+                            df.nv12 = true;
+                            df.bytes.resize(w * h * 3 / 2);
+                            if (swFmt == AV_PIX_FMT_NV12) {
+                                copyNv12Tightly(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
+                            } else {
+                                copyYuv420pToNv12(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
+                            }
                         } else {
-                            for (uint32_t y = 0; y < h; ++y)
-                                std::memcpy(df.bytes.data() + y * w,
-                                            swFrame->data[0] + y * swFrame->linesize[0], w);
-                        }
-                        uint8_t* uvDst = df.bytes.data() + ySize;
-                        if (uvBulk) {
-                            std::memcpy(uvDst, swFrame->data[1], uvSize);
-                        } else {
-                            for (uint32_t y = 0; y < h / 2; ++y)
-                                std::memcpy(uvDst + y * w,
-                                            swFrame->data[1] + y * swFrame->linesize[1], w);
+                            // P010 or other 10-bit: convert to NV12 via swscale.
+                            df.nv12 = true;
+                            df.bytes.resize(w * h * 3 / 2);
+                            // Reuse cached SwsContext for P010->NV12 conversion.
+                            if (!swsCtx_ || swsSrcW_ != w || swsSrcH_ != h ||
+                                swsSrcFmt_ != static_cast<int>(swFmt)) {
+                                sws_freeContext(swsCtx_);
+                                swsCtx_ = sws_getContext(w, h, swFmt, w, h,
+                                                          AV_PIX_FMT_NV12, SWS_BILINEAR,
+                                                          nullptr, nullptr, nullptr);
+                                swsSrcW_ = w; swsSrcH_ = h; swsSrcFmt_ = static_cast<int>(swFmt);
+                            }
+                            if (swsCtx_) {
+                                uint8_t* dst[1] = {df.bytes.data()};
+                                int dstStride[1] = {static_cast<int>(w)};
+                                sws_scale(swsCtx_, swFrame->data, swFrame->linesize,
+                                          0, h, dst, dstStride);
+                            }
                         }
                     } else {
                         log.warn(L"FFmpeg: D3D11VA frame transfer failed");
@@ -522,23 +572,13 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             } else if (frame_->format == AV_PIX_FMT_YUV420P || frame_->format == AV_PIX_FMT_NV12) {
                 // Software NV12
                 df.nv12 = true;
-                uint32_t w = frame_->width;
-                uint32_t h = frame_->height;
-                uint32_t ySize = w * h;
-                uint32_t uvSize = w * (h / 2);
-                df.bytes.resize(ySize + uvSize);
-                for (uint32_t y = 0; y < h; ++y)
-                    std::memcpy(df.bytes.data() + y * w, frame_->data[0] + y * frame_->linesize[0], w);
-                uint8_t* uvDst = df.bytes.data() + ySize;
+                const uint32_t w = frame_->width;
+                const uint32_t h = frame_->height;
+                df.bytes.resize(w * h * 3 / 2);
                 if (frame_->format == AV_PIX_FMT_NV12) {
-                    for (uint32_t y = 0; y < h / 2; ++y)
-                        std::memcpy(uvDst + y * w, frame_->data[1] + y * frame_->linesize[1], w);
+                    copyNv12Tightly(df.bytes.data(), frame_->data, frame_->linesize, w, h);
                 } else {
-                    for (uint32_t y = 0; y < h / 2; ++y)
-                        for (uint32_t x = 0; x < w / 2; ++x) {
-                            uvDst[y * w + x * 2] = frame_->data[1][y * frame_->linesize[1] + x];
-                            uvDst[y * w + x * 2 + 1] = frame_->data[2][y * frame_->linesize[2] + x];
-                        }
+                    copyYuv420pToNv12(df.bytes.data(), frame_->data, frame_->linesize, w, h);
                 }
             } else {
                 // Software BGRA fallback — reuse cached SwsContext across
@@ -591,17 +631,8 @@ Result<VideoMetadata> FFmpegDecoder::probeMetadata(const std::wstring& path) {
     }
 
     AVCodecParameters* par = fmtCtx->streams[vidIdx]->codecpar;
-    auto* stream = fmtCtx->streams[vidIdx];
-
     VideoMetadata meta;
-    meta.width = static_cast<UINT>(par->width);
-    meta.height = static_cast<UINT>(par->height);
-    meta.fps = av_q2d(stream->avg_frame_rate);
-    if (meta.fps <= 0 || meta.fps > 240) meta.fps = 30.0;
-    meta.duration100ns = (fmtCtx->duration > 0) ? fmtCtx->duration * 10 : 0;
-    meta.codec = vw::util::utf8ToWide(avcodec_get_name(par->codec_id));
-    meta.bitDepth = 8;
-    meta.displayAspect = (par->height > 0) ? static_cast<double>(par->width) / par->height : 0.0;
+    fillMetadata(meta, fmtCtx, vidIdx, par);
 
     avformat_close_input(&fmtCtx);
     return meta;

@@ -26,8 +26,10 @@ public:
 
     // Update the overlay text and re-render to the texture.
     // Stats are formatted and drawn via GDI at most once per call.
+    static constexpr int kMaxLines = 6;
     void update(const wchar_t* line1, const wchar_t* line2,
-                const wchar_t* line3, const wchar_t* line4);
+                const wchar_t* line3, const wchar_t* line4,
+                const wchar_t* line5 = nullptr, const wchar_t* line6 = nullptr);
 
     // Resize the overlay texture (e.g. on window resize).
     Result<void> resize(ID3D11Device* device, UINT width, UINT height);
@@ -53,7 +55,7 @@ private:
     UINT width_ = 0;
     UINT height_ = 0;
     // Cached stats to avoid re-rendering when nothing changed
-    std::wstring lines_[4];
+    std::wstring lines_[kMaxLines];
     bool textDirty_ = true;
 };
 

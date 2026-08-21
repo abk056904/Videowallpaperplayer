@@ -580,7 +580,7 @@ Result<void> WallpaperManager::createHosts() {
 Result<void> WallpaperManager::renderAll() {
     // Initialize debug overlay on first render if enabled.
     if (debugEnabled_ && !debugOverlay_.valid() && deviceManager_.device()) {
-        if (auto r = debugOverlay_.init(deviceManager_.device(), 350, 80); !r) {
+        if (auto r = debugOverlay_.init(deviceManager_.device(), 380, 120); !r) {
             log::Logger::instance().warn(L"debug overlay init failed: {}", r.error());
         }
     }
@@ -1032,11 +1032,13 @@ void WallpaperManager::repositionHost(const std::wstring& monitorId) {
 
 void WallpaperManager::updateDebugOverlay(double decodedFps, double presentedFps,
                                            uint64_t dropped, const wchar_t* decoderName,
-                                           bool hwDecode) {
-    wchar_t line1[128], line2[128], line3[128], line4[128];
+                                           bool hwDecode, const wchar_t* adapterName,
+                                           uint64_t vramUsedBytes, uint64_t vramBudgetBytes) {
+    wchar_t line1[128], line2[128], line3[128], line4[128], line5[128], line6[128];
     _snwprintf_s(line1, _TRUNCATE, L"FPS: %.1f decoded / %.1f presented", decodedFps, presentedFps);
-    _snwprintf_s(line2, _TRUNCATE, L"Decoder: %s", decoderName ? decoderName : L"?");
-    _snwprintf_s(line3, _TRUNCATE, L"HW: %s  Dropped: %llu", hwDecode ? L"Yes" : L"No",
+    _snwprintf_s(line2, _TRUNCATE, L"Decoder: %s (%s)", decoderName ? decoderName : L"?",
+                 hwDecode ? L"HW" : L"SW");
+    _snwprintf_s(line3, _TRUNCATE, L"Dropped: %llu frames",
                  static_cast<unsigned long long>(dropped));
     // Memory: use GetProcessMemoryInfo for working set.
     PROCESS_MEMORY_COUNTERS pmc{};
@@ -1045,8 +1047,23 @@ void WallpaperManager::updateDebugOverlay(double decodedFps, double presentedFps
     if (::GetProcessMemoryInfo(::GetCurrentProcess(), &pmc, sizeof(pmc))) {
         ramKB = static_cast<DWORD>(pmc.WorkingSetSize / 1024);
     }
-    _snwprintf_s(line4, _TRUNCATE, L"RAM: %u MB", ramKB / 1024);
-    debugOverlay_.update(line1, line2, line3, line4);
+    _snwprintf_s(line4, _TRUNCATE, L"RAM: %u MB (working set)", ramKB / 1024);
+    // Adapter name
+    if (adapterName && adapterName[0]) {
+        _snwprintf_s(line5, _TRUNCATE, L"GPU: %s", adapterName);
+    } else {
+        line5[0] = L'\0';
+    }
+    // VRAM usage
+    if (vramBudgetBytes > 0) {
+        const double usedMB = static_cast<double>(vramUsedBytes) / (1024.0 * 1024.0);
+        const double budgetMB = static_cast<double>(vramBudgetBytes) / (1024.0 * 1024.0);
+        _snwprintf_s(line6, _TRUNCATE, L"VRAM: %.0f / %.0f MB (%.0f%%)",
+                     usedMB, budgetMB, usedMB * 100.0 / budgetMB);
+    } else {
+        line6[0] = L'\0';
+    }
+    debugOverlay_.update(line1, line2, line3, line4, line5, line6);
 }
 
 } // namespace vw::wallpaper

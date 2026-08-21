@@ -230,4 +230,18 @@ std::wstring D3D11DeviceManager::deviceRemovedReasonString() const {
     return formatHr(reason);
 }
 
+std::wstring D3D11DeviceManager::adapterName() const {
+    if (!adapter_) return L"(no adapter)";
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(adapter_->GetDesc1(&desc))) return L"(unknown)";
+    return desc.Description;
+}
+
+uint64_t D3D11DeviceManager::dedicatedVramBytes() const {
+    if (!adapter_) return 0;
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(adapter_->GetDesc1(&desc))) return 0;
+    return desc.DedicatedVideoMemory;
+}
+
 } // namespace vw::gfx

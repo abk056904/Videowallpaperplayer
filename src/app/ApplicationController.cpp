@@ -98,6 +98,21 @@ void ApplicationController::notifyExistingInstance() const {
 }
 
 void ApplicationController::initPaths() {
+    // Portable mode: if portable.ini exists next to the exe, store all data
+    // (config, logs, playlists, thumbnails, crashes) in the exe's directory
+    // instead of %APPDATA%. This makes the app fully self-contained.
+    wchar_t exePath[MAX_PATH]{};
+    ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+
+    if (std::filesystem::exists(exeDir / L"portable.ini")) {
+        appDataDir_ = exeDir; // all data lives next to the exe
+        portableMode_ = true;
+        std::error_code ec;
+        std::filesystem::create_directories(appDataDir_, ec); // ensure it exists
+        return;
+    }
+
     wchar_t buf[MAX_PATH]{};
     if (SUCCEEDED(::SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
         appDataDir_ = std::filesystem::path(buf) / L"VideoWallpaper";
@@ -535,7 +550,8 @@ int ApplicationController::run() {
     adapterName_ = adapterName();
 
     log.info(L"Video Wallpaper v{} starting", L"0.1.0");
-    log.info(L"appdata dir: {}", appDataDir_.wstring());
+    log.info(L"appdata dir: {}{}", appDataDir_.wstring(),
+             portableMode_ ? L" (portable mode)" : L"");
     log.info(L"config: {} (loaded={})", config_->lastError().empty() ? L"ok" : config_->lastError(),
              configLoaded ? L"yes" : L"no");
     // M8 decoder-count diagnostic: Clone decodes ONCE for all monitors (one
@@ -644,9 +660,13 @@ void ApplicationController::startPlayback() {
             }
             // Update debug overlay every ~1s (stats observer fires at 1 Hz).
             if (wallpaper_->debugEnabled()) {
+                const auto wl = workloadMonitor_ ? workloadMonitor_->state()
+                                                  : performance::WorkloadState{};
                 wallpaper_->updateDebugOverlay(s.decodedFps, s.presentedFps, s.droppedFrames,
                                                playback_->decoderName().c_str(),
-                                               playback_->hardwareDecoding());
+                                               playback_->hardwareDecoding(),
+                                               adapterName_.c_str(),
+                                               wl.gpuMemoryUsed, wl.gpuMemoryBudget);
             }
         });
     }
@@ -1486,9 +1506,13 @@ void ApplicationController::onUiTelemetryTick() {
     if (wallpaper_ && wallpaper_->debugEnabled() && playback_ &&
         playback_->state() == playback::PlaybackController::State::Playing) {
         const auto& s = playback_->stats();
+        const auto wl = workloadMonitor_ ? workloadMonitor_->state()
+                                          : performance::WorkloadState{};
         wallpaper_->updateDebugOverlay(s.decodedFps, s.presentedFps, s.droppedFrames,
                                        playback_->decoderName().c_str(),
-                                       playback_->hardwareDecoding());
+                                       playback_->hardwareDecoding(),
+                                       adapterName_.c_str(),
+                                       wl.gpuMemoryUsed, wl.gpuMemoryBudget);
     }
 }
 

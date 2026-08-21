@@ -179,7 +179,8 @@ void LibraryPanel::rebuildList() {
         }
         setSub(kColFps, formatFps(item.metadata.frameRate).c_str());
         static const wchar_t* kCodecNames[] = {L"-", L"H.264", L"HEVC", L"AV1", L"VP9"};
-        setSub(kColCodec, kCodecNames[static_cast<int>(item.metadata.codec)]);
+        const int codecIdx = std::clamp(static_cast<int>(item.metadata.codec), 0, 4);
+        setSub(kColCodec, kCodecNames[codecIdx]);
         setSub(kColHdr, item.metadata.hdr ? L"Yes" : L"No");
         setSub(kColSize, sizeText(item.fileSize).c_str());
     }

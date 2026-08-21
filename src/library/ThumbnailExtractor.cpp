@@ -1,7 +1,6 @@
 #include "library/ThumbnailExtractor.h"
 
 #include <algorithm>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 

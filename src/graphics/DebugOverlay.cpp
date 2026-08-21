@@ -37,14 +37,15 @@ Result<void> DebugOverlay::init(ID3D11Device* device, UINT width, UINT height) {
 }
 
 void DebugOverlay::update(const wchar_t* line1, const wchar_t* line2,
-                           const wchar_t* line3, const wchar_t* line4) {
+                           const wchar_t* line3, const wchar_t* line4,
+                           const wchar_t* line5, const wchar_t* line6) {
     // Check if text changed
-    const std::wstring newLines[4] = { line1 ? line1 : L"", line2 ? line2 : L"",
-                                        line3 ? line3 : L"", line4 ? line4 : L"" };
+    const wchar_t* inputs[] = { line1, line2, line3, line4, line5, line6 };
     textDirty_ = false;
-    for (int i = 0; i < 4; ++i) {
-        if (lines_[i] != newLines[i]) {
-            lines_[i] = newLines[i];
+    for (int i = 0; i < kMaxLines; ++i) {
+        std::wstring val = inputs[i] ? inputs[i] : L"";
+        if (lines_[i] != val) {
+            lines_[i] = std::move(val);
             textDirty_ = true;
         }
     }
@@ -112,7 +113,7 @@ Result<void> DebugOverlay::renderText(ID3D11Device* device) {
     ::SetBkMode(memDc, TRANSPARENT);
 
     RECT textRect = { kPadding + kBorderWidth, kPadding + kBorderWidth, 0, 0 };
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kMaxLines; ++i) {
         if (lines_[i].empty()) continue;
         textRect.top = kPadding + kBorderWidth + i * kLineHeight;
         textRect.left = kPadding + kBorderWidth + 4;

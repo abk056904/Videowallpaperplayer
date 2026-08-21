@@ -89,6 +89,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex_;
     HANDLE sharedHandle_ = nullptr;
     UINT sharedWidth_ = 0, sharedHeight_ = 0;
+    DXGI_FORMAT sharedFormat_ = DXGI_FORMAT_UNKNOWN; // cache format for recreation
 
     VideoMetadata metadata_;
     std::thread worker_;

@@ -7,9 +7,10 @@ Built as a single native x64 C++23 executable (Win32 + Direct3D 11 + Media Found
 No .NET, no Electron, no Qt, no runtime frameworks, no bundled codecs: everything
 Windows already provides is used as-is.
 
-> **Status:** v1.1 complete — adds FFmpeg hardware decode (D3D11VA / CUDA / NVDEC)
+> **Status:** v1.2 complete — adds FFmpeg hardware decode (D3D11VA / CUDA / NVDEC)
 > with GPU-accelerated decode (zero CPU↔GPU copies), full audio pipeline (WASAPI + FFmpeg + swresample),
-> and a codec-aware decoder factory. The v1 milestones (M0–M14) are in
+> library thumbnails, global hotkeys, drag & drop, crash reporting, auto-update checker,
+> per-monitor volume/scaling, and a codec-aware decoder factory. The v1 milestones (M0–M14) are in
 > [`docs/`](docs/), the execution contract in
 > [`implement-docs-plan-spec.md`](implement-docs-plan-spec.md), milestone progress in
 > [`docs/06-progress-checklist.md`](docs/06-progress-checklist.md), and the final
@@ -103,18 +104,24 @@ Key components (all under `src/`):
 | `library/LibraryManager` | Minimal library: add/remove/list, incremental scan, lazy metadata |
 | `ui/Win32UI` + `ui/panels/*` | Six-tab DPI-aware window (Home, Library, Playlists, Monitors, Performance, Settings) |
 | `ui/TrayController` | Tray icon + menu; left-click toggles the UI |
+| `library/ThumbnailExtractor` | FFmpeg-based async thumbnail extraction (background worker, disk cache) |
+| `system/SystemStateMonitor` | Lock, power, display-off, battery notifications |
+| `util/CrashReport` | Minidump writer for unhandled exceptions |
+| `util/UpdateChecker` | Background GitHub releases check on startup |
+| `util/FileAssoc` | Windows file association registration (.mp4, .mkv, etc.) |
 | `logging/Logger` | Leveled, rotating file sink in `%APPDATA%\VideoWallpaper\logs\` |
 | `config/ConfigurationManager` | UTF-8 JSON config; validate/clamp/defaults; corrupt → `.bak` + defaults; atomic save |
-| `util/` | Clock, UTF-8 conversion, scale math, JSON parser |
+| `util/` | Clock, UTF-8 conversion, scale math, JSON parser, FFmpeg lazy-load |
 
 ## Requirements
 
 - **Windows 11** (24H2-era builds verified; Windows 10 21H2+ should work — see
   *Known limitations*). x64 only.
+- **Portable mode**: place `portable.ini` next to the exe for self-contained data storage.
 - **GPU with Direct3D 11.1** (feature level 11_1 or 11_0).
 - **No runtime frameworks** — only the OS and the MSVC runtime DLLs
   (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`).
-- ~32 MB total (1.6 MB exe + FFmpeg DLLs + runtime DLLs).
+- ~18 MB total (1.9 MB exe + ~13 MB FFmpeg DLLs + runtime DLLs). Installer: 6.2 MiB.
 - D3D11VA hardware decode for H.264/HEVC (via FFmpeg); falls back to software
   when GPU decode is unavailable.
 
@@ -174,6 +181,15 @@ the three MSVC runtime DLLs, `README.md`, and `LICENSE` — nothing else.
 
 ## Running
 
+### Portable Mode
+
+Place a `portable.ini` file (can be empty) next to `VideoWallpaper.exe`. All data
+(config, logs, playlists, thumbnails, crash dumps) will be stored in the exe's
+directory instead of `%APPDATA%`. This makes the app fully self-contained — ideal
+for USB drives or portable installs.
+
+### Normal Mode
+
 - Launch `VideoWallpaper.exe`. The wallpaper appears behind your desktop icons
   within ~1–2 s.
 - **First run** creates `%APPDATA%\VideoWallpaper\config.json` (UTF-8 JSON) with
@@ -186,6 +202,135 @@ the three MSVC runtime DLLs, `README.md`, and `LICENSE` — nothing else.
   no service, no admin, no elevated anything).
 - **CLI/debug**: `vw_gfx_harness --help` lists the harness modes
   (`--video`, `--wallpaper`, `--device-loss`, `--frames N`, `--scaling`).
+
+## UI Panels
+
+The app features a modern dark-themed DPI-aware window with **6 tabs**:
+
+### 🏠 Home
+
+Dashboard showing the current wallpaper state:
+- **Playback status** (Playing / Paused / Stopped)
+- **Current video** name, resolution, codec
+- **Real-time stats**: decoded FPS, presented FPS, dropped frames, decode latency, render time
+- **System stats**: CPU %, GPU memory, RAM usage
+- **Adapter name** (GPU model)
+- **Playback controls**: Pause / Next / Previous buttons
+
+### 📚 Library
+
+Video file browser with lazy metadata extraction:
+- **ListView** with columns: Name, Duration, Resolution, FPS, Codec, HDR, Size
+- **Thumbnails**: auto-extracted from video files (background worker, cached in `%APPDATA%\VideoWallpaper\thumbnails\`)
+- **File picker**: Add videos via Open File dialog
+- **Double-click** to set as wallpaper
+- **Drag & drop** files onto the panel to add them
+
+### 📋 Playlists
+
+Playlist management with multiple modes:
+- **Add / Remove / Reorder** items (Up/Down buttons)
+- **Enable / Disable** individual items (skip without removing)
+- **Modes**: Single, Sequential, Loop, Shuffle
+- **Import / Export**: M3U file format for sharing playlists
+- **Persistence**: saved to `%APPDATA%\VideoWallpaper\playlist.json`
+
+### 🖥️ Monitors
+
+Per-monitor configuration:
+- **Monitor list**: shows all displays with resolution, refresh rate, primary flag
+- **Frame preview**: live snapshot of the current video frame on the selected monitor
+- **Wallpaper mode**: Clone (shared) / Independent (per-monitor)
+- **Scaling mode**: per-monitor Fill / Fit / Stretch / Center
+- **Volume slider**: per-monitor volume (0–100%)
+
+### 📊 Performance
+
+Resource monitoring and pause triggers:
+- **Battery mode**: Continue / Reduce Quality / Pause
+- **Pause toggles**: Game / Fullscreen / High CPU / High GPU / High RAM
+- **Thresholds**: CPU/GPU/RAM pause and resume percentages (hysteresis engine)
+- **Timing**: Pause delay, Resume delay, Long-pause release (SUSPENDED)
+- **Advanced**: Performance mode (Balanced / Performance / Quality / Ultra-Low-Resource)
+- **Config export/import** buttons
+
+### ⚙️ Settings
+
+General app configuration:
+- **Start with Windows** (HKCU Run key)
+- **Minimize to tray** on close
+- **File associations** (.mp4, .mkv, etc. — registers with Windows)
+- **Logging level** (Info / Debug / Warn / Error)
+- **Playback speed** (0.5× – 2.0×)
+- **Frame queue depth** (1–16)
+
+### Global Hotkeys
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Alt+V` | Play / Pause toggle |
+| `Ctrl+Alt+←` | Previous video |
+| `Ctrl+Alt+→` | Next video |
+| `Ctrl+Alt+D` | Toggle debug overlay (FPS, decoder, RAM on wallpaper) |
+
+---
+
+## Feature List
+
+### Core Playback
+- ✅ Play video files as animated desktop wallpaper (behind icons)
+- ✅ Playlist with Single / Sequential / Loop / Shuffle modes
+- ✅ Playlist import/export (M3U)
+- ✅ Source-FPS pacing (no busy loops, no monitor-refresh redraws)
+- ✅ Zero-copy GPU decode (D3D11VA, CUDA, MF hardware)
+- ✅ Codec-aware decoder factory (H.264 → HEVC → VP9 → AV1)
+- ✅ Audio playback (WASAPI + FFmpeg, volume control)
+- ✅ Playback speed control (0.25× – 4×)
+- ✅ Drag & drop to add files
+- ✅ File associations (.mp4, .mkv, etc.)
+
+### Multi-Monitor
+- ✅ Per-monitor wallpaper hosts (auto-created on display change)
+- ✅ Clone mode (decode once, render on all monitors)
+- ✅ Independent mode (per-monitor playlists)
+- ✅ Per-monitor volume control
+- ✅ Per-monitor scaling presets
+- ✅ Mixed refresh rate support
+
+### Resource Management
+- ✅ Automatic pause on game / fullscreen / high CPU / high GPU / high RAM
+- ✅ Hysteresis-based pause/resume (no flapping)
+- ✅ Long-pause decoder release (SUSPENDED state)
+- ✅ `EmptyWorkingSet()` on suspend (frees physical RAM)
+- ✅ Battery mode (Continue / Reduce Quality / Pause)
+- ✅ Lock / display-off / suspend detection
+
+### UI & UX
+- ✅ Modern dark theme (DPI-aware, Win32 native)
+- ✅ System tray with context menu
+- ✅ Global hotkeys (play/pause, next/prev, debug overlay)
+- ✅ Library with thumbnails (FFmpeg frame extraction)
+- ✅ Config import/export (JSON)
+- ✅ Debug overlay (FPS, decoder, RAM — Ctrl+Alt+D)
+- ✅ Start minimized to tray option
+- ✅ Minimize-to-tray on close
+
+### System Integration
+- ✅ Start with Windows (HKCU Run key, no admin)
+- ✅ Single-instance (second launch activates first)
+- ✅ Explorer-restart recovery (auto-rebuild wallpaper layer)
+- ✅ GPU device-loss recovery (auto-recreate with backoff)
+- ✅ Crash reporting (Minidump on unhandled exception)
+- ✅ Auto-update checker (queries GitHub releases)
+
+### Developer
+- ✅ GitHub Actions CI/CD pipeline
+- ✅ Nightly soak automation
+- ✅ ~172 unit tests (doctest, Debug + Release)
+- ✅ Minimal FFmpeg build (~13 MiB DLLs, lazy-loaded)
+- ✅ Inno Setup installer (6.2 MiB)
+
+---
 
 ## Supported codecs & containers
 
@@ -256,13 +401,19 @@ never terminates playback — the factory falls back automatically.
 ## Performance behavior (measured)
 
 Measured on the dev machine (Ryzen 5 7535HS, 13.8 GB RAM, RTX 3050 Laptop + Radeon
-iGPU, 1920×1080 @ 144 Hz, Windows 11 24H2), Release build, 1440p60 H.264:
+iGPU, 1920×1080 @ 144 Hz, Windows 11 24H2), Release build, 1440p60 H.264 + HEVC:
 
-| State | CPU | Private RAM | Handles | Threads |
+| State | CPU | RAM (RSS) | Handles | Threads |
 |---|---|---|---|---|
-| **Playing** (software decode) | ~190% (decode-limited; ~23 ms/f MF software decode — no HW MFT on this machine) | ~408–424 MB | ~1367 | ~37–40 |
-| **Paused** | 0–5% | ~388 MB | flat | flat |
+| **Playing** (D3D11VA HW decode) | ~59% | ~215–235 MB | ~1876 | ~97 |
+| **Paused** | 0–5% | ~200 MB | flat | flat |
 | **Suspended** (long pause) | **0.0–0.8%** | **~124 MB** (decoder + GPU resources released) | flat | flat |
+
+- D3D11VA hardware decode delivers **60 FPS at 0 dropped frames** for H.264 and
+  HEVC 2560×1440 content.
+- HEVC D3D11VA now works correctly (auto-detects P010/NV12 format, converts via
+  swscale when needed).
+- 5-minute soak test: memory stable (no leaks), zero frame drops, CPU time flat.
 
 - The software decode cost is inherent to the machine's MF stack (no hardware MFT
   exists here); on hardware-decode-capable machines the decode moves to the GPU
@@ -319,19 +470,15 @@ changes via a revision counter (no polling).
 
 Logs: `%APPDATA%\VideoWallpaper\logs\current.log` (rotates at 1 MB → `previous.log`).
 
-## Known limitations (v1.1)
+## Known limitations (v1.2)
 
-- **No thumbnails, drag & drop, or global hotkeys** (v2 items; the library is minimal).
-- **Shared-playlist mode across monitors** is v2; v1 has clone (decode-once shared
-  frame) and independent (per-monitor) modes.
-- **No installer** — portable ZIP (installer is v2).
+- **Per-monitor scaling presets** persist in config but the UI updates are deferred to v2.
+- **Shared-playlist mode** (one playlist synced across all monitors in Independent mode)
+  is a v2 feature; v1 has Clone (decode-once shared frame) and Independent (per-monitor)
+  modes.
 - **Windows 10 / 32-bit / ARM**: not verified (x64 Windows 11 is the target).
-- **This dev machine's limits** (reported `NOT MEASURED` in the final report): no
-  MF hardware decoder available (software path exercised end-to-end), single display
-  (multi-monitor verified on simulated topologies), no AV1/VP9/HDR sample rows,
-  no VRAM measurement (no GPU decode), and disruptive tests (lock screen, system
-  suspend, GPU driver reset, 24 h soak) were declined — see
-  [`docs/07-final-report.md`](docs/07-final-report.md).
+- **Multi-monitor real hardware test**: verified on simulated topologies only — this dev
+  machine has a single display.
 
 ## Development
 

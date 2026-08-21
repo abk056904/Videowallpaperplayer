@@ -215,6 +215,7 @@ void PlaylistsPanel::toggleSelected() {
 }
 
 void PlaylistsPanel::setModeFromCombo(int index) {
+    if (index < 0 || index > 3) return; // CB_ERR or out of range
     Command c;
     c.id = CommandId::PlaylistSetMode;
     c.mode = static_cast<PlaylistMode>(index);
