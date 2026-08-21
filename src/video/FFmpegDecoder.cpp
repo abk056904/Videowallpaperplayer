@@ -458,6 +458,15 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     if (needsNewTex) {
                         sharedTex_.Reset();
                         if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
+                        // Validate format is supported for shared textures.
+                        // NV12 and P010 are the primary D3D11VA decode formats.
+                        const bool fmtOk = (srcDesc.Format == DXGI_FORMAT_NV12 ||
+                                            srcDesc.Format == DXGI_FORMAT_P010 ||
+                                            srcDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
+                        if (!fmtOk) {
+                            log.warn(L"FFmpeg: unsupported shared texture format {}",
+                                     static_cast<int>(srcDesc.Format));
+                        } else {
                         D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
                         sharedDesc.Usage = D3D11_USAGE_DEFAULT;
                         sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -476,6 +485,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                                 else { sharedWidth_ = srcDesc.Width; sharedHeight_ = srcDesc.Height; sharedFormat_ = srcDesc.Format; }
                             }
                         }
+                        } // fmtOk
                     }
                     if (sharedTex_ && sharedHandle_) {
                         // NV12 has 2 planes (Y + UV) per array slice.

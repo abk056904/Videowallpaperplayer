@@ -719,6 +719,20 @@ Result<void> uploadNv12Bytes(ID3D11DeviceContext* context, ID3D11Texture2D* text
 
 Result<void> WallpaperManager::ensureAndUpload(UploadSlot& slot, const video::DecodedFrame& frame) {
     auto& log = log::Logger::instance();
+    // Validate frame data size to prevent buffer overruns.
+    const size_t expectedY = static_cast<size_t>(frame.width) * frame.height;
+    const size_t expectedNv12 = expectedY * 3 / 2;
+    const size_t expectedRgb = expectedY * 4;
+    if (frame.nv12 && frame.bytes.size() < expectedNv12) {
+        return std::unexpected(L"NV12 frame data too small: " +
+                               std::to_wstring(frame.bytes.size()) + L" < " +
+                               std::to_wstring(expectedNv12));
+    }
+    if (!frame.nv12 && !frame.hardware && frame.bytes.size() < expectedRgb) {
+        return std::unexpected(L"RGB frame data too small: " +
+                               std::to_wstring(frame.bytes.size()) + L" < " +
+                               std::to_wstring(expectedRgb));
+    }
     if (frame.nv12) {
         if (!slot.texture || !slot.nv12 || slot.width != frame.width || slot.height != frame.height) {
             auto created = createNv12Upload(deviceManager_.device(), frame.width, frame.height);
@@ -906,8 +920,20 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
 // D3D11VA shared-handle zero-copy path.
 // Opens a DXGI shared texture on the render device, caching it for reuse.
 Microsoft::WRL::ComPtr<ID3D11Texture2D> WallpaperManager::openSharedHandle(HANDLE sharedHandle) {
+    if (!sharedHandle) return nullptr;
     auto& entry = sharedFrameCache_[sharedHandle];
-    if (entry.texture) return entry.texture;
+    if (entry.texture) {
+        // Validate cached texture is still valid (not device-lost).
+        D3D11_TEXTURE2D_DESC desc{};
+        entry.texture->GetDesc(&desc);
+        if (desc.Width == 0 || desc.Height == 0) {
+            entry.texture.Reset();
+            if (entry.handle) { CloseHandle(entry.handle); entry.handle = nullptr; }
+            sharedFrameCache_.erase(sharedHandle);
+        } else {
+            return entry.texture;
+        }
+    }
     Microsoft::WRL::ComPtr<ID3D11Device1> dev1;
     HRESULT hr = deviceManager_.device()->QueryInterface(IID_PPV_ARGS(&dev1));
     if (FAILED(hr) || !dev1) return nullptr;
@@ -949,6 +975,11 @@ Result<void> WallpaperManager::bindSharedFrameFor(const std::wstring& monitorId,
 Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,
                                                ID3D11ShaderResourceView* uvSrv,
                                                float videoAspect) {
+    if (!ySrv || !uvSrv) {
+        return std::unexpected(L"bindFramePlanes: null SRV (y=" +
+                               std::to_wstring(reinterpret_cast<uintptr_t>(ySrv)) +
+                               L" uv=" + std::to_wstring(reinterpret_cast<uintptr_t>(uvSrv)) + L")");
+    }
     bool anyError = false;
     for (auto& host : hosts_) {
         auto result = host->setVideoPlanes(ySrv, uvSrv, videoAspect, scaling_);
