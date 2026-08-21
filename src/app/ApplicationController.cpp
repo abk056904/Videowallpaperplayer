@@ -651,9 +651,14 @@ void ApplicationController::startPlayback() {
         });
     }
     // M5: hardware decode on the wallpaper's D3D device (same adapter);
-    // scaling per config.playback.scaling (Fill default).
+    // scaling per config.playback.scaling (Fill default) or per-monitor override.
     if (wallpaper_) {
-        wallpaper_->setScaling(rendererScalingFrom(config_->config().scaling));
+        const auto& cfg = config_->config();
+        const auto& pmScaling = cfg.perMonitorScaling;
+        const auto monId = primaryMonitorId();
+        const auto it = pmScaling.find(monId);
+        const auto mode = (it != pmScaling.end()) ? it->second : cfg.scaling;
+        wallpaper_->setScaling(rendererScalingFrom(mode));
     }
     if (playlist_->currentIndex() == playlist::PlaylistManager::kNoIndex) {
         playlist_->setCurrent(0);
@@ -1128,13 +1133,26 @@ void ApplicationController::dispatchCommand(const vw::ui::Command& c) {
         }
         case vw::ui::CommandId::SetScaling: {
             auto& cfg = config_->config();
-            cfg.scaling = static_cast<config::ScalingMode>(c.scaling);
+            // #23: if a monitor id is provided in s1, store per-monitor scaling.
+            // Otherwise, set the global default.
+            if (!c.s1.empty()) {
+                cfg.perMonitorScaling[c.s1] = static_cast<config::ScalingMode>(c.scaling);
+                log.info(L"command: per-monitor scaling {} -> {}", c.s1,
+                         scalingNameForLog(c.scaling));
+            } else {
+                cfg.scaling = static_cast<config::ScalingMode>(c.scaling);
+                log.info(L"command: global scaling -> {}", scalingNameForLog(c.scaling));
+            }
             if (wallpaper_) {
-                wallpaper_->setScaling(rendererScalingFrom(cfg.scaling));
+                // Apply per-monitor scaling if available, else global.
+                const auto& pmScaling = cfg.perMonitorScaling;
+                const auto monId = primaryMonitorId();
+                const auto it = pmScaling.find(monId);
+                const auto mode = (it != pmScaling.end()) ? it->second : cfg.scaling;
+                wallpaper_->setScaling(rendererScalingFrom(mode));
             }
             config_->markDirty();
             config_->markConfigChanged();
-            log.info(L"command: scaling -> {}", scalingNameForLog(c.scaling));
             pushWallpaperAssignment();
             break;
         }
@@ -1854,6 +1872,9 @@ vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
     s.config.audio = c.audio;
     s.config.volume = c.volume;
     s.config.perMonitorVolume = c.perMonitorVolume; // #18
+    for (const auto& [id, mode] : c.perMonitorScaling) {
+        s.config.perMonitorScaling[id] = static_cast<vw::ui::ScalingMode>(mode);
+    } // #23
     s.config.clone = c.wallpaperMode == config::WallpaperMode::Clone;
     s.config.startWithWindows = c.startWithWindows;
     s.config.minimizeToTray = c.minimizeToTray;

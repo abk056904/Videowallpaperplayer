@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 #include "ui/panels/Panel.h"
 
 namespace vw::ui {
@@ -46,6 +48,7 @@ private:
     std::vector<LibraryItem> library_; // for the source combo (files)
     bool clone_ = false;
     ScalingMode scaling_ = ScalingMode::Fill;
+    std::map<std::wstring, ScalingMode> perMonitorScaling_; // #23
     WallpaperSource source_ = WallpaperSource::None;
     std::wstring sourceId_;
     HWND list_ = nullptr;

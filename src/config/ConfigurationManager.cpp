@@ -173,6 +173,15 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
             }
         }
     }
+    // #23: per-monitor scaling overrides.
+    const auto& pmsObj = playback.get(L"perMonitorScaling");
+    if (pmsObj.isObject()) {
+        for (const auto& [key, val] : pmsObj.asObject()) {
+            if (val.isString()) {
+                cfg.perMonitorScaling[key] = scalingFrom(val.asString());
+            }
+        }
+    }
     readInt(playback, L"frameQueue", cfg.frameQueue, 1, 16, [&](int v) { cfg.frameQueue = v; });
     const auto& pathStr = playback.get(L"videoPath");
     if (pathStr.isString()) cfg.videoPath = pathStr.asString();
@@ -288,6 +297,14 @@ bool ConfigurationManager::save() {
             pmvObj[id] = util::Json::number(static_cast<double>(vol));
         }
         playback[L"perMonitorVolume"] = util::Json::object(std::move(pmvObj));
+    }
+    // #23: per-monitor scaling overrides.
+    if (!config_.perMonitorScaling.empty()) {
+        util::Json::Object pmsObj;
+        for (const auto& [id, mode] : config_.perMonitorScaling) {
+            pmsObj[id] = util::Json::string(scalingName(mode));
+        }
+        playback[L"perMonitorScaling"] = util::Json::object(std::move(pmsObj));
     }
     util::Json::Object wallpaper{
         {L"mode", util::Json::string(wallpaperModeName(config_.wallpaperMode))},
@@ -500,6 +517,21 @@ bool ConfigurationManager::applyConfigSet(Config& cfg, const std::wstring& key,
         int vol = 0;
         if (parseInt(vol, 0, 100)) {
             cfg.perMonitorVolume[monitorId] = vol;
+        }
+    }
+    else if (k.rfind(L"pmscaling:", 0) == 0) {
+        // #23: perMonitorScaling:<monitorId>:<fill|fit|stretch|center>
+        std::wstring monitorId = key.substr(10); // skip "pmscaling:"
+        int m = -1;
+        if (v == L"fill") { m = 0; }
+        else if (v == L"fit") { m = 1; }
+        else if (v == L"stretch") { m = 2; }
+        else if (v == L"center") { m = 3; }
+        if (m >= 0) {
+            cfg.perMonitorScaling[monitorId] = static_cast<ScalingMode>(m);
+        } else {
+            error = L"unknown scaling '" + value + L"' for '" + key + L"'";
+            ok = false;
         }
     }
     else if (k == L"startwithwindows") { ok = parseBool(cfg.startWithWindows); }

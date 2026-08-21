@@ -186,10 +186,29 @@ void MonitorsPanel::updateReadback(const WallpaperAssignmentNotification& n) {
 
 void MonitorsPanel::refreshFromSnapshot(const UiSnapshot& s) {
     monitors_ = s.monitors;
+    perMonitorScaling_ = s.config.perMonitorScaling; // #23
     rebuildMonitors();
     rebuildSourceCombo(s);
     if (!s.assignments.empty()) {
         updateReadback(s.assignments.front());
+    }
+    // #23: initialize scaling combo from per-monitor config or global default.
+    ScalingMode selScaling = s.config.scaling; // global default
+    if (!monitors_.empty()) {
+        const auto it = perMonitorScaling_.find(monitors_[0].id);
+        if (it != perMonitorScaling_.end()) {
+            selScaling = it->second;
+        }
+    }
+    {
+        int sIdx = 0;
+        switch (selScaling) {
+            case ScalingMode::Fill: sIdx = 0; break;
+            case ScalingMode::Fit: sIdx = 1; break;
+            case ScalingMode::Stretch: sIdx = 2; break;
+            case ScalingMode::Center: sIdx = 3; break;
+        }
+        ::SendMessageW(scalingCombo_, CB_SETCURSEL, sIdx, 0);
     }
     // #18: initialize volume slider from per-monitor config or global default.
     int vol = s.config.volume; // global default
@@ -301,9 +320,16 @@ LRESULT CALLBACK MonitorsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     if (HIWORD(wParam) == CBN_SELCHANGE) {
                         Command c;
                         c.id = CommandId::SetScaling;
-                        c.s1.clear();
                         c.scaling = static_cast<ScalingMode>(
                             ::SendMessageW(self->scalingCombo_, CB_GETCURSEL, 0, 0));
+                        // #23: send per-monitor scaling for the selected monitor.
+                        const int sel = static_cast<int>(
+                            ::SendMessageW(self->list_, LVM_GETSELECTIONMARK, 0, 0));
+                        if (sel >= 0 && sel < static_cast<int>(self->monitors_.size())) {
+                            c.s1 = self->monitors_[sel].id;
+                        } else {
+                            c.s1.clear();
+                        }
                         self->post_(c);
                     }
                     return 0;
@@ -329,6 +355,31 @@ LRESULT CALLBACK MonitorsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 }
             }
             return 0;
+        }
+        case WM_NOTIFY: {
+            const auto* nmhdr = reinterpret_cast<LPNMHDR>(lParam);
+            if (nmhdr->hwndFrom == self->list_ && nmhdr->code == LVN_ITEMCHANGED) {
+                const auto* plv = reinterpret_cast<LPNMLISTVIEW>(lParam);
+                if ((plv->uChanged & LVIF_STATE) && (plv->uNewState & LVIS_SELECTED) &&
+                    plv->iItem >= 0 && plv->iItem < static_cast<int>(self->monitors_.size())) {
+                    // #23: update scaling combo to reflect the selected monitor's scaling.
+                    const auto& monId = self->monitors_[plv->iItem].id;
+                    ScalingMode selScaling = self->scaling_; // global default
+                    const auto it = self->perMonitorScaling_.find(monId);
+                    if (it != self->perMonitorScaling_.end()) {
+                        selScaling = it->second;
+                    }
+                    int sIdx = 0;
+                    switch (selScaling) {
+                        case ScalingMode::Fill: sIdx = 0; break;
+                        case ScalingMode::Fit: sIdx = 1; break;
+                        case ScalingMode::Stretch: sIdx = 2; break;
+                        case ScalingMode::Center: sIdx = 3; break;
+                    }
+                    ::SendMessageW(self->scalingCombo_, CB_SETCURSEL, sIdx, 0);
+                }
+            }
+            break;
         }
         case WM_SIZE: {
             self->layout(LOWORD(lParam), HIWORD(lParam));

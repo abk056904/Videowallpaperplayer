@@ -155,6 +155,7 @@ struct ConfigSnapshot {
     PlaylistMode playbackMode = PlaylistMode::Loop;
     bool loop = true;
     ScalingMode scaling = ScalingMode::Fill;
+    std::map<std::wstring, ScalingMode> perMonitorScaling; // #23: per-monitor scaling overrides
     double playbackSpeed = 1.0; // playback speed multiplier (0.25–4.0)
     bool audio = true;
     int volume = 80; // 0–100
