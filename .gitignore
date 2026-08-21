@@ -23,6 +23,7 @@ tmp/
 
 # Packaging output (regenerable via package.ps1)
 dist/
+installer/output/
 
 # FFmpeg SDK (downloaded, not source-tracked — only headers + libs + DLLs needed)
 ext/ffmpeg/**/*.html
