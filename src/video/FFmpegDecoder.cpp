@@ -132,7 +132,6 @@ void copyYuv420pToNv12(uint8_t* dst, const uint8_t* const* data,
 
 } // namespace
 
-
 FFmpegDecoder::~FFmpegDecoder() { close(); }
 
 Result<void> FFmpegDecoder::open(const std::wstring& path) {
@@ -184,7 +183,7 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
                      vw::util::utf8ToWide(errbuf));
             avformat_close_input(&fmtCtx); return false;
         }
-        log.info(L"FFmpeg: D3D11VA device created (GPU decode, GPU-to-GPU shared copy)");
+        log.info(L"FFmpeg: D3D11VA device created (GPU decode, CPU texture readback)");
     }
 
     AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
@@ -371,12 +370,7 @@ void FFmpegDecoder::close() {
     if (fmtCtx_) { avformat_close_input(&fmtCtx_); fmtCtx_ = nullptr; }
     if (hwFramesCtx_) { av_buffer_unref(&hwFramesCtx_); hwFramesCtx_ = nullptr; }
     if (hwCtx_) { av_buffer_unref(&hwCtx_); hwCtx_ = nullptr; }
-    if (deferredCtx_) { deferredCtx_->Release(); deferredCtx_ = nullptr; }
     if (swsCtx_) { sws_freeContext(swsCtx_); swsCtx_ = nullptr; swsSrcW_ = swsSrcH_ = 0; swsSrcFmt_ = -1; }
-    sharedTex_.Reset();
-    if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
-    sharedWidth_ = sharedHeight_ = 0;
-    sharedFormat_ = DXGI_FORMAT_UNKNOWN;
     videoStreamIdx_ = -1;
     hardware_ = false;
     decoderName_.clear();
@@ -489,15 +483,21 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             }
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
-                // D3D11VA: GPU decodes on its own D3D11 device.
-                // Shared-handle GPU-to-GPU copy is not viable because
-                // D3D11VA owns the device's immediate context.
-                // CPU readback: av_hwframe_transfer_data reads the decoded
-                // GPU texture back to CPU. The heavy decode work (H.264/HEVC)
-                // is still done on the GPU; only the texture readback is CPU.
+                // D3D11VA: GPU decodes on FFmpeg's own D3D11 device.
+                // GPU decode + CPU texture readback: av_hwframe_transfer_data
+                // copies the decoded GPU texture to a CPU buffer via FFmpeg's
+                // internal path (which properly synchronizes with D3D11VA).
+                // The heavy decode work (H.264/HEVC) is done on the GPU;
+                // only the final texture readback is CPU.
+                //
+                // Why not GPU-to-GPU shared copy? D3D11VA internally owns its
+                // device's immediate context for reference frame management.
+                // Calling CopySubresourceRegion on it from our code causes a
+                // crash. av_hwframe_transfer_data avoids this by going through
+                // FFmpeg's internal D3D11VA synchronization path.
                 static thread_local AVFrame* swFrame = nullptr;
                 if (!swFrame) swFrame = av_frame_alloc();
-                swFrame->format = AV_PIX_FMT_NONE; // auto-detect from HW frame
+                swFrame->format = AV_PIX_FMT_NONE;
                 if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
                     const AVPixelFormat swFmt = static_cast<AVPixelFormat>(swFrame->format);
                     const uint32_t w = swFrame->width;

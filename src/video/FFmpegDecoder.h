@@ -60,7 +60,7 @@ public:
     // Metadata-only probe (no decode pipeline).
     static Result<VideoMetadata> probeMetadata(const std::wstring& path);
 
-    // Access FFmpeg's D3D11 device/context for GPU-to-GPU shared copy.
+    // Access FFmpeg's D3D11 device/context for diagnostics.
     ID3D11Device* ffmpegDevice() const;
     ID3D11DeviceContext* ffmpegContext() const;
 
@@ -77,7 +77,6 @@ private:
     AVBufferRef* hwFramesCtx_ = nullptr; // HW frames context (for D3D11 mapping)
     int videoStreamIdx_ = -1;
     ID3D11Device* d3dDevice_ = nullptr;
-    ID3D11DeviceContext* deferredCtx_ = nullptr; // for GPU-to-GPU texture copies
 
     // Cached SwsContext for the BGRA software fallback — avoids per-frame
     // alloc/free (~0.5 ms/frame overhead on the decode thread).
@@ -85,11 +84,7 @@ private:
     uint32_t swsSrcW_ = 0, swsSrcH_ = 0;
     int swsSrcFmt_ = -1;  // AVPixelFormat stored as int to avoid header dependency
 
-    // Cached shared texture for D3D11VA (avoids per-frame alloc).
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex_;
-    HANDLE sharedHandle_ = nullptr;
-    UINT sharedWidth_ = 0, sharedHeight_ = 0;
-    DXGI_FORMAT sharedFormat_ = DXGI_FORMAT_UNKNOWN; // cache format for recreation
+
 
     VideoMetadata metadata_;
     std::thread worker_;
