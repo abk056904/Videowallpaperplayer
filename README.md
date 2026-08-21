@@ -18,14 +18,48 @@ Windows already provides is used as-is.
 
 ## Download
 
-Build from source (see [Build instructions](#build-instructions)) or use the
-distribution scripts:
+### Latest Release
+
+Download the installer (recommended):
+
+- [**Download VideoWallpaper-1.0.0-Setup.exe** (6.2 MiB)](https://github.com/abk056904/Videowallpaperplayer/releases/latest/download/VideoWallpaper-1.0.0-Setup.exe)
+
+Or build from source (see [Build instructions](#build-instructions)):
 
 ```bat
 powershell -ExecutionPolicy Bypass -File package.ps1
 ```
 
-**Requirements:** Windows 11 (or 10 21H2+), x64, GPU with Direct3D 11.1.
+### System Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| **OS** | Windows 10 21H2 (x64) | Windows 11 24H2 |
+| **CPU** | Any x64 processor | AMD Ryzen 5 / Intel Core i5+ |
+| **RAM** | 4 GB | 8 GB+ |
+| **GPU** | Direct3D 11.1 (feature level 11_0) | NVIDIA GTX 1050+ / AMD RX 560+ / Intel UHD 630+ |
+| **Storage** | 20 MB free | SSD recommended |
+| **Display** | 1920×1080 | Any resolution (per-monitor scaling) |
+
+### Device Compatibility
+
+| GPU Vendor | HW Decode Support | Notes |
+|------------|-------------------|-------|
+| **NVIDIA** | ✅ D3D11VA + CUDA (NVDEC) | Best support — H.264, HEVC, VP9, AV1 |
+| **AMD** | ✅ D3D11VA | H.264, HEVC, VP9 via AMF/D3D11VA |
+| **Intel** | ✅ D3D11VA | H.264, HEVC via Intel Quick Sync |
+| **Other** | ⚠️ Software fallback | FFmpeg software decode (higher CPU usage) |
+
+| Codec | HW Decode | SW Decode | Notes |
+|-------|-----------|-----------|-------|
+| H.264 (AVC) | ✅ D3D11VA/CUDA/MF | ✅ FFmpeg | Most common, best support |
+| HEVC (H.265) | ✅ D3D11VA/CUDA/MF | ✅ FFmpeg | 10-bit P010 auto-converted |
+| VP9 | ✅ D3D11VA/CUDA | ✅ FFmpeg | WebM container |
+| AV1 | ✅ CUDA | ✅ FFmpeg | Requires NVIDIA RTX 20+ |
+| Other | ❌ | ✅ FFmpeg | Any codec FFmpeg supports |
+
+> **Note:** The app probes all HW backends at runtime and falls back automatically.
+> No GPU = software decode (higher CPU, still works).
 
 ---
 
