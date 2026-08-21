@@ -8,6 +8,7 @@
 #include "util/FFmpegCompat.h"
 #include <libavcodec/d3d11va.h>
 #include <libavutil/hwcontext_d3d11va.h>
+#include <libavutil/pixfmt.h>
 
 #include <cstring>
 
@@ -55,8 +56,38 @@ void fillMetadata(VideoMetadata& meta, const AVFormatContext* fmtCtx, int videoS
     meta.duration100ns = (fmtCtx->duration > 0) ? fmtCtx->duration * 10 : 0;
     meta.codec = vw::util::utf8ToWide(avcodec_get_name(par->codec_id));
     meta.bitDepth = 8;
-    meta.displayAspect = (par->height > 0)
-        ? static_cast<double>(par->width) / par->height : 0.0;
+
+    // Use the stream's sample aspect ratio (SAR) when available.
+    // Anamorphic content (e.g. 720x480 DVD) has non-square pixels and the
+    // display aspect differs from width/height — the scaling math needs the
+    // SAR-corrected value or the video will distort (ScaleMath.h docs).
+    // Use stream->sample_aspect_ratio directly (av_guess_sample_aspect_ratio
+    // is not available in our minimal FFmpeg build).
+    if (stream->sample_aspect_ratio.num > 0 && stream->sample_aspect_ratio.den > 0) {
+        meta.sarNum = static_cast<UINT>(stream->sample_aspect_ratio.num);
+        meta.sarDen = static_cast<UINT>(stream->sample_aspect_ratio.den);
+    } else if (par->sample_aspect_ratio.num > 0 && par->sample_aspect_ratio.den > 0) {
+        meta.sarNum = static_cast<UINT>(par->sample_aspect_ratio.num);
+        meta.sarDen = static_cast<UINT>(par->sample_aspect_ratio.den);
+    }
+    if (par->height > 0) {
+        meta.displayAspect =
+            (static_cast<double>(par->width) * meta.sarNum) /
+            (static_cast<double>(par->height) * meta.sarDen);
+    }
+
+    // Detect bit depth from codec parameters or known pixel formats.
+    // bits_per_raw_sample is the most reliable source (set by decoders).
+    if (par->bits_per_raw_sample > 0) {
+        meta.bitDepth = static_cast<UINT>(par->bits_per_raw_sample);
+    } else {
+        // Fallback: map known pixel formats to bit depth.
+        switch (par->format) {
+            case AV_PIX_FMT_P010LE:
+            case AV_PIX_FMT_P010BE: meta.bitDepth = 10; break;
+            default: meta.bitDepth = 8; break;
+        }
+    }
 }
 
 // DRY: copy NV12 rows from src (with linesize stride) to a tightly-packed dst.
@@ -154,11 +185,6 @@ bool FFmpegDecoder::tryOpenD3d11va(const std::wstring& path) {
             avformat_close_input(&fmtCtx); return false;
         }
         log.info(L"FFmpeg: D3D11VA device created (GPU decode, GPU-to-GPU shared copy)");
-        // Create a deferred context for GPU-to-GPU texture copies.
-        ID3D11Device* dev = ffmpegDevice();
-        if (dev) {
-            dev->CreateDeferredContext(0, &deferredCtx_);
-        }
     }
 
     AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
@@ -377,10 +403,13 @@ Result<void> FFmpegDecoder::start(FrameQueue* queue, LONGLONG position100ns) {
 
     if (fmtCtx_) {
         // Always seek to the requested position (including 0 for replay).
-        // Without this, replay() leaves the format context at EOF and the
-        // new decode worker immediately hits AVERROR_EOF.
+        // AVSEEK_FLAG_BACKWARD ensures we land on a keyframe BEFORE the target
+        // so the decoder has valid reference frames from the start (fixes
+        // pixelation at video start). Without it, seeking to a non-keyframe
+        // position produces corrupted frames until the next keyframe arrives.
         int64_t ts = position100ns / 10; // 100ns units -> microseconds
-        avformat_seek_file(fmtCtx_, -1, INT64_MIN, ts, INT64_MAX, 0);
+        avformat_seek_file(fmtCtx_, -1, INT64_MIN, ts, INT64_MAX,
+                          AVSEEK_FLAG_BACKWARD);
         avcodec_flush_buffers(codecCtx_);
     }
 
@@ -451,6 +480,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             DecodedFrame df;
             df.width = static_cast<UINT>(frame_->width);
             df.height = static_cast<UINT>(frame_->height);
+            df.displayAspect = static_cast<float>(metadata_.displayAspect);
 
             // Set timestamp from PTS
             if (frame_->pts != AV_NOPTS_VALUE && fmtCtx_ && videoStreamIdx_ >= 0) {
@@ -459,114 +489,52 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
             }
 
             if (hardware_ && frame_->format == AV_PIX_FMT_D3D11) {
-                // D3D11VA GPU-to-GPU path: FFmpeg decodes on its own device,
-                // CopySubresourceRegion copies the decoded texture to a shared
-                // texture, then the render device opens the shared handle.
-                // This is GPU-to-GPU only — zero CPU<->GPU copies.
-                bool zeroCopyDone = false;
-                auto* desc = reinterpret_cast<AVD3D11FrameDescriptor*>(frame_->data[0]);
-                ID3D11Device* ffmpegDev = ffmpegDevice();
-                ID3D11DeviceContext* ffmpegCtx = ffmpegContext();
-                if (desc && desc->texture && ffmpegDev && ffmpegCtx && deferredCtx_) {
-                    D3D11_TEXTURE2D_DESC srcDesc{};
-                    desc->texture->GetDesc(&srcDesc);
-                    // Recreate the cached shared texture on resolution OR format change.
-                    const bool needsNewTex = !sharedTex_ || sharedWidth_ != srcDesc.Width ||
-                                              sharedHeight_ != srcDesc.Height ||
-                                              sharedFormat_ != srcDesc.Format;
-                    if (needsNewTex) {
-                        sharedTex_.Reset();
-                        if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
-                        D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
-                        sharedDesc.Usage = D3D11_USAGE_DEFAULT;
-                        sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-                        sharedDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-                        HRESULT hr = ffmpegDev->CreateTexture2D(&sharedDesc, nullptr, &sharedTex_);
-                        if (FAILED(hr)) { sharedTex_.Reset(); }
-                        else {
-                            Microsoft::WRL::ComPtr<IDXGIResource1> dxgiRes;
-                            hr = sharedTex_.As(&dxgiRes);
-                            if (SUCCEEDED(hr)) {
-                                hr = dxgiRes->CreateSharedHandle(
-                                    nullptr,
-                                    DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                    nullptr, &sharedHandle_);
-                                if (FAILED(hr)) { sharedTex_.Reset(); sharedHandle_ = nullptr; }
-                                else { sharedWidth_ = srcDesc.Width; sharedHeight_ = srcDesc.Height; sharedFormat_ = srcDesc.Format; }
-                            }
-                        }
-                    }
-                    if (sharedTex_ && sharedHandle_ && deferredCtx_) {
-                        // D3D11 planar textures (NV12/P010): each array slice is ONE subresource
-                        // containing both Y and UV planes. CopySubresourceRegion copies
-                        // the entire subresource (both planes) in one call.
-                        const UINT slice = static_cast<UINT>(desc->index);
-                        D3D11_BOX box{};
-                        box.left = 0; box.top = 0; box.front = 0;
-                        box.right = srcDesc.Width;
-                        box.bottom = srcDesc.Height;
-                        box.back = 1;
-                        deferredCtx_->CopySubresourceRegion(
-                            sharedTex_.Get(), slice, 0, 0, 0,
-                            desc->texture, slice, &box);
-                        Microsoft::WRL::ComPtr<ID3D11CommandList> cmdList;
-                        HRESULT hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
-                        if (SUCCEEDED(hr) && cmdList) {
-                            ffmpegCtx->ExecuteCommandList(cmdList.Get(), FALSE);
-                            ffmpegCtx->Flush();
-                            df.sharedHandle = sharedHandle_;
-                            df.hardware = true;
-                            df.textureSlice = slice;
-                            zeroCopyDone = true;
-                        }
-                    }
-                }
-                if (!zeroCopyDone) {
-                    // Fallback: GPU decode + CPU transfer.
-                    // Don't hardcode NV12 — HEVC may decode as P010 (10-bit).
-                    // Let av_hwframe_transfer_data auto-detect the sw format.
-                    static thread_local AVFrame* swFrame = nullptr;
-                    if (!swFrame) swFrame = av_frame_alloc();
-                    swFrame->format = AV_PIX_FMT_NONE; // auto-detect from HW frame
-                    if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
-                        const AVPixelFormat swFmt = static_cast<AVPixelFormat>(swFrame->format);
-                        const uint32_t w = swFrame->width;
-                        const uint32_t h = swFrame->height;
-                        if (swFmt == AV_PIX_FMT_NV12 || swFmt == AV_PIX_FMT_YUV420P) {
-                            df.nv12 = true;
-                            df.bytes.resize(w * h * 3 / 2);
-                            if (swFmt == AV_PIX_FMT_NV12) {
-                                copyNv12Tightly(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
-                            } else {
-                                copyYuv420pToNv12(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
-                            }
+                // D3D11VA: GPU decodes on its own D3D11 device.
+                // Shared-handle GPU-to-GPU copy is not viable because
+                // D3D11VA owns the device's immediate context.
+                // CPU readback: av_hwframe_transfer_data reads the decoded
+                // GPU texture back to CPU. The heavy decode work (H.264/HEVC)
+                // is still done on the GPU; only the texture readback is CPU.
+                static thread_local AVFrame* swFrame = nullptr;
+                if (!swFrame) swFrame = av_frame_alloc();
+                swFrame->format = AV_PIX_FMT_NONE; // auto-detect from HW frame
+                if (av_hwframe_transfer_data(swFrame, frame_, 0) >= 0) {
+                    const AVPixelFormat swFmt = static_cast<AVPixelFormat>(swFrame->format);
+                    const uint32_t w = swFrame->width;
+                    const uint32_t h = swFrame->height;
+                    if (swFmt == AV_PIX_FMT_NV12 || swFmt == AV_PIX_FMT_YUV420P) {
+                        df.nv12 = true;
+                        df.bytes.resize(w * h * 3 / 2);
+                        if (swFmt == AV_PIX_FMT_NV12) {
+                            copyNv12Tightly(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
                         } else {
-                            // P010 or other 10-bit: convert to NV12 via swscale.
-                            df.nv12 = true;
-                            df.bytes.resize(w * h * 3 / 2);
-                            // Reuse cached SwsContext for P010->NV12 conversion.
-                            if (!swsCtx_ || swsSrcW_ != w || swsSrcH_ != h ||
-                                swsSrcFmt_ != static_cast<int>(swFmt)) {
-                                sws_freeContext(swsCtx_);
-                                swsCtx_ = sws_getContext(w, h, swFmt, w, h,
-                                                          AV_PIX_FMT_NV12, SWS_BILINEAR,
-                                                          nullptr, nullptr, nullptr);
-                                swsSrcW_ = w; swsSrcH_ = h; swsSrcFmt_ = static_cast<int>(swFmt);
-                            }
-                            if (swsCtx_) {
-                                uint8_t* dst[1] = {df.bytes.data()};
-                                int dstStride[1] = {static_cast<int>(w)};
-                                sws_scale(swsCtx_, swFrame->data, swFrame->linesize,
-                                          0, h, dst, dstStride);
-                            }
+                            copyYuv420pToNv12(df.bytes.data(), swFrame->data, swFrame->linesize, w, h);
                         }
                     } else {
-                        log.warn(L"FFmpeg: D3D11VA frame transfer failed");
-                        av_frame_unref(frame_);
-                        continue;
+                        // P010 or other 10-bit: convert to BGRA via swscale.
+                        df.nv12 = false;
+                        df.bytes.resize(w * h * 4);
+                        if (!swsCtx_ || swsSrcW_ != w || swsSrcH_ != h ||
+                            swsSrcFmt_ != static_cast<int>(swFmt)) {
+                            sws_freeContext(swsCtx_);
+                            swsCtx_ = sws_getContext(w, h, swFmt, w, h,
+                                                      AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR,
+                                                      nullptr, nullptr, nullptr);
+                            swsSrcW_ = w; swsSrcH_ = h; swsSrcFmt_ = static_cast<int>(swFmt);
+                        }
+                        if (swsCtx_) {
+                            uint8_t* dst[1] = {df.bytes.data()};
+                            int dstStride[1] = {static_cast<int>(w * 4)};
+                            sws_scale(swsCtx_, swFrame->data, swFrame->linesize,
+                                      0, h, dst, dstStride);
+                        }
                     }
-                    av_frame_unref(swFrame);
+                } else {
+                    log.warn(L"FFmpeg: D3D11VA frame transfer failed");
+                    av_frame_unref(frame_);
+                    continue;
                 }
+                av_frame_unref(swFrame);
             } else if (hardware_ && frame_->format == AV_PIX_FMT_CUDA) {
                 // CUDA -> D3D11 zero-copy: map CUDA frame to D3D11 texture.
                 AVFrame* d3d11Frame = av_frame_alloc();
@@ -607,7 +575,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                     swsSrcFmt_ != static_cast<int>(srcFmt)) {
                     sws_freeContext(swsCtx_);
                     swsCtx_ = sws_getContext(w, h, srcFmt, w, h,
-                                              AV_PIX_FMT_BGRA, SWS_BILINEAR,
+                                              AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR,
                                               nullptr, nullptr, nullptr);
                     swsSrcW_ = w; swsSrcH_ = h; swsSrcFmt_ = static_cast<int>(srcFmt);
                 }
