@@ -36,25 +36,25 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startupicon"; Description: "Start with Windows"; GroupDescription: "Startup:"; Flags: checked
+Name: "startupicon"; Description: "Start with Windows"; GroupDescription: "Startup:"; Flags: checkedonce
 
 [Files]
 ; Main executable
-Source: "build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 ; FFmpeg DLLs
-Source: "build\release\Release\avcodec-61.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\release\Release\avformat-61.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\release\Release\avutil-59.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\release\Release\swscale-8.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\release\Release\swresample-5.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\avcodec-61.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\avformat-61.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\avutil-59.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\swscale-8.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\swresample-5.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 ; MinGW runtime DLLs
-Source: "build\release\Release\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\release\Release\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\release\Release\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Documentation
-Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
