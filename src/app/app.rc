@@ -7,7 +7,7 @@
 // rc.exe emits a string-named resource that those APIs cannot find.
 #include <winres.h>
 
-IDI_APP_ICON ICON "..\\..\\video_wallpaper_icon_final.ico"
+IDI_APP_ICON ICON "..\\..\\video_wallpaper_icon.ico"
 
 // clang-format off
 
