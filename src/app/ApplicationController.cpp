@@ -950,10 +950,15 @@ void ApplicationController::onForegroundChange(HWND hwnd) {
     // (avoids a one-event lag where the old classification persists until the
     // next foreground event or workload tick).
     DWORD pid = 0;
+    std::wstring windowClass;
     if (hwnd) {
         ::GetWindowThreadProcessId(hwnd, &pid);
+        wchar_t cls[128]{};
+        if (::GetClassNameW(hwnd, cls, 128)) {
+            windowClass = cls;
+        }
     }
-    const auto state = gameDetector_->updateForeground(pid);
+    const auto state = gameDetector_->updateForeground(pid, windowClass);
     feedDetectionReasons(); // M10: game/fullscreen -> governor (now sees fresh state)
     if (state.pid == 0) {
         return;
@@ -961,7 +966,7 @@ void ApplicationController::onForegroundChange(HWND hwnd) {
     auto& log = log::Logger::instance();
     log.debug(L"foreground: pid {} {} ({}) | window: {}", state.pid, state.processPath,
               state.classification == detection::GameClass::Game
-                  ? L"game [allow]"
+                  ? (state.heuristicMatched ? L"game [heuristic]" : L"game [allow]")
                   : (state.classification == detection::GameClass::NotGame
                          ? L"not-game [deny]"
                          : L"unlisted"),

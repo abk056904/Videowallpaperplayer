@@ -223,20 +223,20 @@ TEST_CASE("game: the process path is cached across same-pid updates") {
 
     gd.setLists({L"game.exe"}, {});
     const auto alive = [](DWORD) { return true; }; // synthetic pids: alive
-    gd.updateForeground(1234, lookup, alive);
+    gd.updateForeground(1234, {}, lookup, alive);
     CHECK(lookups == 1);
     CHECK(gd.state().classification == GameClass::Game);
 
-    gd.updateForeground(1234, lookup, alive); // same pid, alive -> cached
+    gd.updateForeground(1234, {}, lookup, alive); // same pid, alive -> cached
     CHECK(lookups == 1); // cached — no second path lookup
     CHECK(gd.state().classification == GameClass::Game);
 
-    gd.updateForeground(5678, lookup, alive); // new pid
+    gd.updateForeground(5678, {}, lookup, alive); // new pid
     CHECK(lookups == 2);
     CHECK(gd.state().classification == GameClass::Game);
 
     // pid 0 (no foreground) -> state cleared, no lookup.
-    gd.updateForeground(0, lookup, alive);
+    gd.updateForeground(0, {}, lookup, alive);
     CHECK(gd.state().pid == 0);
     CHECK(gd.state().processPath.empty());
     CHECK(lookups == 2);
@@ -255,19 +255,19 @@ TEST_CASE("game: a reused pid (process exited) does not return stale cache") {
                       : std::wstring(L"C:\\Games\\game.exe");
     };
 
-    gd.updateForeground(1234, lookup, [](DWORD) { return true; });
+    gd.updateForeground(1234, {}, lookup, [](DWORD) { return true; });
     CHECK(lookups == 1);
     CHECK(gd.state().classification == GameClass::Game);
 
     // Same pid, process still alive -> cached, no scan.
-    gd.updateForeground(1234, lookup, [](DWORD) { return true; });
+    gd.updateForeground(1234, {}, lookup, [](DWORD) { return true; });
     CHECK(lookups == 1);
     CHECK(gd.state().classification == GameClass::Game);
 
     // Same pid, but the process EXITED (pid reused by a different binary) ->
     // must re-lookup; the stale "game" classification must not survive.
     reused = true;
-    gd.updateForeground(1234, lookup, [](DWORD) { return false; });
+    gd.updateForeground(1234, {}, lookup, [](DWORD) { return false; });
     CHECK(lookups == 2); // re-looked-up despite the same pid
     CHECK(gd.state().classification == GameClass::Unknown); // notepad unlisted
 }
@@ -275,7 +275,7 @@ TEST_CASE("game: a reused pid (process exited) does not return stale cache") {
 TEST_CASE("game: a failed path lookup leaves the classification unknown") {
     GameDetector gd;
     gd.setLists({L"game.exe"}, {});
-    gd.updateForeground(1234, [](DWORD) -> std::optional<std::wstring> { return std::nullopt; });
+    gd.updateForeground(1234, {}, [](DWORD) -> std::optional<std::wstring> { return std::nullopt; });
     CHECK(gd.state().pid == 1234);
     CHECK(gd.state().classification == GameClass::Unknown);
     CHECK(gd.state().processPath.empty());

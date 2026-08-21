@@ -28,7 +28,8 @@ struct GameState {
     std::wstring processPath; // full path, "" when inaccessible
     std::wstring exeName;     // basename, lowercased for matching
     GameClass classification = GameClass::Unknown;
-    bool listMatched = false; // true when allow/deny lists decided it
+    bool listMatched = false;    // true when allow/deny lists decided it
+    bool heuristicMatched = false; // true when heuristic (class+path) decided it
 };
 
 class GameDetector {
@@ -47,9 +48,11 @@ public:
     // foreground window with GetWindowThreadProcessId). Cheap: the process
     // path is only looked up when the cache key CHANGED — the pid changed OR
     // the cached process exited (a reused pid must not return stale
-    // classification). Returns the current state.
+    // classification). Window class is passed for heuristic game detection.
+    // Returns the current state.
     using AliveCheck = std::function<bool(DWORD pid)>;
-    GameState updateForeground(DWORD pid, PathLookup lookup = defaultPathLookup,
+    GameState updateForeground(DWORD pid, const std::wstring& windowClass = {},
+                               PathLookup lookup = defaultPathLookup,
                                AliveCheck alive = isAlive);
 
     const GameState& state() const { return state_; }
@@ -61,6 +64,14 @@ public:
     static GameClass classify(const std::wstring& exeName,
                               const std::vector<std::wstring>& alwaysPause,
                               const std::vector<std::wstring>& neverPause);
+
+    // Heuristic game detection: checks window class name + process path
+    // for known game engine / launcher patterns. Used when the explicit
+    // allow/deny lists don't match (Unknown). Window class is optional —
+    // when available it catches Unity/Unreal/GLFW/SDL engines.
+    static GameClass classifyHeuristic(const std::wstring& exeName,
+                                       const std::wstring& processPath,
+                                       const std::wstring& windowClass);
 
     // Clears the cache + state (config change / playlist reset).
     void reset();
