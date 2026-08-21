@@ -115,7 +115,7 @@ Result<void> DecoderManager::open(const std::wstring& path) {
     if (d3dDevice_) {
         auto result = openHardware(path);
         if (result) return {};
-        log::Logger::instance().warn(L"hardware decode unavailable ({}); retrying software", result.error());
+        log::Logger::instance().debug(L"MF HW decode unavailable ({}); trying FFmpeg HW", result.error());
         close();
     }
     return openSoftware(path);
