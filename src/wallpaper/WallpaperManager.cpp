@@ -207,7 +207,7 @@ void WallpaperManager::recreateDeviceResources() {
     nv12UvSrv_.Reset();
     frameIsNv12_ = false;
     planeSrvCache_.clear(); // views are device-bound — all stale after recreate
-    sharedFrameCache_.clear(); // shared handles are device-bound too
+
     frameWidth_ = 0;
     frameHeight_ = 0;
     frameDisplayAspect_ = 0.0f;
@@ -767,12 +767,6 @@ Result<void> WallpaperManager::setVideoFrame(const video::DecodedFrame& frame) {
     if (!running_) {
         return {};
     }
-    // DXGI shared handle path (D3D11VA zero-copy): the frame is a shared
-    // texture from FFmpeg's private D3D11 device. Open it on the render
-    // device and bind directly — no CPU upload.
-    if (frame.hardware && frame.sharedHandle) {
-        return bindSharedFrame(frame);
-    }
     // Hardware path (M5): the frame IS a GPU surface — view its two planes
     // (Y + interleaved UV) and rebind the hosts. No CPU upload.
     // FFmpeg HW decode: hardware=true but texture=null (CPU-transferred NV12).
@@ -824,10 +818,6 @@ Result<void> WallpaperManager::setVideoFrameFor(const std::wstring& monitorId,
                                [&](const auto& h) { return h->monitorId() == monitorId; });
     if (hostIt == hosts_.end()) {
         return {}; // unknown monitor (e.g. unplugged between events) — no-op
-    }
-    // DXGI shared handle path (D3D11VA zero-copy).
-    if (frame.hardware && frame.sharedHandle) {
-        return bindSharedFrameFor(monitorId, frame);
     }
     // Hardware path (M5): GPU surface — bind planes on THAT host only.
     // But FFmpeg HW decode transfers to CPU NV12 (hardware=true, texture=null)
@@ -914,51 +904,6 @@ Result<void> WallpaperManager::bindGpuFrameFor(const std::wstring& monitorId,
     if (!entry) return std::unexpected(entry.error());
     const float aspect = gfx::videoAspectFor(frame.width, frame.height, frame.displayAspect);
     return (*hostIt)->setVideoPlanes((*entry)->y.Get(), (*entry)->uv.Get(), aspect, scaling_);
-}
-
-// ---- D3D11VA shared-handle zero-copy path ----
-// D3D11VA shared-handle zero-copy path.
-// Opens a DXGI shared texture on the render device, caching it for reuse.
-Microsoft::WRL::ComPtr<ID3D11Texture2D> WallpaperManager::openSharedHandle(HANDLE sharedHandle) {
-    if (!sharedHandle) return nullptr;
-    auto& entry = sharedFrameCache_[sharedHandle];
-    if (entry.texture) return entry.texture;
-    Microsoft::WRL::ComPtr<ID3D11Device1> dev1;
-    HRESULT hr = deviceManager_.device()->QueryInterface(IID_PPV_ARGS(&dev1));
-    if (FAILED(hr) || !dev1) return nullptr;
-    ID3D11Texture2D* rawTex = nullptr;
-    hr = dev1->OpenSharedResource1(sharedHandle, IID_PPV_ARGS(&rawTex));
-    if (FAILED(hr) || !rawTex) return nullptr;
-    entry.texture.Attach(rawTex);
-    entry.handle = sharedHandle;
-    return entry.texture;
-}
-
-Result<void> WallpaperManager::bindSharedFrame(const video::DecodedFrame& frame) {
-    auto tex = openSharedHandle(frame.sharedHandle);
-    if (!tex) return std::unexpected(L"bindSharedFrame: OpenSharedResource1 failed");
-    video::DecodedFrame proxy;
-    proxy.texture = tex;
-    proxy.hardware = true;
-    proxy.width = frame.width;
-    proxy.height = frame.height;
-    proxy.displayAspect = frame.displayAspect;
-    proxy.textureSlice = frame.textureSlice;
-    return bindGpuFrame(proxy);
-}
-
-Result<void> WallpaperManager::bindSharedFrameFor(const std::wstring& monitorId,
-                                                  const video::DecodedFrame& frame) {
-    auto tex = openSharedHandle(frame.sharedHandle);
-    if (!tex) return std::unexpected(L"bindSharedFrameFor: OpenSharedResource1 failed");
-    video::DecodedFrame proxy;
-    proxy.texture = tex;
-    proxy.hardware = true;
-    proxy.width = frame.width;
-    proxy.height = frame.height;
-    proxy.displayAspect = frame.displayAspect;
-    proxy.textureSlice = frame.textureSlice;
-    return bindGpuFrameFor(monitorId, proxy);
 }
 
 Result<void> WallpaperManager::bindFramePlanes(ID3D11ShaderResourceView* ySrv,

@@ -155,14 +155,7 @@ private:
     Result<void> bindGpuFrame(const video::DecodedFrame& frame);
     // M8: hardware-frame bind on ONE host (Independent mode).
     Result<void> bindGpuFrameFor(const std::wstring& monitorId,
-                                 const video::DecodedFrame& frame);
-    // D3D11VA zero-copy via DXGI shared handles: open the shared texture
-    // on the render device, cache it, and bind for rendering.
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> openSharedHandle(HANDLE sharedHandle);
-    Result<void> bindSharedFrame(const video::DecodedFrame& frame);
-    Result<void> bindSharedFrameFor(const std::wstring& monitorId,
-                                    const video::DecodedFrame& frame);
-    Result<void> bindFramePlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
+                                 const video::DecodedFrame& frame);    Result<void> bindFramePlanes(ID3D11ShaderResourceView* ySrv, ID3D11ShaderResourceView* uvSrv,
                                  float videoAspect);
     // DRY: common NV12/RGB texture ensure+upload (clone + independent paths).
     struct UploadSlot {
@@ -220,14 +213,6 @@ private:
     std::unordered_map<PlaneSrvKey, PlaneSrvCacheEntry, PlaneSrvKeyHash> planeSrvCache_;
     // DRY: resolve plane SRVs for a GPU frame (cached per texture+slice).
     Result<PlaneSrvCacheEntry*> getOrCreatePlaneSrvs(const video::DecodedFrame& frame);
-    // D3D11VA shared-handle cache: opened textures on the render device,
-    // keyed by the shared HANDLE value.  Each handle is opened once and
-    // closed when the cache is cleared (device recreate).
-    struct SharedFrameCacheEntry {
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        HANDLE handle = nullptr; // ownership for CloseHandle
-    };
-    std::unordered_map<HANDLE, SharedFrameCacheEntry> sharedFrameCache_;
     // M8: per-monitor upload textures for the INDEPENDENT path (each display
     // runs its own video). Keyed by stable monitor id.
     std::map<std::wstring, UploadSlot> perMonitorFrames_;
