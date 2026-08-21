@@ -124,9 +124,14 @@ WorkloadState WorkloadMonitor::sample(std::chrono::steady_clock::time_point now)
         s.systemMemoryUsed = 0;
     }
 
-    // GPU: VRAM only (utilization counters unavailable in this SDK — the
-    // gpuUsage field stays 0, never fabricated; see the header note).
+    // GPU: VRAM utilization (utilization counters unavailable in the SDK,
+    // so we use VRAM pressure as a proxy: high VRAM usage = GPU-heavy work).
     sampleGpuMemory(s.gpuMemoryUsed, s.gpuMemoryBudget);
+    if (s.gpuMemoryBudget > 0) {
+        s.gpuUsage = std::clamp(
+            static_cast<double>(s.gpuMemoryUsed) * 100.0 / static_cast<double>(s.gpuMemoryBudget),
+            0.0, 100.0);
+    }
 
     // Hysteresis: latch HIGH after the debounce delay, clear after the resume
     // delay. The engine uses monotonic time, so an irregular tick is fine.

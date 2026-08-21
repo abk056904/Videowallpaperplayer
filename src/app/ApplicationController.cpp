@@ -893,13 +893,16 @@ void ApplicationController::onForegroundChange(HWND hwnd) {
     // Cached on the controller — M10's ResourceGovernor reads it for the
     // pause-on-fullscreen policy.
     fullscreenState_ = classifyForegroundFullscreen(hwnd);
-    feedDetectionReasons(); // M10: game/fullscreen -> governor
 
+    // Update game detector FIRST so feedDetectionReasons() sees the new state
+    // (avoids a one-event lag where the old classification persists until the
+    // next foreground event or workload tick).
     DWORD pid = 0;
     if (hwnd) {
         ::GetWindowThreadProcessId(hwnd, &pid);
     }
     const auto state = gameDetector_->updateForeground(pid);
+    feedDetectionReasons(); // M10: game/fullscreen -> governor (now sees fresh state)
     if (state.pid == 0) {
         return;
     }

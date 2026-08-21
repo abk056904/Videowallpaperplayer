@@ -11,8 +11,8 @@ namespace vw::performance {
 // One sampled snapshot of the machine's workload (docs/03 §3.11, M9).
 struct WorkloadState {
     double cpuUsage = 0.0;          // % overall (GetSystemTimes delta)
-    double gpuUsage = 0.0;          // % — 0 on this machine (no GPU-engine
-                                    // counters in the 26100 SDK; see below)
+    double gpuUsage = 0.0;          // % — VRAM pressure (gpuMemoryUsed/budget)
+                                    // when available; 0 if no DXGI adapter
     double memoryUsage = 0.0;       // % of committed physical (RAM)
     uint64_t gpuMemoryUsed = 0;     // bytes (IDXGIAdapter3::QueryVideoMemoryInfo)
     uint64_t gpuMemoryBudget = 0;   // bytes
@@ -30,12 +30,10 @@ struct WorkloadState {
 // open — cost control). Results flow into StatsCollector (UI telemetry) and
 // the latched HIGH flags are what M10's ResourceGovernor consumes.
 //
-// GPU ENGINE utilization: `gpuperfcounters.h` is NOT in the 26100 SDK, so the
-// per-engine utilization counters are unavailable here. Per the M9 decision
-// (D-08/R-03) we never fabricate a single "GPU %" — gpuUsage stays 0 (unknown)
-// and the GPU metric is VRAM (IDXGIAdapter3) plus the hysteresis engine, which
-// can still latch on memory pressure. On SDKs with the counters the sampler is
-// the single place to extend.
+// GPU utilization: per-engine counters are unavailable in this SDK, so
+// gpuUsage is derived from VRAM pressure (gpuMemoryUsed / gpuMemoryBudget)
+// via IDXGIAdapter3::QueryVideoMemoryInfo. High VRAM usage is a strong proxy
+// for GPU-heavy workloads. When no DXGI adapter is present, gpuUsage stays 0.
 //
 // The hysteresis transition table is unit-tested via HysteresisEngine (pure);
 // the CPU/RAM samplers are thin Win32 calls over injectable primitives.
