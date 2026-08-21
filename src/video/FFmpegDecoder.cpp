@@ -460,7 +460,7 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                         if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
                         D3D11_TEXTURE2D_DESC sharedDesc = srcDesc;
                         sharedDesc.Usage = D3D11_USAGE_DEFAULT;
-                        sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                        sharedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
                         sharedDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
                         HRESULT hr = ffmpegDev->CreateTexture2D(&sharedDesc, nullptr, &sharedTex_);
                         if (FAILED(hr)) { sharedTex_.Reset(); }
@@ -478,27 +478,32 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                         }
                     }
                     if (sharedTex_ && sharedHandle_) {
+                        // NV12 has 2 planes (Y + UV) per array slice.
+                        // CopySubresourceRegion operates on ONE subresource at a time,
+                        // so we must copy BOTH planes. For texture arrays (ArraySize>1),
+                        // each slice has 2 subresources: slice*2+0 (Y) and slice*2+1 (UV).
                         const UINT slice = static_cast<UINT>(desc->index);
-                        if (srcDesc.ArraySize > 1) {
+                        const UINT planeCount = 2; // NV12 = Y + UV interleaved
+                        for (UINT plane = 0; plane < planeCount; ++plane) {
+                            const UINT srcSub = slice * planeCount + plane;
+                            const UINT dstSub = slice * planeCount + plane;
+                            // UV plane is half height for NV12.
+                            const UINT planeHeight = (plane == 0) ? srcDesc.Height : srcDesc.Height / 2;
                             D3D11_BOX box{};
                             box.left = 0; box.top = 0; box.front = 0;
-                            box.right = srcDesc.Width; box.bottom = srcDesc.Height; box.back = 1;
+                            box.right = srcDesc.Width; box.bottom = planeHeight; box.back = 1;
                             deferredCtx_->CopySubresourceRegion(
-                                sharedTex_.Get(), slice, 0, 0, 0,
-                                desc->texture, slice, &box);
-                        } else {
-                            deferredCtx_->CopySubresourceRegion(
-                                sharedTex_.Get(), 0, 0, 0, 0,
-                                desc->texture, 0, nullptr);
+                                sharedTex_.Get(), dstSub, 0, 0, 0,
+                                desc->texture, srcSub, &box);
                         }
                         Microsoft::WRL::ComPtr<ID3D11CommandList> cmdList;
                         HRESULT hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
                         if (SUCCEEDED(hr) && cmdList) {
                             ffmpegCtx->ExecuteCommandList(cmdList.Get(), FALSE);
-                            // No Flush(): D3D11VA's DPB surface pool ensures
-                            // the source texture is not reused until the GPU
-                            // copy completes — flushing would stall the decode
-                            // thread and cause frame drops.
+                            // Flush to ensure the GPU copy completes before the render
+                            // device reads the shared texture. Without this, the render
+                            // device may see uninitialized data (green screen).
+                            ffmpegCtx->Flush();
                             df.sharedHandle = sharedHandle_;
                             df.hardware = true;
                             df.textureSlice = slice;
