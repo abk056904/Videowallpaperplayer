@@ -4,6 +4,7 @@
 #include <commctrl.h>
 
 #include <cwchar>
+#include <cstdlib>
 #include <vector>
 
 namespace vw::ui {
@@ -29,30 +30,43 @@ bool PerformancePanel::create(HWND parent) {
     initPanelFont();
     const Layout L = Layout::from(hwnd_);
 
-    // Pause toggles (2 columns).
-    const std::pair<UINT, const wchar_t*> toggles[] = {
-        {kCkGame, L"Pause on game"}, {kCkFullscreen, L"Pause on fullscreen"},
-        {kCkCpu, L"Pause on high CPU"}, {kCkGpu, L"Pause on high GPU"},
-        {kCkRam, L"Pause on high RAM"}};
-    for (int i = 0; i < 5; ++i) {
-        checks_[i] = ctl(hwnd_, L"BUTTON", toggles[i].second,
-                         WS_VISIBLE | BS_AUTOCHECKBOX,
-                         L.x(i < 3 ? 0 : 4), L.y(i < 3 ? i : i - 3),
-                         ::MulDiv(160, L.u, 5), L.cy,
-                         reinterpret_cast<HMENU>(static_cast<UINT_PTR>(toggles[i].first)));
+    // ---- Row 0-2: Pause toggles (2 columns, DPI-scaled) ----
+    // Col 0: game, CPU, RAM  |  Col 4: fullscreen, GPU
+    struct Toggle { UINT id; const wchar_t* text; int row; int col; };
+    const Toggle toggles[] = {
+        {kCkGame,       L"Pause on game",       0, 0},
+        {kCkCpu,        L"Pause on high CPU",    1, 0},
+        {kCkRam,        L"Pause on high RAM",    2, 0},
+        {kCkFullscreen, L"Pause on fullscreen",  0, 4},
+        {kCkGpu,        L"Pause on high GPU",    1, 4},
+    };
+    for (const auto& t : toggles) {
+        checks_[t.id - kCkGame] = ctl(hwnd_, L"BUTTON", t.text,
+                                       WS_VISIBLE | BS_AUTOCHECKBOX,
+                                       L.x(t.col), L.y(t.row),
+                                       ::MulDiv(160, L.u, 5), L.cy,
+                                       reinterpret_cast<HMENU>(static_cast<UINT_PTR>(t.id)));
     }
 
-    // Threshold pairs + delays.
-    edits_[0] = edit(L"CPU pause / resume :", 3, 0, L"cpuPauseThreshold");
-    edits_[1] = edit(L"", 3, 2, L"cpuResumeThreshold");
-    edits_[2] = edit(L"GPU pause / resume :", 4, 0, L"gpuPauseThreshold");
-    edits_[3] = edit(L"", 4, 2, L"gpuResumeThreshold");
-    edits_[4] = edit(L"RAM pause / resume :", 5, 0, L"memoryPauseThreshold");
-    edits_[5] = edit(L"", 5, 2, L"memoryResumeThreshold");
-    edits_[6] = edit(L"Pause delay :", 6, 0, L"pauseDelaySeconds");
-    edits_[7] = edit(L"Resume delay :", 6, 2, L"resumeDelaySeconds");
+    // ---- Row 3: CPU threshold pair ----
+    // Left:  "CPU threshold :" [pause val]
+    // Right: "CPU resume    :" [resume val]
+    edits_[0] = edit(L"CPU threshold :", 3, 0, L"cpuPauseThreshold");
+    edits_[1] = edit(L"CPU resume :", 3, 2, L"cpuResumeThreshold");
 
-    // Battery mode.
+    // ---- Row 4: GPU threshold pair ----
+    edits_[2] = edit(L"GPU threshold :", 4, 0, L"gpuPauseThreshold");
+    edits_[3] = edit(L"GPU resume :", 4, 2, L"gpuResumeThreshold");
+
+    // ---- Row 5: RAM threshold pair ----
+    edits_[4] = edit(L"RAM threshold :", 5, 0, L"memoryPauseThreshold");
+    edits_[5] = edit(L"RAM resume :", 5, 2, L"memoryResumeThreshold");
+
+    // ---- Row 6: Delays ----
+    edits_[6] = edit(L"Pause delay (s) :", 6, 0, L"pauseDelaySeconds");
+    edits_[7] = edit(L"Resume delay (s) :", 6, 2, L"resumeDelaySeconds");
+
+    // ---- Row 7: Battery mode ----
     ctl(hwnd_, L"STATIC", L"Battery mode :", WS_VISIBLE, L.x(0), L.y(7),
         ::MulDiv(140, L.u, 5), L.cy, nullptr);
     batteryCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
@@ -62,10 +76,14 @@ bool PerformancePanel::create(HWND parent) {
         ::SendMessageW(batteryCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(b));
     }
 
-    // Advanced (collapsible).
+    // ---- Row 8: Advanced Performance button (DPI-scaled) ----
     btnAdvanced_ = ctl(hwnd_, L"BUTTON", L"Advanced Performance", WS_VISIBLE | BS_PUSHBUTTON,
-                       12, 0, ::MulDiv(160, L.u, 5), L.cy, reinterpret_cast<HMENU>(kBtnAdvanced));
+                       L.x(0), L.y(8), ::MulDiv(160, L.u, 5), L.cy,
+                       reinterpret_cast<HMENU>(kBtnAdvanced));
+
+    // ---- Row 9+: Advanced section (initially hidden) ----
     const int advRow = 9;
+    // Perf mode label + combo — labels are ALWAYS visible, combo hidden when collapsed
     ctl(hwnd_, L"STATIC", L"Mode :", WS_VISIBLE, L.x(0), L.y(advRow),
         ::MulDiv(140, L.u, 5), L.cy, nullptr);
     perfModeCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
@@ -74,13 +92,32 @@ bool PerformancePanel::create(HWND parent) {
     for (const wchar_t* p : {L"Performance", L"Balanced", L"Quality", L"Ultra Low Resource"}) {
         ::SendMessageW(perfModeCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(p));
     }
+
     frameQueueEdit_ = edit(L"Frame queue :", advRow + 1, 0, L"frameQueue");
-    longPauseEdit_ = edit(L"Long-pause release :", advRow + 2, 0, L"longPauseReleaseSeconds");
-    // The advanced section starts collapsed.
+    longPauseEdit_ = edit(L"Long-pause release (s) :", advRow + 2, 0, L"longPauseReleaseSeconds");
+
+    // Advanced section starts collapsed — hide all advanced controls.
     advancedOpen_ = false;
-    ::ShowWindow(perfModeCombo_, SW_HIDE);
-    ::ShowWindow(frameQueueEdit_, SW_HIDE);
-    ::ShowWindow(longPauseEdit_, SW_HIDE);
+    {
+        const Layout L2 = Layout::from(hwnd_);
+        auto hideRow = [&](int row) {
+            const int targetY = L2.y(row);
+            HWND child = ::GetWindow(hwnd_, GW_CHILD);
+            while (child) {
+                RECT rc;
+                ::GetWindowRect(child, &rc);
+                ::MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<LPPOINT>(&rc), 2);
+                if (std::abs(rc.top - targetY) < L2.cy / 2) {
+                    ::ShowWindow(child, SW_HIDE);
+                }
+                child = ::GetWindow(child, GW_HWNDNEXT);
+            }
+        };
+        hideRow(advRow);      // "Mode :" label + combo
+        hideRow(advRow + 1);  // "Frame queue :" label + edit
+        hideRow(advRow + 2);  // "Long-pause release" label + edit
+    }
+
     return true;
 }
 
@@ -185,9 +222,29 @@ void PerformancePanel::toggleAdvanced() {
     advancedOpen_ = !advancedOpen_;
     ::SetWindowTextW(btnAdvanced_, advancedOpen_ ? L"Advanced Performance (hide)"
                                                  : L"Advanced Performance");
-    ::ShowWindow(perfModeCombo_, advancedOpen_ ? SW_SHOW : SW_HIDE);
-    ::ShowWindow(frameQueueEdit_, advancedOpen_ ? SW_SHOW : SW_HIDE);
-    ::ShowWindow(longPauseEdit_, advancedOpen_ ? SW_SHOW : SW_HIDE);
+
+    const int advRow = 9;
+    const Layout L = Layout::from(hwnd_);
+
+    // Helper: show/hide all child controls at a given grid row.
+    auto toggleRow = [&](int row, bool show) {
+        const int targetY = L.y(row);
+        HWND child = ::GetWindow(hwnd_, GW_CHILD);
+        while (child) {
+            RECT rc;
+            ::GetWindowRect(child, &rc);
+            ::MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<LPPOINT>(&rc), 2);
+            if (std::abs(rc.top - targetY) < L.cy / 2) {
+                ::ShowWindow(child, show ? SW_SHOW : SW_HIDE);
+            }
+            child = ::GetWindow(child, GW_HWNDNEXT);
+        }
+    };
+
+    // Toggle Mode label + combo (row 9), frame queue (row 10), long-pause (row 11)
+    toggleRow(advRow, advancedOpen_);
+    toggleRow(advRow + 1, advancedOpen_);
+    toggleRow(advRow + 2, advancedOpen_);
 }
 
 LRESULT CALLBACK PerformancePanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
