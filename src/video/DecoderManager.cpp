@@ -3,6 +3,7 @@
 #include <cwchar>
 #include <cstring>
 
+#include <Windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mftransform.h>
@@ -378,6 +379,9 @@ void DecoderManager::detectDecoder(IMFSourceReader* reader) {
 }
 
 void DecoderManager::workerLoop(FrameQueue* queue) {
+    // Boost decode thread priority — same rationale as FFmpegDecoder.
+    // THREAD_PRIORITY_HIGHER = 1 (processthreadsapi.h not always available with WIN32_LEAN_AND_MEAN).
+    ::SetThreadPriority(::GetCurrentThread(), 1 /*THREAD_PRIORITY_HIGHER*/);
     const HRESULT comHr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     auto& log = log::Logger::instance();
 

@@ -62,11 +62,14 @@ void FrameQueue::recycleBuffer(std::vector<uint8_t>& bytes) {
 
 void FrameQueue::recycleLocked(std::vector<uint8_t>& bytes) {
     // Only buffers worth keeping: a fresh 14 MB block is VirtualAlloc-backed;
-    // the recycled pool is bounded at capacity_ so pause clears() the memory.
+    // the recycled pool is capped independently of queue capacity_ to keep
+    // RAM bounded even if capacity_ is set high.  2 spares is enough: the
+    // producer needs at most 1 while the consumer holds 1.
+    constexpr size_t kMaxSpareBuffers = 2;
     if (bytes.capacity() < (1ull << 20)) { // < 1 MB: not worth hoarding
         return;
     }
-    if (spareBuffers_.size() >= capacity_) {
+    if (spareBuffers_.size() >= kMaxSpareBuffers) {
         return;
     }
     spareBuffers_.push_back(std::move(bytes));

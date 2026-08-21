@@ -4,13 +4,8 @@
 #include <objbase.h>
 #include <functiondiscoverykeys_devpkey.h>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/samplefmt.h>
-#include <libswresample/swresample.h>
-}
+// Lazy-loaded FFmpeg: types from real headers, calls through function pointers.
+#include "util/FFmpegCompat.h"
 
 #include <algorithm>
 #include <cstring>

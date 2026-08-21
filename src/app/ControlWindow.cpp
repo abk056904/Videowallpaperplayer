@@ -64,6 +64,7 @@ enum HotkeyId : int {
     kHotkeyPlayPause = 1,
     kHotkeyNext = 2,
     kHotkeyPrev = 3,
+    kHotkeyDebugOverlay = 4,
 };
 
 void ControlWindow::registerHotkeys() {
@@ -71,6 +72,7 @@ void ControlWindow::registerHotkeys() {
     ::RegisterHotKey(hwnd_, kHotkeyPlayPause, MOD_CONTROL | MOD_ALT, 'V');
     ::RegisterHotKey(hwnd_, kHotkeyNext, MOD_CONTROL | MOD_ALT, VK_RIGHT);
     ::RegisterHotKey(hwnd_, kHotkeyPrev, MOD_CONTROL | MOD_ALT, VK_LEFT);
+    ::RegisterHotKey(hwnd_, kHotkeyDebugOverlay, MOD_CONTROL | MOD_ALT, 'D');
 }
 
 void ControlWindow::unregisterHotkeys() {
@@ -78,6 +80,7 @@ void ControlWindow::unregisterHotkeys() {
     ::UnregisterHotKey(hwnd_, kHotkeyPlayPause);
     ::UnregisterHotKey(hwnd_, kHotkeyNext);
     ::UnregisterHotKey(hwnd_, kHotkeyPrev);
+    ::UnregisterHotKey(hwnd_, kHotkeyDebugOverlay);
 }
 
 LRESULT CALLBACK ControlWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

@@ -18,6 +18,7 @@
 #include "system/SystemStateMonitor.h"
 #include "ui/TrayController.h"
 #include "ui/Win32UI.h"
+#include "util/UpdateChecker.h"
 #include "wallpaper/WallpaperManager.h"
 
 namespace vw::playback {
@@ -40,6 +41,9 @@ public:
 
     // Process entry point; returns the process exit code.
     int run();
+
+    // Set command line (from wWinMain's PWSTR) for file association launch.
+    void setCommandLine(const std::wstring& cmd) { commandLine_ = cmd; }
 
 private:
     bool acquireSingleInstance();
@@ -131,6 +135,8 @@ private:
     std::filesystem::path playlistPath_;                 // M7: AppData/playlist.json
     std::wstring lastPlayedPath_;                        // M7: same-item loop detection
     bool mfStarted_ = false;
+    util::UpdateChecker updateChecker_;
+    std::wstring commandLine_;
     ControlWindow control_;
 };
 

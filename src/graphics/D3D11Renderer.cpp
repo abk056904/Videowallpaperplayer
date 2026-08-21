@@ -71,6 +71,20 @@ Result<void> D3D11Renderer::init(ID3D11Device* device, IDXGISwapChain1* swapChai
         return std::unexpected(L"CreateSamplerState (border) failed");
     }
 
+    // Create blend state for alpha-over overlay (premultiplied alpha).
+    D3D11_BLEND_DESC blendDesc{};
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;          // premultiplied src
+    blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    if (FAILED(device->CreateBlendState(&blendDesc, &overlayBlend_))) {
+        return std::unexpected(L"CreateBlendState (overlay blend) failed");
+    }
+
     // The swap chain was just created at this size — build the RTV directly;
     // a same-size ResizeBuffers on a fresh flip-model chain fails (INVALID_CALL).
     return rebuildRtv(device, width, height);
@@ -173,6 +187,46 @@ Result<void> D3D11Renderer::render(ID3D11DeviceContext* context, const FramePara
     context->RSSetViewports(1, &viewport_);
     context->Draw(3, 0);
 
+    // --- Overlay pass: draw the debug text in the top-left corner ---
+    if (overlaySrv_ && overlayW_ > 0 && overlayH_ > 0) {
+        // Small viewport in the top-left corner with padding.
+        const float pad = 10.0f;
+        D3D11_VIEWPORT ovVP{};
+        ovVP.TopLeftX = pad;
+        ovVP.TopLeftY = pad;
+        ovVP.Width = static_cast<float>(overlayW_);
+        ovVP.Height = static_cast<float>(overlayH_);
+        ovVP.MinDepth = 0.0f;
+        ovVP.MaxDepth = 1.0f;
+
+        // UV scale/offset to map the overlay texture to the quad.
+        FrameParams ovCb{};
+        ovCb.tint[0] = ovCb.tint[1] = ovCb.tint[2] = ovCb.tint[3] = 1.0f;
+        ovCb.scaleOffset[0] = 1.0f;  // sx
+        ovCb.scaleOffset[1] = 1.0f;  // sy
+        ovCb.scaleOffset[2] = 0.0f;  // ox
+        ovCb.scaleOffset[3] = 0.0f;  // oy
+        context->UpdateSubresource(frameCb_.Get(), 0, nullptr, &ovCb, 0, 0);
+
+        // Enable alpha blending for the overlay.
+        const float blendFactor[4] = {0, 0, 0, 0};
+        context->OMSetBlendState(overlayBlend_.Get(), blendFactor, 0xFFFFFFFF);
+
+        context->RSSetViewports(1, &ovVP);
+        ID3D11ShaderResourceView* ovSrv = overlaySrv_.Get();
+        ID3D11ShaderResourceView* nullSrv[2] = {nullptr, nullptr};
+        context->PSSetShader(psTex_.Get(), nullptr, 0);
+        context->PSSetShaderResources(0, 1, &ovSrv);
+        context->PSSetShaderResources(1, 1, nullSrv);
+        context->RSSetState(rasterizer_.Get());
+        ID3D11SamplerState* smp = sampler_.Get();
+        context->PSSetSamplers(0, 1, &smp);
+        context->Draw(3, 0);
+
+        // Restore default blend state (no alpha blend for main render next frame).
+        context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFF);
+    }
+
     // Present with vsync; device loss propagates for the M12 recreate path.
     const HRESULT hr = swapChain_->Present(1, 0);
     if (D3D11DeviceManager::isDeviceLost(hr)) {
@@ -196,6 +250,12 @@ Result<void> D3D11Renderer::resize(ID3D11Device* device, UINT width, UINT height
         swapChain_->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
     if (FAILED(hr)) return std::unexpected(L"ResizeBuffers failed: " + formatHr(hr));
     return rebuildRtv(device, width, height);
+}
+
+void D3D11Renderer::setOverlay(ID3D11ShaderResourceView* srv, UINT overlayW, UINT overlayH) {
+    overlaySrv_ = srv;
+    overlayW_ = overlayW;
+    overlayH_ = overlayH;
 }
 
 Result<void> D3D11Renderer::rebuildRtv(ID3D11Device* device, UINT width, UINT height) {

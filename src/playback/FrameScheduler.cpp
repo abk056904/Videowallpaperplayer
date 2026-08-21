@@ -42,21 +42,31 @@ void FrameScheduler::advanceAfterPresent(SchedulerTime now, SchedulerTime frameT
     // the frame was presented early (ahead of its own deadline) or late.
     const SchedulerTime nextMedia = frameTimestamp + interval100ns_;
     const SchedulerTime nextDue = anchorWall_ + static_cast<SchedulerTime>((nextMedia - anchorMedia_) / speed_);
-    // Wall-time interval shrinks at higher speed (interval/speed). Snap forward
-    // when behind so deadlines never linger in the past.
     const SchedulerTime wallInterval = static_cast<SchedulerTime>(interval100ns_ / speed_);
-    nextDeadline_ = (std::max)(nextDue, now + wallInterval);
+    if (nextDue <= now) {
+        // We're behind (next frame should already be on screen). Allow
+        // catch-up by arming immediately instead of waiting a full interval.
+        // This prevents the scheduler from drifting permanently behind after
+        // a momentary decode stall (disk I/O, OS scheduling jitter) — the
+        // consumer drains the queued frames as fast as vsync allows until
+        // real-time catches up.
+        nextDeadline_ = now + 1; // 1 = minimum for SetWaitableTimer
+    } else {
+        nextDeadline_ = (std::max)(nextDue, now + wallInterval);
+    }
 }
 
 void FrameScheduler::advanceIdle(SchedulerTime now) {
     if (!pacingEnabled()) {
         return;
     }
-    // The previous deadline passed with nothing to present: re-arm relative to
-    // now so the timer never immediately re-fires on a stale past deadline.
-    // Wall-time interval shrinks at higher speed.
-    const SchedulerTime wallInterval = static_cast<SchedulerTime>(interval100ns_ / speed_);
-    nextDeadline_ = now + wallInterval;
+    // The previous deadline passed with nothing to present (decode still
+    // working). Re-arm with a short delay so the timer re-checks quickly
+    // when the decoder produces a frame — no long wait that would cause
+    // an avoidable frame skip.
+    nextDeadline_ = now + std::min<SchedulerTime>(
+        static_cast<SchedulerTime>(interval100ns_ / speed_),
+        50000); // cap at 5 ms — fast retry when decode is catching up
 }
 
 long long FrameScheduler::msUntilNextDeadline(SchedulerTime now) const {

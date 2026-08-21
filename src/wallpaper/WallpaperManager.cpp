@@ -5,6 +5,7 @@
 #include <dxgi1_2.h>
 #include <format>
 #include <cstring>
+#include <psapi.h>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -577,8 +578,29 @@ Result<void> WallpaperManager::createHosts() {
 }
 
 Result<void> WallpaperManager::renderAll() {
+    // Initialize debug overlay on first render if enabled.
+    if (debugEnabled_ && !debugOverlay_.valid() && deviceManager_.device()) {
+        if (auto r = debugOverlay_.init(deviceManager_.device(), 350, 80); !r) {
+            log::Logger::instance().warn(L"debug overlay init failed: {}", r.error());
+        }
+    }
+    if (!debugEnabled_ && debugOverlay_.valid()) {
+        debugOverlay_.release();
+    }
+
+    // Render text to the overlay texture if dirty.
+    if (debugOverlay_.valid() && deviceManager_.device()) {
+        (void)debugOverlay_.renderText(deviceManager_.device());
+    }
+
     bool anyError = false;
     for (auto& host : hosts_) {
+        // Bind overlay SRV to each host's renderer.
+        if (debugOverlay_.valid()) {
+            host->setOverlay(debugOverlay_.srv(), debugOverlay_.width(), debugOverlay_.height());
+        } else {
+            host->setOverlay(nullptr, 0, 0);
+        }
         auto result = host->render();
         if (!result) {
             anyError = true;
@@ -1006,6 +1028,25 @@ void WallpaperManager::repositionHost(const std::wstring& monitorId) {
     if (!result) {
         log::Logger::instance().warn(L"reposition failed for {}: {}", monitorId, result.error());
     }
+}
+
+void WallpaperManager::updateDebugOverlay(double decodedFps, double presentedFps,
+                                           uint64_t dropped, const wchar_t* decoderName,
+                                           bool hwDecode) {
+    wchar_t line1[128], line2[128], line3[128], line4[128];
+    _snwprintf_s(line1, _TRUNCATE, L"FPS: %.1f decoded / %.1f presented", decodedFps, presentedFps);
+    _snwprintf_s(line2, _TRUNCATE, L"Decoder: %s", decoderName ? decoderName : L"?");
+    _snwprintf_s(line3, _TRUNCATE, L"HW: %s  Dropped: %llu", hwDecode ? L"Yes" : L"No",
+                 static_cast<unsigned long long>(dropped));
+    // Memory: use GetProcessMemoryInfo for working set.
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    DWORD ramKB = 0;
+    if (::GetProcessMemoryInfo(::GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        ramKB = static_cast<DWORD>(pmc.WorkingSetSize / 1024);
+    }
+    _snwprintf_s(line4, _TRUNCATE, L"RAM: %u MB", ramKB / 1024);
+    debugOverlay_.update(line1, line2, line3, line4);
 }
 
 } // namespace vw::wallpaper

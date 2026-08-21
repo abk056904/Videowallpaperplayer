@@ -58,6 +58,11 @@ public:
     // Repositions/resizes the window + swap chain (monitor change).
     Result<void> setBounds(const RECT& bounds);
 
+    // Debug overlay: set the overlay texture to render in the top-left corner.
+    void setOverlay(ID3D11ShaderResourceView* srv, UINT w, UINT h) {
+        renderer_.setOverlay(srv, w, h);
+    }
+
     // Destroys the window and releases the swap chain/renderer (idempotent).
     void destroy();
 

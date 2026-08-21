@@ -57,6 +57,11 @@ public:
     // size is unchanged (avoids the flip-model same-size ResizeBuffers error).
     Result<void> resize(ID3D11Device* device, UINT width, UINT height);
 
+    // Overlay: bind a small texture to render in the top-left corner after
+    // the main video draw.  Pass nullptr to clear.  The overlay texture is
+    // drawn with alpha blending (premultiplied) as a small quad.
+    void setOverlay(ID3D11ShaderResourceView* srv, UINT overlayW, UINT overlayH);
+
     // True when the LAST render() failure was a device-lost/reset Present
     // error (M12: the host uses this to schedule the recreate).
     bool deviceLost() const { return deviceLost_; }
@@ -81,6 +86,13 @@ private:
     float scaleOffset_[4] = {1.0f, 1.0f, 0.0f, 0.0f}; // set by setVideoTexture/setVideoPlanes
     bool needsBorder_ = false; // Fit/Center: out-of-range UVs must be black bars
     bool deviceLost_ = false;  // M12: last render failed with a device-lost code
+    // Overlay rendering state
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> overlaySrv_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> overlayCb_;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> overlayBlend_;
+    UINT overlayW_ = 0;
+    UINT overlayH_ = 0;
+
     UINT width_ = 0;
     UINT height_ = 0;
 };

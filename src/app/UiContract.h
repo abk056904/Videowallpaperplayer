@@ -159,6 +159,7 @@ struct ConfigSnapshot {
     int volume = 80; // 0–100
     bool clone = false; // wallpaper mode: true = Clone, false = Independent
     bool startWithWindows = false, minimizeToTray = true, startMinimized = false;
+    bool fileAssociations = false;
     std::wstring logLevel = L"info";
 };
 

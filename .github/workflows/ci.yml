@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 2 * * *'  # Nightly soak at 2 AM UTC
 
 jobs:
   build:
@@ -39,3 +41,43 @@ jobs:
             build/release/Release/VideoWallpaper.exe
             build/release/Release/*.dll
           retention-days: 7
+
+  soak:
+    if: github.event_name == 'schedule'
+    runs-on: windows-2022
+    timeout-minutes: 480  # 8-hour soak
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: '2022'
+
+      - name: Configure + Build
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+
+      - name: Run soak test (8h)
+        run: |
+          Start-Process -FilePath "build\release\Release\VideoWallpaper.exe" -NoNewWindow
+          Start-Sleep -Seconds 28800  # 8 hours
+          Get-Process -Name VideoWallpaper | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "Soak test completed successfully"
+
+      - name: Check for crashes
+        if: always()
+        run: |
+          if (Test-Path "$env:APPDATA\VideoWallpaper\crashes\*.dmp") {
+            Write-Host "CRASH DETECTED during soak test"
+            Get-ChildItem "$env:APPDATA\VideoWallpaper\crashes\*.dmp" | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          } else {
+            Write-Host "No crashes detected"
+          }

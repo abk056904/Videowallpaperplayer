@@ -12,6 +12,7 @@
 
 #include "graphics/D3D11DeviceManager.h"
 #include "graphics/D3D11Renderer.h"
+#include "graphics/DebugOverlay.h"
 #include "monitors/MonitorManager.h"
 #include "util/Result.h"
 
@@ -113,6 +114,12 @@ public:
 
     // Scaling mode for video frames (config.playback.scaling, Fill default).
     void setScaling(gfx::D3D11Renderer::Scaling scaling) { scaling_ = scaling; }
+
+    // Debug overlay toggle and stats update.
+    void setDebugEnabled(bool enabled) { debugEnabled_ = enabled; }
+    bool debugEnabled() const { return debugEnabled_; }
+    void updateDebugOverlay(double decodedFps, double presentedFps, uint64_t dropped,
+                             const wchar_t* decoderName, bool hwDecode);
 
     // M11 Monitors-panel preview: one-time CPU readback of the CURRENT video
     // frame (the software-path upload texture). Returns tightly-packed BGRA8
@@ -223,6 +230,8 @@ private:
     // runs its own video). Keyed by stable monitor id.
     std::map<std::wstring, UploadSlot> perMonitorFrames_;
     gfx::D3D11Renderer::Scaling scaling_ = gfx::D3D11Renderer::Scaling::Fill;
+    gfx::DebugOverlay debugOverlay_;
+    bool debugEnabled_ = false;
     DesktopLayer layer_;
     bool running_ = false;
     // M12: consecutive device-recreate failures (drives the retry backoff).

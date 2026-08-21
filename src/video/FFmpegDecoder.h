@@ -18,6 +18,8 @@ struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
 struct AVBufferRef;
+struct SwsContext;
+enum AVPixelFormat : int;
 
 namespace vw::video {
 
@@ -76,6 +78,12 @@ private:
     int videoStreamIdx_ = -1;
     ID3D11Device* d3dDevice_ = nullptr;
     ID3D11DeviceContext* deferredCtx_ = nullptr; // for GPU-to-GPU texture copies
+
+    // Cached SwsContext for the BGRA software fallback — avoids per-frame
+    // alloc/free (~0.5 ms/frame overhead on the decode thread).
+    SwsContext* swsCtx_ = nullptr;
+    uint32_t swsSrcW_ = 0, swsSrcH_ = 0;
+    int swsSrcFmt_ = -1;  // AVPixelFormat stored as int to avoid header dependency
 
     // Cached shared texture for D3D11VA (avoids per-frame alloc).
     Microsoft::WRL::ComPtr<ID3D11Texture2D> sharedTex_;

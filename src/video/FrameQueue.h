@@ -84,8 +84,9 @@ public:
     uint64_t droppedFrames() const;
 
 private:
-    // M13: stashes a consumed frame's buffer for reuse (bounded at capacity_,
-    // only buffers worth keeping — >= 1 MB). Caller holds mu_.
+    // M13: stashes a consumed frame's buffer for reuse (bounded at
+    // kMaxSpareBuffers = 2, independent of queue capacity_; only buffers
+    // >= 1 MB worth keeping). Caller holds mu_.
     void recycleLocked(std::vector<uint8_t>& bytes);
     void signalLocked(); // SetEvent under the lock
 

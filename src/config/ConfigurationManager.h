@@ -62,6 +62,8 @@ struct Config {
     int longPauseReleaseSeconds = 2; // M14 P4: faster memory release on pause
     // battery
     BatteryMode batteryMode = BatteryMode::Pause;
+    // file associations
+    bool fileAssociations = false; // register .mp4 etc. to open with this app
     // detection
     std::vector<std::wstring> alwaysPause;
     std::vector<std::wstring> neverPause;

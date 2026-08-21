@@ -4,16 +4,10 @@
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
+// Lazy-loaded FFmpeg: types from real headers, calls through function pointers.
+#include "util/FFmpegCompat.h"
 #include <libavcodec/d3d11va.h>
-#include <libavformat/avformat.h>
-#include <libavutil/avutil.h>
-#include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_d3d11va.h>
-#include <libavutil/imgutils.h>
-#include <libswscale/swscale.h>
-}
 
 #include <cstring>
 
@@ -316,6 +310,7 @@ void FFmpegDecoder::close() {
     if (hwFramesCtx_) { av_buffer_unref(&hwFramesCtx_); hwFramesCtx_ = nullptr; }
     if (hwCtx_) { av_buffer_unref(&hwCtx_); hwCtx_ = nullptr; }
     if (deferredCtx_) { deferredCtx_->Release(); deferredCtx_ = nullptr; }
+    if (swsCtx_) { sws_freeContext(swsCtx_); swsCtx_ = nullptr; swsSrcW_ = swsSrcH_ = 0; swsSrcFmt_ = -1; }
     sharedTex_.Reset();
     if (sharedHandle_) { CloseHandle(sharedHandle_); sharedHandle_ = nullptr; }
     sharedWidth_ = sharedHeight_ = 0;
@@ -352,7 +347,13 @@ Result<void> FFmpegDecoder::start(FrameQueue* queue, LONGLONG position100ns) {
     queue_ = queue;
     stopRequested_ = false;
     decodedFrames_ = 0;
-    worker_ = std::thread(&FFmpegDecoder::workerLoop, this, queue);
+    worker_ = std::thread([this, queue]() {
+        // Boost decode thread priority so OS background tasks (AV scans,
+        // Windows Update, indexers) cannot preempt the decode loop and
+        // cause frame-starvation lag on the consumer side.
+        ::SetThreadPriority(::GetCurrentThread(), 1 /*THREAD_PRIORITY_HIGHER*/);
+        workerLoop(queue);
+    });
     return {};
 }
 
@@ -454,6 +455,10 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                         HRESULT hr = deferredCtx_->FinishCommandList(FALSE, &cmdList);
                         if (SUCCEEDED(hr) && cmdList) {
                             ffmpegCtx->ExecuteCommandList(cmdList.Get(), FALSE);
+                            // No Flush(): D3D11VA's DPB surface pool ensures
+                            // the source texture is not reused until the GPU
+                            // copy completes — flushing would stall the decode
+                            // thread and cause frame drops.
                             df.sharedHandle = sharedHandle_;
                             df.hardware = true;
                             df.textureSlice = slice;
@@ -536,18 +541,25 @@ void FFmpegDecoder::workerLoop(FrameQueue* queue) {
                         }
                 }
             } else {
-                // Software BGRA fallback
+                // Software BGRA fallback — reuse cached SwsContext across
+                // frames (avoids ~0.5 ms alloc/free overhead per frame).
                 uint32_t w = frame_->width;
                 uint32_t h = frame_->height;
                 uint32_t stride = w * 4;
                 df.bytes.resize(stride * h);
-                SwsContext* sws = sws_getContext(w, h, static_cast<AVPixelFormat>(frame_->format),
-                                                  w, h, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-                if (sws) {
+                const auto srcFmt = static_cast<AVPixelFormat>(frame_->format);
+                if (!swsCtx_ || swsSrcW_ != w || swsSrcH_ != h ||
+                    swsSrcFmt_ != static_cast<int>(srcFmt)) {
+                    sws_freeContext(swsCtx_);
+                    swsCtx_ = sws_getContext(w, h, srcFmt, w, h,
+                                              AV_PIX_FMT_BGRA, SWS_BILINEAR,
+                                              nullptr, nullptr, nullptr);
+                    swsSrcW_ = w; swsSrcH_ = h; swsSrcFmt_ = static_cast<int>(srcFmt);
+                }
+                if (swsCtx_) {
                     uint8_t* dst[1] = {df.bytes.data()};
                     int dstStride[1] = {static_cast<int>(stride)};
-                    sws_scale(sws, frame_->data, frame_->linesize, 0, h, dst, dstStride);
-                    sws_freeContext(sws);
+                    sws_scale(swsCtx_, frame_->data, frame_->linesize, 0, h, dst, dstStride);
                 }
             }
 

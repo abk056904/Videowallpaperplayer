@@ -20,6 +20,9 @@
 #include "playlist/PlaylistStore.h"
 #include "util/clock.h"
 #include "util/CrashReport.h"
+#include "util/FFmpegApi.h"
+#include "util/FileAssoc.h"
+#include "util/UpdateChecker.h"
 #include "util/utf8.h"
 #include "video/DecodedFrame.h"
 
@@ -120,6 +123,9 @@ int ApplicationController::run() {
     // Install crash reporter early (before logger) so crashes during init are captured.
     util::CrashReport::install(appDataDir_ / L"crashes");
 
+    // Check for updates on a background thread (non-blocking).
+    updateChecker_.start();
+
     auto& log = log::Logger::instance();
     log.init(log::Logger::Options{
         .logDir = appDataDir_ / L"logs",
@@ -143,6 +149,17 @@ int ApplicationController::run() {
                 }
             }
         }
+    }
+
+    // Lazy-load FFmpeg DLLs from the exe directory (saves ~10-30 MB peak
+    // working set when MF HW decode is used instead of FFmpeg).
+    {
+        wchar_t exePath[MAX_PATH]{};
+        ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring dllDir = std::wstring(exePath);
+        auto pos = dllDir.find_last_of(L'\\');
+        if (pos != std::wstring::npos) dllDir.resize(pos);
+        vw::ffmpeg::ffmpegApiLoad(dllDir.c_str());
     }
 
     config_ = std::make_unique<config::ConfigurationManager>(
@@ -313,12 +330,19 @@ int ApplicationController::run() {
                 playback_->stop();
             }
         } else if (msg == WM_HOTKEY) {
-            // Global hotkeys (Ctrl+Alt+V/Left/Right).
+            // Global hotkeys (Ctrl+Alt+V/Left/Right/D).
             ui::Command c;
             switch (wParam) {
                 case 1: c.id = ui::CommandId::PlayPauseToggle; break; // Ctrl+Alt+V
                 case 2: c.id = ui::CommandId::Next; break;           // Ctrl+Alt+Right
                 case 3: c.id = ui::CommandId::Previous; break;       // Ctrl+Alt+Left
+                case 4: // Ctrl+Alt+D: toggle debug overlay
+                    if (wallpaper_) {
+                        bool enabled = !wallpaper_->debugEnabled();
+                        wallpaper_->setDebugEnabled(enabled);
+                        log.info(L"debug overlay: {}", enabled ? L"ON" : L"OFF");
+                    }
+                    return; // no command posted
                 default: return;
             }
             postCommand(std::move(c));
@@ -507,6 +531,33 @@ int ApplicationController::run() {
     }
     log.debug(L"clock frequency: {:.0f} Hz", 1.0 / util::Clock::instance().ticksToSeconds(1));
 
+    // Handle command line: if a file path was passed (file association launch),
+    // add it to the playlist and play it.
+    if (!commandLine_.empty()) {
+        // Strip surrounding quotes if present.
+        std::wstring filePath = commandLine_;
+        if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
+            filePath = filePath.substr(1, filePath.size() - 2);
+        }
+        // Check if it looks like a video file path.
+        if (!filePath.empty() && filePath[0] != L'-') {
+            if (playlist_) {
+                playlist_->add(filePath);
+                savePlaylistAndNotify();
+                playlist_->setCurrent(playlist_->size() - 1);
+                startPlaylistItem(playlist_->currentIndex());
+                log.info(L"file association: added and playing {}", filePath);
+            }
+        }
+    }
+
+    // Register file associations if configured.
+    if (config_ && config_->config().fileAssociations) {
+        wchar_t exePath[MAX_PATH]{};
+        ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        util::FileAssoc::registerAll(exePath);
+    }
+
     // Message loop: blocks when idle (zero busy-wait, docs/02 §2.8). While
     // playback runs, wait on the FrameScheduler's waitable timer + the
     // decoder's new-frame event alongside messages (M6); anything else waits
@@ -571,6 +622,12 @@ void ApplicationController::startPlayback() {
             if (!monitors.empty()) {
                 statsCollector_->updatePerMonitor(monitors.front().id, s.presentedFps,
                                                   s.droppedFrames);
+            }
+            // Update debug overlay every ~1s (stats observer fires at 1 Hz).
+            if (wallpaper_->debugEnabled()) {
+                wallpaper_->updateDebugOverlay(s.decodedFps, s.presentedFps, s.droppedFrames,
+                                               playback_->decoderName().c_str(),
+                                               playback_->hardwareDecoding());
             }
         });
     }
@@ -948,6 +1005,7 @@ void ApplicationController::shutdown() {
         ::MFShutdown();
         mfStarted_ = false;
     }
+    vw::ffmpeg::ffmpegApiUnload();
     if (playlist_) {
         if (auto saved = playlist::PlaylistStore::save(playlistPath_, playlist_->data());
             !saved) {
@@ -1373,6 +1431,15 @@ void ApplicationController::onUiTelemetryTick() {
     sink_->onTelemetry(statsCollector_ ? statsCollector_->snapshot()
                                        : vw::ui::TelemetrySnapshot{});
     updateTrayFromState();
+
+    // Update debug overlay stats when enabled.
+    if (wallpaper_ && wallpaper_->debugEnabled() && playback_ &&
+        playback_->state() == playback::PlaybackController::State::Playing) {
+        const auto& s = playback_->stats();
+        wallpaper_->updateDebugOverlay(s.decodedFps, s.presentedFps, s.droppedFrames,
+                                       playback_->decoderName().c_str(),
+                                       playback_->hardwareDecoding());
+    }
 }
 
 std::wstring ApplicationController::currentVideoName() const {
@@ -1435,6 +1502,10 @@ void ApplicationController::updateTrayFromState() {
         if (snap.presentedFps > 0) {
             tip += std::format(L" \u2022 {:.0f} fps", snap.presentedFps);
         }
+    }
+    // Show update notification in tray tooltip.
+    if (updateChecker_.isUpdateAvailable()) {
+        tip += std::format(L" \u2022 Update {} available", updateChecker_.latestVersion());
     }
     tray_->setTooltip(tip);
     tray_->setCurrentVideo(currentVideoName());
@@ -1614,6 +1685,19 @@ void ApplicationController::applyConfigSetLive(const std::wstring& key, const st
         if (!c.audio && playback_) {
             playback_->stopAudio();
         }
+    } else if (key == L"fileAssociations") {
+        // Register/unregister file associations in HKCU.
+        wchar_t exePath[MAX_PATH]{};
+        ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        if (c.fileAssociations) {
+            if (util::FileAssoc::registerAll(exePath)) {
+                log.info(L"file associations registered");
+            }
+        } else {
+            if (util::FileAssoc::unregisterAll()) {
+                log.info(L"file associations unregistered");
+            }
+        }
     }
 }
 
@@ -1733,6 +1817,7 @@ vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
     s.config.startWithWindows = c.startWithWindows;
     s.config.minimizeToTray = c.minimizeToTray;
     s.config.startMinimized = c.startMinimized;
+    s.config.fileAssociations = c.fileAssociations;
     s.config.logLevel = c.logLevel;
     return s;
 }

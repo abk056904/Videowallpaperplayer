@@ -2,7 +2,6 @@
 
 #include <algorithm>
 
-#include <psapi.h>
 
 namespace vw::detection {
 

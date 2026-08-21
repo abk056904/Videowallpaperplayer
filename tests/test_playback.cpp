@@ -102,16 +102,16 @@ TEST_CASE("scheduler: steady-state cadence (decode keeps up)") {
     CHECK(s.msUntilNextDeadline(500'000LL) == 50);
 }
 
-TEST_CASE("scheduler: slow decode snaps the deadline forward (no busy re-fire)") {
+TEST_CASE("scheduler: slow decode snaps the deadline forward (catch-up)") {
     FrameScheduler s;
     s.setSourceFps(30.0);
     s.reset(0, 0);
 
-    // Frame 2 decoded late and presented 1 s in; the next deadline must be
-    // relative to NOW, not the stale cadence (else the timer re-fires at a
-    // past deadline in a tight loop).
+    // Frame 2 decoded late and presented 1 s in; the scheduler allows
+    // catch-up by arming immediately so the consumer drains queued frames
+    // as fast as vsync allows until real-time catches up.
     s.advanceAfterPresent(1'000'000LL, 666'666LL);
-    CHECK(s.msUntilNextDeadline(1'000'000LL) == 34);
+    CHECK(s.msUntilNextDeadline(1'000'000LL) == 1);
 }
 
 TEST_CASE("scheduler: idle wake re-arms relative to now") {
@@ -119,9 +119,10 @@ TEST_CASE("scheduler: idle wake re-arms relative to now") {
     s.setSourceFps(30.0);
     s.reset(0, 0);
 
-    // Deadline passed, nothing to present: re-arm one interval from now.
+    // Deadline passed, nothing to present: re-arm quickly so the decoder
+    // can present a frame as soon as it arrives (capped at 5 ms).
     s.advanceIdle(500'000LL);
-    CHECK(s.msUntilNextDeadline(500'000LL) == 34);
+    CHECK(s.msUntilNextDeadline(500'000LL) == 5);
     // A past deadline never yields a sub-1 ms arm.
     s.advanceIdle(0);
     CHECK(s.msUntilNextDeadline(0) >= 1);

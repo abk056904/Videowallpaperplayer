@@ -31,21 +31,24 @@ bool SettingsPanel::create(HWND parent) {
     checkTray_ = ctl(hwnd_, L"BUTTON", L"Minimize to tray on close", WS_VISIBLE | BS_AUTOCHECKBOX,
                      L.x(0), L.y(1), ::MulDiv(220, L.u, 5), L.cy,
                      reinterpret_cast<HMENU>(kCkTray));
+    checkFileAssoc_ = ctl(hwnd_, L"BUTTON", L"Register file associations (.mp4 etc.)", WS_VISIBLE | BS_AUTOCHECKBOX,
+                          L.x(0), L.y(2), ::MulDiv(300, L.u, 5), L.cy,
+                          reinterpret_cast<HMENU>(kCkFileAssoc));
 
-    ctl(hwnd_, L"STATIC", L"Logging level :", WS_VISIBLE, L.x(0), L.y(2),
+    ctl(hwnd_, L"STATIC", L"Logging level :", WS_VISIBLE, L.x(0), L.y(3),
         ::MulDiv(140, L.u, 5), L.cy, nullptr);
     logCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
-                    L.x(0) + ::MulDiv(145, L.u, 5), L.y(2), ::MulDiv(120, L.u, 5), 200,
+                    L.x(0) + ::MulDiv(145, L.u, 5), L.y(3), ::MulDiv(120, L.u, 5), 200,
                     reinterpret_cast<HMENU>(kCmLogLevel));
     for (const wchar_t* l : {L"INFO", L"DEBUG", L"WARN", L"ERROR"}) {
         ::SendMessageW(logCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(l));
     }
 
     // Playback speed
-    ctl(hwnd_, L"STATIC", L"Playback speed :", WS_VISIBLE, L.x(0), L.y(3),
+    ctl(hwnd_, L"STATIC", L"Playback speed :", WS_VISIBLE, L.x(0), L.y(4),
         ::MulDiv(140, L.u, 5), L.cy, nullptr);
     speedCombo_ = ctl(hwnd_, WC_COMBOBOX, L"", WS_VISIBLE | CBS_DROPDOWNLIST,
-                      L.x(0) + ::MulDiv(145, L.u, 5), L.y(3), ::MulDiv(80, L.u, 5), 200,
+                      L.x(0) + ::MulDiv(145, L.u, 5), L.y(4), ::MulDiv(80, L.u, 5), 200,
                       reinterpret_cast<HMENU>(kCmSpeed));
     for (const wchar_t* s : {L"0.5x", L"0.75x", L"1.0x", L"1.5x", L"2.0x"}) {
         ::SendMessageW(speedCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
@@ -53,15 +56,15 @@ bool SettingsPanel::create(HWND parent) {
 
     // Audio toggle
     checkAudio_ = ctl(hwnd_, L"BUTTON", L"Enable audio", WS_VISIBLE | BS_AUTOCHECKBOX,
-                      L.x(0), L.y(4), ::MulDiv(200, L.u, 5), L.cy,
+                      L.x(0), L.y(5), ::MulDiv(200, L.u, 5), L.cy,
                       reinterpret_cast<HMENU>(kCkAudio));
 
     // Volume slider
-    ctl(hwnd_, L"STATIC", L"Volume :", WS_VISIBLE, L.x(0), L.y(5),
+    ctl(hwnd_, L"STATIC", L"Volume :", WS_VISIBLE, L.x(0), L.y(6),
         ::MulDiv(80, L.u, 5), L.cy, nullptr);
     sliderVolume_ = ::CreateWindowExW(0, TRACKBAR_CLASS, L"",
                                       WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS | TBS_TOOLTIPS,
-                                      L.x(0) + ::MulDiv(85, L.u, 5), L.y(5),
+                                      L.x(0) + ::MulDiv(85, L.u, 5), L.y(6),
                                       ::MulDiv(200, L.u, 5), L.cy, hwnd_,
                                       reinterpret_cast<HMENU>(kSlVolume),
                                       ::GetModuleHandleW(nullptr), nullptr);
@@ -69,16 +72,16 @@ bool SettingsPanel::create(HWND parent) {
     ::SendMessageW(sliderVolume_, TBM_SETPOS, TRUE, 80);
     ::SendMessageW(sliderVolume_, TBM_SETTICFREQ, 10, 0);
     volumeLabel_ = ctl(hwnd_, L"STATIC", L"80%", WS_VISIBLE,
-                       L.x(0) + ::MulDiv(290, L.u, 5), L.y(5),
+                       L.x(0) + ::MulDiv(290, L.u, 5), L.y(6),
                        ::MulDiv(50, L.u, 5), L.cy, nullptr);
     if (font_) ::SendMessageW(sliderVolume_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
 
     // About section
-    aboutText_ = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, L.x(0), L.y(7),
+    aboutText_ = ctl(hwnd_, L"STATIC", L"", WS_VISIBLE, L.x(0), L.y(8),
                      ::MulDiv(420, L.u, 5), 3 * L.cy, nullptr);
 
     btnReadme_ = ctl(hwnd_, L"BUTTON", L"Open README", WS_VISIBLE | BS_PUSHBUTTON,
-                     L.x(0), L.y(10), ::MulDiv(120, L.u, 5), L.cy,
+                     L.x(0), L.y(11), ::MulDiv(120, L.u, 5), L.cy,
                      reinterpret_cast<HMENU>(kBtnReadme));
     return true;
 }
@@ -91,6 +94,7 @@ void SettingsPanel::updateFromConfig(const ConfigSnapshot& c) {
     ::SendMessageW(checkStartup_, BM_SETCHECK, c.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
     ::SendMessageW(checkTray_, BM_SETCHECK, c.minimizeToTray ? BST_CHECKED : BST_UNCHECKED, 0);
     ::SendMessageW(checkAudio_, BM_SETCHECK, c.audio ? BST_CHECKED : BST_UNCHECKED, 0);
+    ::SendMessageW(checkFileAssoc_, BM_SETCHECK, c.fileAssociations ? BST_CHECKED : BST_UNCHECKED, 0);
     ::SendMessageW(sliderVolume_, TBM_SETPOS, TRUE, c.volume);
     wchar_t vBuf[16];
     std::swprintf(vBuf, 16, L"%d%%", c.volume);
@@ -196,6 +200,16 @@ LRESULT CALLBACK SettingsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                         c.id = CommandId::ConfigSet;
                         c.s1 = L"audio";
                         c.s2 = ::SendMessageW(self->checkAudio_, BM_GETCHECK, 0, 0) == BST_CHECKED
+                                   ? L"true" : L"false";
+                        self->post_(c);
+                    }
+                    return 0;
+                case kCkFileAssoc:
+                    if (code == BN_CLICKED) {
+                        Command c;
+                        c.id = CommandId::ConfigSet;
+                        c.s1 = L"fileAssociations";
+                        c.s2 = ::SendMessageW(self->checkFileAssoc_, BM_GETCHECK, 0, 0) == BST_CHECKED
                                    ? L"true" : L"false";
                         self->post_(c);
                     }
