@@ -50,21 +50,21 @@ playlist you control — while staying out of the way:
 └──────┬──────────────────────────────────────────────────────────────────────────┘
        │
   ┌────┴─────────┐   ┌──────────────┐   ┌───────────────┐   ┌──────────────────┐
-  │  Win32 UI    │   │TrayController│  │   Playlist    │   │  LibraryManager  │
+  │  Win32 UI    │   │TrayController│   │   Playlist    │   │  LibraryManager  │
   │  (6 panels)  │   └──────────────┘   │   Manager     │   │  (minimal v1)    │
   └──────────────┘                      └──────┬────────┘   └──────────────────┘
                                                │
-  ┌────────────────── PlaybackController ───────┴───────────────────────────────┐
+  ┌────────────────── PlaybackController ──────┴────────────────────────────────┐
   │  FrameScheduler (QPC deadlines, waitable timer) · VideoPlayer · FrameQueue  │
   └───────┬───────────────────────────────────────┬─────────────────────────────┘
           │                                       │
-  ┌───────┴─────────┐                    ┌─────────┴──────────┐
+  ┌───────┴─────────┐                    ┌────────┴───────────┐
   │  DecoderManager │                    │  WallpaperManager  │
   │  (MF source     │                    │  per-monitor hosts │
   │   reader, SW    │                    │  behind icons)     │
   │   or HW MFT)    │                    └─────────┬──────────┘
   └─────────────────┘                              │
-  ┌─────────────── ResourceGovernor ──────────────┴─────────────────────────────┐
+  ┌─────────────── ResourceGovernor ───────────────┴─────────────────────────────┐
   │  sole authority over ACTIVE / PAUSED / SUSPENDED · pause reasons: user,      │
   │  game, fullscreen, workload, lock, display-off, battery · long-pause release │
   └──────────────────────────────────────────────────────────────────────────────┘
