@@ -689,10 +689,16 @@ bool ApplicationController::startPlaylistItem(size_t index) {
         wallpaper_->setScaling(rendererScalingFrom(config_->config().scaling));
     }
     const LONGLONG t0 = util::Clock::instance().now100ns();
+    // #18: use per-monitor volume if configured, else global volume.
+    const auto& cfg = config_->config();
+    int vol = cfg.volume; // global default
+    if (const auto it = cfg.perMonitorVolume.find(primaryMonitorId());
+        it != cfg.perMonitorVolume.end()) {
+        vol = it->second;
+    }
     auto opened =
         playback_->open(item->path, wallpaper_ ? wallpaper_->device() : nullptr,
-                        static_cast<size_t>(config_->config().frameQueue),
-                        config_->config().audio, config_->config().volume);
+                        static_cast<size_t>(cfg.frameQueue), cfg.audio, vol);
     if (!opened) {
         log.warn(L"playlist item {} '{}' cannot be opened: {} — marking unavailable", index,
                  item->path, opened.error());
@@ -1682,6 +1688,14 @@ void ApplicationController::applyConfigSetLive(const std::wstring& key, const st
         if (playback_) {
             playback_->setVolume(c.volume);
         }
+    } else if (key.rfind(L"pmvolume:", 0) == 0) {
+        // #18: per-monitor volume — apply to current playback if this is the active monitor.
+        const std::wstring monitorId = key.substr(9);
+        if (playback_ && monitorId == primaryMonitorId()) {
+            int vol = 0;
+            try { vol = std::stoi(value); } catch (...) {}
+            playback_->setVolume(vol);
+        }
     } else if (key == L"audio") {
         // Audio toggle takes effect on next file open (config-driven).
         // Live toggle: if audio is now disabled, stop the pipeline.
@@ -1816,6 +1830,7 @@ vw::ui::UiSnapshot ApplicationController::getUiSnapshot() const {
     s.config.playbackSpeed = c.playbackSpeed;
     s.config.audio = c.audio;
     s.config.volume = c.volume;
+    s.config.perMonitorVolume = c.perMonitorVolume; // #18
     s.config.clone = c.wallpaperMode == config::WallpaperMode::Clone;
     s.config.startWithWindows = c.startWithWindows;
     s.config.minimizeToTray = c.minimizeToTray;

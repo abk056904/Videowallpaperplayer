@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,7 @@ struct Config {
     int frameQueue = 2;
     bool audio = true;    // §1.8: audio enabled by default (was false pre-v1.1)
     int volume = 80;      // 0–100 (mapped to WASAPI 0.0–10.0 range)
+    std::map<std::wstring, int> perMonitorVolume; // #18: per-monitor volume override (0–100)
     std::wstring videoPath; // M4: single clip to play (empty = none, wallpaper shows checkerboard)
     // wallpaper (M8)
     WallpaperMode wallpaperMode = WallpaperMode::Independent;

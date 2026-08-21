@@ -163,6 +163,16 @@ void ConfigurationManager::readInto(Config& cfg, const util::Json& root) {
     readBool(playback, L"loop", cfg.loop, [&](bool v) { cfg.loop = v; });
     readBool(playback, L"audio", cfg.audio, [&](bool v) { cfg.audio = v; });
     readInt(playback, L"volume", cfg.volume, 0, 100, [&](int v) { cfg.volume = v; });
+    // #18: per-monitor volume overrides (map of monitorId -> volume 0-100).
+    const auto& pmvObj = playback.get(L"perMonitorVolume");
+    if (pmvObj.isObject()) {
+        for (const auto& [key, val] : pmvObj.asObject()) {
+            if (val.isNumber()) {
+                int v = static_cast<int>(val.asInt(80));
+                cfg.perMonitorVolume[key] = v < 0 ? 0 : (v > 100 ? 100 : v);
+            }
+        }
+    }
     readInt(playback, L"frameQueue", cfg.frameQueue, 1, 16, [&](int v) { cfg.frameQueue = v; });
     const auto& pathStr = playback.get(L"videoPath");
     if (pathStr.isString()) cfg.videoPath = pathStr.asString();
@@ -271,6 +281,14 @@ bool ConfigurationManager::save() {
         {L"volume", util::Json::number(static_cast<double>(config_.volume))},
         {L"videoPath", util::Json::string(config_.videoPath)},
     };
+    // #18: per-monitor volume overrides.
+    if (!config_.perMonitorVolume.empty()) {
+        util::Json::Object pmvObj;
+        for (const auto& [id, vol] : config_.perMonitorVolume) {
+            pmvObj[id] = util::Json::number(static_cast<double>(vol));
+        }
+        playback[L"perMonitorVolume"] = util::Json::object(std::move(pmvObj));
+    }
     util::Json::Object wallpaper{
         {L"mode", util::Json::string(wallpaperModeName(config_.wallpaperMode))},
     };
@@ -475,6 +493,15 @@ bool ConfigurationManager::applyConfigSet(Config& cfg, const std::wstring& key,
     else if (k == L"loop") { ok = parseBool(cfg.loop); }
     else if (k == L"audio") { ok = parseBool(cfg.audio); }
     else if (k == L"volume") { ok = parseInt(cfg.volume, 0, 100); }
+    else if (k.rfind(L"pmvolume:", 0) == 0) {
+        // #18: perMonitorVolume:<monitorId>:<volume>
+        // The key after 'pmvolume:' is the monitor id, the value is the volume.
+        std::wstring monitorId = key.substr(9); // skip "pmvolume:"
+        int vol = 0;
+        if (parseInt(vol, 0, 100)) {
+            cfg.perMonitorVolume[monitorId] = vol;
+        }
+    }
     else if (k == L"startwithwindows") { ok = parseBool(cfg.startWithWindows); }
     else if (k == L"minimizetotray") { ok = parseBool(cfg.minimizeToTray); }
     else if (k == L"startminimized") { ok = parseBool(cfg.startMinimized); }

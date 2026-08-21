@@ -40,7 +40,7 @@ private:
 
     enum Btn : UINT { kBtnPreview = 101, kBtnSetWallpaper = 102 };
     enum Ctrl : UINT { kCtlIndependent = 201, kCtlClone = 202, kCtlSourceCombo = 203,
-                       kCtlScalingCombo = 204 };
+                       kCtlScalingCombo = 204, kSlVolume = 301 };
 
     std::vector<MonitorInfo> monitors_;
     std::vector<LibraryItem> library_; // for the source combo (files)
@@ -53,6 +53,7 @@ private:
     HWND sourceCombo_ = nullptr, scalingCombo_ = nullptr;
     HWND btnPreview_ = nullptr, btnSet_ = nullptr;
     HWND preview_ = nullptr; // static showing the snapshot
+    HWND sliderVolume_ = nullptr, volumeLabel_ = nullptr;
     HBITMAP previewBitmap_ = nullptr;
     std::vector<HWND> buttons_;
 };

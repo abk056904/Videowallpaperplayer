@@ -76,6 +76,24 @@ bool MonitorsPanel::create(HWND parent) {
     }
     ::SendMessageW(scalingCombo_, CB_SETCURSEL, 0, 0);
 
+    // #18: Per-monitor volume slider
+    const int row4 = row3 + L.cy + L.u;
+    ctl(hwnd_, L"STATIC", L"Volume :", WS_VISIBLE, 12, row4,
+        ::MulDiv(80, L.u, 5), L.cy, nullptr);
+    sliderVolume_ = ::CreateWindowExW(0, TRACKBAR_CLASS, L"",
+                                      WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS | TBS_TOOLTIPS,
+                                      12 + ::MulDiv(85, L.u, 5), row4,
+                                      ::MulDiv(200, L.u, 5), L.cy, hwnd_,
+                                      reinterpret_cast<HMENU>(kSlVolume),
+                                      ::GetModuleHandleW(nullptr), nullptr);
+    ::SendMessageW(sliderVolume_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+    ::SendMessageW(sliderVolume_, TBM_SETPOS, TRUE, 80);
+    ::SendMessageW(sliderVolume_, TBM_SETTICFREQ, 10, 0);
+    if (font_) ::SendMessageW(sliderVolume_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    volumeLabel_ = ctl(hwnd_, L"STATIC", L"80%", WS_VISIBLE,
+                       12 + ::MulDiv(290, L.u, 5), row4,
+                       ::MulDiv(50, L.u, 5), L.cy, nullptr);
+
     // Preview + buttons
     preview_ = ctl(hwnd_, L"STATIC", L"(no preview)", WS_VISIBLE | SS_CENTERIMAGE,
                    12, row3 + L.cy + L.u, ::MulDiv(320, L.u, 5), ::MulDiv(180, L.u, 5), nullptr);
@@ -173,6 +191,18 @@ void MonitorsPanel::refreshFromSnapshot(const UiSnapshot& s) {
     if (!s.assignments.empty()) {
         updateReadback(s.assignments.front());
     }
+    // #18: initialize volume slider from per-monitor config or global default.
+    int vol = s.config.volume; // global default
+    if (!monitors_.empty()) {
+        const auto& pmv = s.config.perMonitorVolume;
+        if (const auto it = pmv.find(monitors_[0].id); it != pmv.end()) {
+            vol = it->second;
+        }
+    }
+    ::SendMessageW(sliderVolume_, TBM_SETPOS, TRUE, vol);
+    wchar_t vBuf[16];
+    std::swprintf(vBuf, 16, L"%d%%", vol);
+    ::SetWindowTextW(volumeLabel_, vBuf);
 }
 
 void MonitorsPanel::onMonitorEvent(const MonitorEvent&) {}
@@ -279,6 +309,27 @@ LRESULT CALLBACK MonitorsPanel::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     return 0;
             }
             return 0;
+        case WM_HSCROLL: {
+            if (reinterpret_cast<HWND>(lParam) == self->sliderVolume_) {
+                const int pos = static_cast<int>(::SendMessageW(self->sliderVolume_, TBM_GETPOS, 0, 0));
+                wchar_t vBuf[16];
+                std::swprintf(vBuf, 16, L"%d%%", pos);
+                ::SetWindowTextW(self->volumeLabel_, vBuf);
+                // #18: Post CONFIG_SET for the selected monitor's volume.
+                if (!self->monitors_.empty()) {
+                    const int sel = static_cast<int>(
+                        ::SendMessageW(self->list_, LVM_GETSELECTIONMARK, 0, 0));
+                    if (sel >= 0 && sel < static_cast<int>(self->monitors_.size())) {
+                        Command c;
+                        c.id = CommandId::ConfigSet;
+                        c.s1 = L"pmvolume:" + self->monitors_[sel].id;
+                        c.s2 = std::to_wstring(pos);
+                        self->post_(c);
+                    }
+                }
+            }
+            return 0;
+        }
         case WM_SIZE: {
             self->layout(LOWORD(lParam), HIWORD(lParam));
             return 0;

@@ -13,6 +13,7 @@
 // is an opaque uintptr_t; geometry is plain int32.
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -157,6 +158,7 @@ struct ConfigSnapshot {
     double playbackSpeed = 1.0; // playback speed multiplier (0.25–4.0)
     bool audio = true;
     int volume = 80; // 0–100
+    std::map<std::wstring, int> perMonitorVolume; // #18: per-monitor volume overrides
     bool clone = false; // wallpaper mode: true = Clone, false = Independent
     bool startWithWindows = false, minimizeToTray = true, startMinimized = false;
     bool fileAssociations = false;
