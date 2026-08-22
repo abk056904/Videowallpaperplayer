@@ -7,7 +7,7 @@ Built as a single native x64 C++23 executable (Win32 + Direct3D 11 + Media Found
 No .NET, no Electron, no Qt, no runtime frameworks, no bundled codecs: everything
 Windows already provides is used as-is.
 
-> **Status:** v1.2 complete — adds FFmpeg hardware decode (D3D11VA / CUDA / NVDEC)
+> **Status:** v1.0.0 — adds FFmpeg hardware decode (D3D11VA / CUDA / NVDEC)
 > with GPU-accelerated decode (zero CPU↔GPU copies), full audio pipeline (WASAPI + FFmpeg + swresample),
 > library thumbnails, global hotkeys, drag & drop, crash reporting, auto-update checker,
 > per-monitor volume/scaling, and a codec-aware decoder factory. The v1 milestones (M0–M14) are in
@@ -504,7 +504,7 @@ changes via a revision counter (no polling).
 
 Logs: `%APPDATA%\VideoWallpaper\logs\current.log` (rotates at 1 MB → `previous.log`).
 
-## Known limitations (v1.2)
+## Known limitations (v1.0.0)
 
 - **Per-monitor scaling presets** persist in config but the UI updates are deferred to v2.
 - **Shared-playlist mode** (one playlist synced across all monitors in Independent mode)
