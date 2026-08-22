@@ -60,6 +60,8 @@ powershell -ExecutionPolicy Bypass -File package.ps1
 
 > **Note:** The app probes all HW backends at runtime and falls back automatically.
 > No GPU = software decode (higher CPU, still works).
+>
+> On Windows systems with hybrid/integrated + NVIDIA discrete GPUs, the OS can choose the integrated GPU by default. To force the app to use the NVIDIA GPU (and enable NVDEC/CUDA hardware decode), add the application's executable to Settings → System → Display → Graphics settings (Browse → select the .exe), open Options for the app, choose "High performance" and select the NVIDIA GPU. Restart the app after changing this setting.
 
 ---
 
